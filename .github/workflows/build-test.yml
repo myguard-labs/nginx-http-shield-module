@@ -21,11 +21,13 @@ permissions:
 jobs:
   validation:
     name: Validation
-    runs-on: [self-hosted, builder02, lxc]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Install validation tools
         run: |
@@ -47,6 +49,11 @@ jobs:
             src/ngx_http_shield_module.c
           git diff --check
 
+      - name: Check runner trust boundary
+        run: |
+          shellcheck tools/check-workflow-runners.sh
+          bash tools/check-workflow-runners.sh
+
       - name: Lint workflows
         run: |
           version=1.7.7
@@ -64,11 +71,13 @@ jobs:
 
   build:
     name: Build
-    runs-on: [self-hosted, builder02, lxc]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |
@@ -108,11 +117,13 @@ jobs:
 
   test-nginx:
     name: Test::Nginx
-    runs-on: [self-hosted, builder02, lxc]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
@@ -135,11 +146,13 @@ jobs:
 
   asan:
     name: ASan and UBSan
-    runs-on: [self-hosted, builder02, lxc]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
