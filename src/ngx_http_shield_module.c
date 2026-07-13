@@ -938,11 +938,13 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode, NGX_HTTP_SHIELD_OFF);
     ngx_conf_merge_value(conf->body, prev->body, 1);
-    /* 8k, not 64k. Scan cost is linear in the buffer: the engine sweeps every
-     * signature over it, so a 64k body costs ~10.9ms of blocking CPU in a
-     * single-threaded worker. Body size and Content-Type are both
-     * attacker-controlled, which made the old default a cheap DoS amplifier
-     * (~90 req/s to pin a worker). 8k keeps real form/JSON payloads covered. */
+    /* 8k, not 64k. Scan cost is linear in the buffer -- the Aho-Corasick pass
+     * is O(bytes), independent of the signature count -- so a body is still a
+     * blocking-CPU budget in a single-threaded worker, and both its length and
+     * the Content-Type that opts it into scanning are attacker-controlled. The
+     * old 64k default was a cheap DoS amplifier under the pre-AC O(n*m) engine
+     * (~10.9 ms/req, ~90 req/s to pin a worker); the cap stays at 8k because
+     * the budget is still attacker-driven, and 8k covers real form/JSON. */
     ngx_conf_merge_size_value(conf->max_body, prev->max_body, 8 * 1024);
     ngx_conf_merge_uint_value(conf->status, prev->status, NGX_HTTP_FORBIDDEN);
 

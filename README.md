@@ -132,11 +132,11 @@ http {
 
 The module runs in the `PRECONTENT` phase. For each request it builds two
 normalized copies of every inspected input — a lowercased raw copy and a
-percent-decoded, `+`→space, lowercased copy — and runs a plain substring scan
-of every enabled category's patterns over them. Two categories (`httpoxy`,
-`range_dos`) are structural checks rather than substring matches. There is no
-regex and no per-request allocation beyond the two scratch buffers, so the
-cost is a few microseconds on typical request sizes.
+percent-decoded (once), `+`→space, lowercased copy — and runs every enabled
+category's patterns over them in a **single Aho-Corasick pass per buffer**. Two
+categories (`httpoxy`, `range_dos`) are structural checks rather than
+literal matches. There is no regex and no per-request allocation beyond the two
+scratch buffers, so the cost is a few microseconds on typical request sizes.
 
 Body inspection reads the buffered request body (up to `shield_max_body`) and
 scans it the same way, then resumes phase processing — the same mechanism the
@@ -215,7 +215,7 @@ This is hostile-input parser code, so every change runs through a layered gate:
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | **Build and Test** | PR/push | Multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under AddressSanitizer + UndefinedBehaviorSanitizer. |
-| **Fuzzing** | PR/push | 120 s libFuzzer run of `fuzz_scan` — the real normalize + substring-match core, with nginx's own `ngx_unescape_uri()` decoder linked in. |
+| **Fuzzing** | PR/push | 120 s libFuzzer run of `fuzz_scan` — the real normalize + Aho-Corasick scan core, differentially checked against a naive reference matcher, with nginx's own `ngx_unescape_uri()` decoder linked in. |
 | **Valgrind** | PR/push | 60 s Memcheck soak of a mixed attack/benign request storm against the debug build. |
 | **Security scanners** | PR/push | flawfinder (gate on ≥4), clang-tidy (`cert-*`, `security.*`), semgrep. |
 | **CodeQL** | PR/push + monthly | `security-extended` C/C++ analysis. |
