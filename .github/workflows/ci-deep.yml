@@ -62,12 +62,33 @@ jobs:
             build-essential clang curl libpcre2-dev zlib1g-dev
 
       - name: Select fuzz duration
+        env:
+          # Never interpolate the raw input into the shell command: an arbitrary
+          # workflow_dispatch string would become runner shell syntax. Bind it to
+          # an environment variable and validate it before use.
+          EVENT_NAME: ${{ github.event_name }}
+          FUZZ_SECONDS_INPUT: ${{ inputs.fuzz_seconds }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "FUZZ_SECS=${{ github.event.inputs.fuzz_seconds }}" >> "$GITHUB_ENV"
-          else
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
             echo "FUZZ_SECS=14400" >> "$GITHUB_ENV"
+            exit 0
           fi
+          # Bounded positive integer: 60 s .. 8 h. Anything else fails the job.
+          case "$FUZZ_SECONDS_INPUT" in
+            "")
+              echo "FUZZ_SECS=3600" >> "$GITHUB_ENV"
+              exit 0
+              ;;
+            *[!0-9]*)
+              echo "ERROR: fuzz_seconds must be a positive integer" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$FUZZ_SECONDS_INPUT" -lt 60 ] || [ "$FUZZ_SECONDS_INPUT" -gt 28800 ]; then
+            echo "ERROR: fuzz_seconds must be between 60 and 28800" >&2
+            exit 1
+          fi
+          echo "FUZZ_SECS=$FUZZ_SECONDS_INPUT" >> "$GITHUB_ENV"
 
       - name: Fetch + configure nginx source (fuzz build needs headers)
         run: bash tools/ci-build.sh nginx "$NGINX_VERSION"
