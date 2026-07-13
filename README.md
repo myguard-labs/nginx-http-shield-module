@@ -142,6 +142,22 @@ Body inspection reads the buffered request body (up to `shield_max_body`) and
 scans it the same way, then resumes phase processing — the same mechanism the
 stock `ngx_http_mirror_module` uses.
 
+### When inspection itself fails
+
+If the module cannot inspect a buffer at all — a pool allocation fails under
+memory pressure, or a request-body temp file cannot be read — then the request
+was never actually scanned, and an unscanned request is not a clean one.
+
+* `shield block` **fails closed**: the request is rejected with `500` and
+  `error.log` gets `shield: could not inspect <what>, failing closed`.
+* `shield detect` never changes the response by definition, so it logs
+  `shield: could not inspect <what>, request left unscanned` and serves the
+  request.
+
+This is the only case in which `block` mode returns something other than
+`shield_status`. A body larger than `shield_max_body` is **not** an inspection
+failure — that is the documented cap, and the request is passed through.
+
 ## Cost
 
 All signatures are matched in a **single pass** per buffer by an Aho-Corasick
