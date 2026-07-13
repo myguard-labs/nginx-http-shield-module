@@ -669,7 +669,12 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode, NGX_HTTP_SHIELD_OFF);
     ngx_conf_merge_value(conf->body, prev->body, 1);
-    ngx_conf_merge_size_value(conf->max_body, prev->max_body, 64 * 1024);
+    /* 8k, not 64k. Scan cost is linear in the buffer: the engine sweeps every
+     * signature over it, so a 64k body costs ~10.9ms of blocking CPU in a
+     * single-threaded worker. Body size and Content-Type are both
+     * attacker-controlled, which made the old default a cheap DoS amplifier
+     * (~90 req/s to pin a worker). 8k keeps real form/JSON payloads covered. */
+    ngx_conf_merge_size_value(conf->max_body, prev->max_body, 8 * 1024);
     ngx_conf_merge_uint_value(conf->status, prev->status, NGX_HTTP_FORBIDDEN);
 
     /* skip: inherit the parent mask only when this location set none. */

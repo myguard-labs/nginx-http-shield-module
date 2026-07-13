@@ -98,7 +98,7 @@ http {
         location / {
             shield block;          # off | detect | block
             shield_body on;        # inspect request body (default on)
-            shield_max_body 64k;   # bytes of body scanned (default 64k)
+            shield_max_body 8k;    # bytes of body scanned (default 8k)
             shield_status 403;      # 403 | 404 | 419 | 429 | 444 (default 403)
         }
 
@@ -116,7 +116,7 @@ http {
 |-----------|---------|---------|-------------|
 | `shield` | http, server, location | `off` | `off` disables; `detect` logs only; `block` rejects. |
 | `shield_body` | http, server, location | `on` | Inspect the request body (text-shaped content types only). |
-| `shield_max_body` | http, server, location | `64k` | Bytes of body scanned. Larger bodies are passed through unscanned — uploads are never blocked for being big. |
+| `shield_max_body` | http, server, location | `8k` | Bytes of body scanned. Larger bodies are passed through unscanned — uploads are never blocked for being big. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus `httpoxy` and `range_dos`). |
 
@@ -141,6 +141,28 @@ cost is a few microseconds on typical request sizes.
 Body inspection reads the buffered request body (up to `shield_max_body`) and
 scans it the same way, then resumes phase processing — the same mechanism the
 stock `ngx_http_mirror_module` uses.
+
+## Cost
+
+Scanning is linear in the size of each buffer, so the body cap is the dominant
+knob. Measured over the scan core:
+
+| buffer | bytes | µs/scan |
+|---|---|---|
+| typical URI | 64 | 13.5 |
+| user-agent | 120 | 23 |
+| 1 KB body | 1 024 | 174 |
+| 8 KB body (default cap) | 8 192 | 1 370 |
+| 64 KB body | 65 536 | 10 774 |
+
+An nginx worker is single-threaded, so this time is blocking: whatever the
+scan costs, that worker serves nobody else. Both the body length and the
+`Content-Type` that opts a request into body scanning are attacker-controlled,
+so **treat `shield_max_body` as a DoS budget, not a coverage dial.** The 64k
+default this module shipped with let one client pin a worker at ~90 req/s;
+it is now 8k.
+
+Set `shield_body off` on endpoints that take large uploads.
 
 ## Adding a signature
 
