@@ -44,11 +44,11 @@ jobs:
         with:
           languages: c-cpp
           queries: security-extended
-          config: |
-            paths:
-              - src/ngx_http_shield_module.c
-            paths-ignore:
-              - .build/**
+          # No paths/paths-ignore here on purpose: for compiled languages CodeQL
+          # populates the database from whatever the traced build compiles, and
+          # those filters are silently ignored. Scope is instead enforced by the
+          # build itself -- `module` mode compiles only our .so, never the nginx
+          # core -- so upstream nginx sources never enter the database.
 
       # CI-7: reuse the downloaded nginx tarball across runs.
       - name: Cache source tarball
@@ -57,8 +57,8 @@ jobs:
           path: .build/nginx-${{ env.NGINX_VERSION }}.tar.gz
           key: src-nginx-${{ env.NGINX_VERSION }}
 
-      - name: Build traced source
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" debug
+      - name: Build traced source (module only)
+        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" module
 
       - name: Analyze
         uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
