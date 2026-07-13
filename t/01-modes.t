@@ -96,8 +96,8 @@ GET /t?a=../../etc/passwd&b=union%20select%201
 GET /t?a=union%20select%201&b=../../etc/passwd
 --- error_code: 200
 
-=== TEST 13: a signature whose tail is another category's signature blocks
-# Co-located-category bypass (TESTS 13-16). The Ivanti exploit_path signature
+=== TEST 13: a multi-category state blocks and reports the lowest table row
+# Co-located-category bypass (TESTS 13-15). The Ivanti exploit_path signature
 # "/api/v1/totp/user-backup-code/../" ENDS with the traversal signature "../",
 # so both categories accept at the same automaton state. An out[] holding one
 # category per state reported only the first and silently dropped the other --
@@ -110,18 +110,11 @@ GET /t?a=union%20select%201&b=../../etc/passwd
     location /t { shield block; empty_gif; }
 --- request
 GET /t?f=y/api/v1/totp/user-backup-code/../
---- error_code: 403
-
-=== TEST 14: a multi-category state reports the lowest category table row
---- config
-    location /t { shield block; empty_gif; }
---- request
-GET /t?f=y/api/v1/totp/user-backup-code/../
 --- error_log
 category=traversal
 --- error_code: 403
 
-=== TEST 15: skipping the longer category leaves the co-located shorter one live
+=== TEST 14: skipping the longer category leaves the co-located shorter one live
 --- config
     location /t { shield block; shield_skip exploit_path; empty_gif; }
 --- request
@@ -130,7 +123,7 @@ GET /t?f=y/api/v1/totp/user-backup-code/../
 category=traversal
 --- error_code: 403
 
-=== TEST 16: skipping the shorter category leaves the co-located longer one live
+=== TEST 15: skipping the shorter category leaves the co-located longer one live
 --- config
     location /t { shield block; shield_skip traversal; empty_gif; }
 --- request

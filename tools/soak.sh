@@ -112,6 +112,7 @@ END=$(( $(date +%s) + DURATION ))
 
 saw_block="$WORK/logs/saw_block"
 saw_pass="$WORK/logs/saw_pass"
+saw_dead="$WORK/logs/saw_dead"
 
 # URL-encoded attack payloads across many categories (spaces -> %20; the
 # harness/curl would otherwise mangle the request line). Each is something the
@@ -131,6 +132,7 @@ ATTACKS=(
     "/%7B%7B7*7%7D%7D"
 )
 # Bodies (POST) that must be blocked; empty_gif returns 405 when passed.
+# shellcheck disable=SC2016  # $where is a literal NoSQL operator, not a variable
 BODY_ATTACKS=(
     "id=1' or 1=1--"
     '<!ENTITY xxe SYSTEM "file:///etc/passwd">'
@@ -144,6 +146,10 @@ BENIGN=(
     "/search?q=nginx+performance+tuning"
 )
 
+# A curl that never reached nginx yields 000. That is not a pass and not a
+# block -- it is a dead server, and silently folding it into either bucket is
+# how a soak against a crashed nginx reports "clean". Record it instead, and
+# fail the run if any occurred.
 storm_worker() {
     while [ "$(date +%s)" -lt "$END" ]; do
         r=$((RANDOM % 10))
@@ -151,21 +157,26 @@ storm_worker() {
             u="${ATTACKS[$((RANDOM % ${#ATTACKS[@]}))]}"
             code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
                 "http://127.0.0.1:$PORT$u" 2>/dev/null || echo 000)
-            [ "$code" = "403" ] && : > "$saw_block" 2>/dev/null || true
         elif [ "$r" -lt 7 ]; then
             b="${BODY_ATTACKS[$((RANDOM % ${#BODY_ATTACKS[@]}))]}"
             code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
                 -X POST --data "$b" \
                 "http://127.0.0.1:$PORT/post" 2>/dev/null || echo 000)
-            [ "$code" = "403" ] && : > "$saw_block" 2>/dev/null || true
         else
             u="${BENIGN[$((RANDOM % ${#BENIGN[@]}))]}"
             code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
                 "http://127.0.0.1:$PORT$u" 2>/dev/null || echo 000)
             # benign: anything that is NOT a 403 block proves pass-through
             # (200/404/405 are all "shield let it through").
-            [ "$code" != "403" ] && [ "$code" != "000" ] && \
+            if [ "$code" != "403" ] && [ "$code" != "000" ]; then
                 : > "$saw_pass" 2>/dev/null || true
+            fi
+        fi
+
+        if [ "$code" = "000" ]; then
+            printf 'x' >> "$saw_dead" 2>/dev/null || true
+        elif [ "$r" -lt 7 ] && [ "$code" = "403" ]; then
+            : > "$saw_block" 2>/dev/null || true
         fi
     done
 }
@@ -183,12 +194,10 @@ if kill -0 "$NGINX_PID" 2>/dev/null; then
     echo "WARN: nginx did not exit after SIGQUIT; force-killing"
     kill -KILL "$NGINX_PID" 2>/dev/null || true
 fi
-wait "$NGINX_PID" 2>/dev/null; rc=$?
-
-# Corroborate the block path from the log too (info-level detect line).
-if grep -qiE 'shield: (detected|blocked)' "$WORK/logs/error.log" 2>/dev/null; then
-    : > "$saw_block"
-fi
+# `set -e` would abort on a non-zero `wait`, so the exit status has to be
+# captured in the same command, not by a following `rc=$?` (which was dead code).
+rc=0
+wait "$NGINX_PID" 2>/dev/null || rc=$?
 
 problems=0
 if ls "$WORK"/logs/asan* >/dev/null 2>&1; then
@@ -213,6 +222,12 @@ if grep -nE '\[alert\]|\[emerg\]' "$WORK/logs/error.log" 2>/dev/null \
 fi
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ]; then
     echo "FAIL: nginx exited $rc"; tail -40 "$WORK/logs/error.log" || true
+    problems=1
+fi
+if [ -f "$saw_dead" ]; then
+    echo "FAIL: $(wc -c < "$saw_dead") request(s) got no HTTP response (curl 000)" \
+         "-- nginx was unreachable, so this soak proves nothing"
+    tail -40 "$WORK/logs/error.log" || true
     problems=1
 fi
 if [ ! -f "$saw_block" ]; then
