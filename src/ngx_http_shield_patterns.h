@@ -371,6 +371,14 @@ static const ngx_http_shield_sig_t  ngx_http_shield_java_rce[] = {
     NGX_HTTP_SHIELD_SIG("class.module.classloader"),    /* Spring4Shell     */
     NGX_HTTP_SHIELD_SIG("class['module']"),
     NGX_HTTP_SHIELD_SIG("class.classloader"),
+    /* Confluence OGNL (CVE-2022-26134): fully-qualified Runtime/OGNL gadget
+     * refs that no legitimate request carries by name. */
+    NGX_HTTP_SHIELD_SIG("@java.lang.runtime@getruntime().exec("),
+    NGX_HTTP_SHIELD_SIG("@ognl.ognlcontext@default_member_access"),
+    NGX_HTTP_SHIELD_SIG("@org.apache.commons.io.ioutils@"),
+    NGX_HTTP_SHIELD_SIG("com.opensymphony.webwork.servletactioncontext"),
+    NGX_HTTP_SHIELD_SIG("(#cmd="),                       /* OGNL process exec */
+    NGX_HTTP_SHIELD_SIG("new java.lang.processbuilder("),
 };
 
 /* ---- 14. Java runtime eval --------------------------------------------- */
@@ -503,6 +511,10 @@ static const ngx_http_shield_sig_t  ngx_http_shield_ssrf_meta[] = {
     NGX_HTTP_SHIELD_SIG("/opc/v1/instance"),      /* Oracle IMDS             */
     NGX_HTTP_SHIELD_SIG("2852039166"),            /* decimal 169.254.169.254 */
     NGX_HTTP_SHIELD_SIG("0xa9fea9fe"),            /* hex 169.254.169.254     */
+    NGX_HTTP_SHIELD_SIG("/latest/api/token"),     /* AWS IMDSv2 token endpoint */
+    NGX_HTTP_SHIELD_SIG("/latest/meta-data/iam/security-credentials/"),
+    NGX_HTTP_SHIELD_SIG("metadata-flavor: google"), /* GCP IMDS header form   */
+    NGX_HTTP_SHIELD_SIG("metadata-flavor:google"),
 };
 
 /* ---- 26. NoSQL injection ----------------------------------------------- */
@@ -569,6 +581,27 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/vpns/portal/scripts"),     /* Citrix 2019-19781    */
     NGX_HTTP_SHIELD_SIG("/securityrealm/user/admin/descriptorbyname"), /* Jenkins */
     NGX_HTTP_SHIELD_SIG("/config/getuser?index="),   /* Zyxel 2020-29583     */
+    NGX_HTTP_SHIELD_SIG("/tmui/login.jsp/..;/"),     /* F5 BIG-IP 2020-5902  */
+    NGX_HTTP_SHIELD_SIG("/hsqldb%0a"),               /* F5 TMUI probe        */
+    NGX_HTTP_SHIELD_SIG("/ui/vropspluginui/rest/services/uploadova"), /* vCenter 2021-21972 */
+    NGX_HTTP_SHIELD_SIG("/ui/vropspluginui/rest/services/getstatus"),
+    NGX_HTTP_SHIELD_SIG("/analytics/telemetry/ph/api/hyper/send"), /* vCenter 2021-22005 */
+    /* Grafana CVE-2021-43798 is caught by the traversal category (../ under
+     * /public/plugins/); a bare "/public/plugins/" matches legit plugin assets
+     * and is therefore NOT listed here (would break t/05 FP guard). */
+    NGX_HTTP_SHIELD_SIG("/webtools/control/xmlrpc"), /* OFBiz 2020-9496      */
+    NGX_HTTP_SHIELD_SIG("/webtools/control/programexport"), /* OFBiz 2023-49070 */
+    /* OFBiz requirePasswordChange=Y and Metabase /api/setup/validate are both
+     * reachable on legitimate flows (password change / first-run install), so
+     * they are deliberately omitted -- the substring engine cannot AND them
+     * with the gadget token that would make them attack-only. */
+    NGX_HTTP_SHIELD_SIG("/gwtest/formssso?event="),  /* Citrix 2023-3519     */
+    NGX_HTTP_SHIELD_SIG("/vpn/../vpns/"),            /* Citrix 2019-19781    */
+    NGX_HTTP_SHIELD_SIG("/newbm.pl"),                /* Citrix bookmark smuggle */
+    NGX_HTTP_SHIELD_SIG("/remote/fgt_lang?lang=/../"), /* Fortinet 2018-13379 tail */
+    NGX_HTTP_SHIELD_SIG("sslvpn_websession"),        /* Fortinet 2018-13379 target */
+    NGX_HTTP_SHIELD_SIG("/api/v1/totp/user-backup-code/../"), /* Ivanti 2024-21887 */
+    NGX_HTTP_SHIELD_SIG("/goform/set_limitclient_cfg"), /* router botnet probe */
 };
 
 /* One row per signature-table category. Structural categories (httpoxy,

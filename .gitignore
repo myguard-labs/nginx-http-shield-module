@@ -5,6 +5,14 @@
 t/servroot/
 t/*.t.tmp
 
+# Fuzz build outputs (keep sources, corpus seeds, and fuzz.dict)
+fuzz/fuzz_scan
+fuzz/crash-*
+fuzz/corpus-min/
+fuzz/leak-*
+fuzz/oom-*
+fuzz/timeout-*
+
 # Editor / OS
 *.o
 *.so

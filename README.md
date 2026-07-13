@@ -1,5 +1,12 @@
 # nginx-http-shield-module
 
+[![Build and Test](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml)
+[![Security scanners](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml)
+[![Fuzzing](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/fuzzing.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/fuzzing.yml)
+[![Valgrind](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/valgrind.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/valgrind.yml)
+[![CI Deep](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml)
+[![CodeQL](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml)
+
 A small nginx dynamic module that blocks exploitation of web vulnerabilities
 that were **patched years ago** — SQL injection, ancient PHP/Java RCE chains,
 Log4Shell, Shellshock, path traversal, cloud-metadata SSRF, and more.
@@ -18,7 +25,7 @@ Run a real WAF on top where you need one.
 
 ## What it blocks
 
-28 categories (≈370 signatures), all matched case-insensitively after
+28 categories (≈405 signatures), all matched case-insensitively after
 percent-decoding:
 
 | Category | Examples |
@@ -35,7 +42,7 @@ percent-decoding:
 | `deserial` | Java stream magic, gadget classes (`jdbcRowSetImpl`, `TemplatesImpl`, commons-collections), Fastjson `@type` autotype, WebLogic/XStream, Joomla obj-injection (CVE-2015-8562), XXE `<!entity` |
 | `shellshock` | `() {` (CVE-2014-6271) |
 | `php_rce` | PHP-CGI `-d allow_url_include` (CVE-2012-1823), PHPUnit `eval-stdin.php`, ThinkPHP |
-| `java_rce` | Struts OGNL `%{(#` (CVE-2017-5638), Spring4Shell `class.module.classloader` |
+| `java_rce` | Struts OGNL `%{(#` (CVE-2017-5638), Spring4Shell `class.module.classloader`, Confluence OGNL `@java.lang.runtime@getruntime().exec(` (CVE-2022-26134) |
 | `java_eval` | `java.lang.runtime`, `getruntime().exec` |
 | `rails_yaml` | `!ruby/object:`, `!ruby/hash:` (CVE-2013-0156) |
 | `drupal` | `[#post_render]`, `[#markup]` (Drupalgeddon2, CVE-2018-7600) |
@@ -47,10 +54,10 @@ percent-decoding:
 | `range_dos` | a `Range:` header with more than 10 ranges (CVE-2011-3192) |
 | `sensitive_file` | `/.env`, `/.git/`, `wp-config.php.bak`, `/.aws/credentials` |
 | `webshell` | `c99.php`, `r57.php`, `wso.php`, `weevely`, `behinder`, `shell.php?cmd=` |
-| `ssrf_meta` | `169.254.169.254`, `100.100.100.200` (Alibaba), `192.0.0.192` (Oracle), `metadata.google.internal`, decimal/hex IMDS IPs |
+| `ssrf_meta` | `169.254.169.254`, `100.100.100.200` (Alibaba), `192.0.0.192` (Oracle), `metadata.google.internal`, IMDSv2 `/latest/api/token`, `iam/security-credentials/`, decimal/hex IMDS IPs |
 | `nosql` | MongoDB operator injection `[$ne]`, `[$where]`, `{"$where":`, `$func:` |
 | `ssti` | template-probe forms `{{7*7}}`, `${7*7}`, `{{''.__class__`, `<%= 7*7`, `#set($` |
-| `exploit_path` | fixed n-day paths: `/wls-wsat/`, `/remote/fgt_lang`, `/actuator/gateway/routes`, `/_ignition/execute-solution`, `/api/jsonws/invoke`, GPON/HNAP/Zyxel probes |
+| `exploit_path` | fixed n-day paths: `/wls-wsat/`, `/remote/fgt_lang`…`sslvpn_websession`, `/actuator/gateway/routes`, `/_ignition/execute-solution`, `/api/jsonws/invoke`, F5 `/tmui/login.jsp/..;/` (CVE-2020-5902), vCenter `uploadova` (CVE-2021-21972), Citrix `/vpn/../vpns/` (CVE-2019-19781), OFBiz `/webtools/control/xmlrpc`, Ivanti `user-backup-code/..`, GPON/HNAP/Zyxel probes |
 
 What is inspected: the request line and query string, the `User-Agent`,
 `Referer` and `Content-Type` headers, and — when enabled — the request body.
@@ -153,9 +160,33 @@ export TEST_NGINX_TIMEOUT=20
 prove t/
 ```
 
-CI additionally builds under AddressSanitizer + UndefinedBehaviorSanitizer and
-runs the full suite through it, and runs CodeQL — this is hostile-input parser
-code, so it is fuzzed against malformed encodings on every change.
+### Continuous testing
+
+This is hostile-input parser code, so every change runs through a layered gate:
+
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| **Build and Test** | PR/push | Multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under AddressSanitizer + UndefinedBehaviorSanitizer. |
+| **Fuzzing** | PR/push | 120 s libFuzzer run of `fuzz_scan` — the real normalize + substring-match core, with nginx's own `ngx_unescape_uri()` decoder linked in. |
+| **Valgrind** | PR/push | 60 s Memcheck soak of a mixed attack/benign request storm against the debug build. |
+| **Security scanners** | PR/push | flawfinder (gate on ≥4), clang-tidy (`cert-*`, `security.*`), semgrep. |
+| **CodeQL** | PR/push + monthly | `security-extended` C/C++ analysis. |
+| **CI Deep** | monthly + dispatch | 4 h fuzz, 10 min Memcheck **and** Helgrind soaks, scanners. |
+
+Fuzz the scan core locally:
+
+```sh
+tools/ci-build.sh nginx 1.31.1          # populate .build/ (fuzz needs headers)
+CC=clang bash fuzz/build.sh
+fuzz/fuzz_scan -max_total_time=60 -dict=fuzz/fuzz.dict fuzz/corpus/fuzz_scan
+```
+
+Soak under Valgrind locally:
+
+```sh
+tools/ci-build.sh nginx 1.31.1 debug
+USE_VALGRIND=1 tools/soak.sh .build/nginx-1.31.1/objs/nginx 120 4
+```
 
 ## License
 

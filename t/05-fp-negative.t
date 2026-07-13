@@ -134,3 +134,42 @@ Content-Type: application/json
 --- request
 GET /t/actuator/health
 --- error_code: 200
+
+
+=== TEST 18: a real Grafana plugin asset (no traversal) is fine
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/public/plugins/grafana-piechart-panel/module.js
+--- error_code: 200
+
+=== TEST 19: a legitimate Metabase setup call during install (no H2 gadget)
+--- config
+    location /api/setup/validate { shield block; empty_gif; }
+--- request
+GET /api/setup/validate?token=abc123
+--- error_code: 200
+
+=== TEST 20: a normal OFBiz control request without the auth-bypass param
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/webtools/control/main?view=dashboard
+--- error_code: 200
+
+=== TEST 21: a JSON body mentioning runtime/exec as data, not an OGNL gadget
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"description":"the java runtime exec plugin settings"}
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 22: a request to a plain /api/token endpoint (not the IMDS path)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/api/token?grant_type=client_credentials
+--- error_code: 200

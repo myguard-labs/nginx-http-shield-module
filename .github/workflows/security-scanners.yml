@@ -1,0 +1,104 @@
+name: Security scanners
+
+# Static/security scanners gate on every PR/push — flawfinder (gate on >=4),
+# clang-tidy (cert-*, security.*) and semgrep over src/. Same job as the
+# monthly ci-deep.yml scanners run.
+#
+# Action pin (keep in sync with build-test.yml):
+# actions/checkout@v5        -> 93cb6efe18208431cddfb8368fd83d5badbf9bfd
+# actions/upload-artifact@v5 -> 330a01c490aca151604b8cf639adc76d48f6c5d4
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: security-scanners-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scanners:
+    name: Security scanners
+    runs-on: [self-hosted, builder02, lxc]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            flawfinder clang-tidy python3 python3-pip pipx curl \
+            libpcre2-dev zlib1g-dev
+          # semgrep: isolate via pipx (PEP 668 blocks a bare pip3 install into
+          # the system Python on the Ubuntu 24.04 self-hosted runner).
+          if command -v pipx >/dev/null; then
+            pipx install --quiet semgrep
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          else
+            pip3 install --quiet --user --break-system-packages semgrep
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Generate nginx build headers (for clang-tidy)
+        run: |
+          # Analyze against the same latest-mainline nginx the build jobs use.
+          set -euo pipefail
+          ver=$(curl -fsSL https://nginx.org/en/download.html \
+            | grep -oP 'nginx-\K[0-9]+\.[0-9]+\.[0-9]+(?=\.tar\.gz)' | sort -V | tail -1)
+          wget -q -O "$RUNNER_TEMP/nginx.tar.gz" \
+            "https://nginx.org/download/nginx-${ver}.tar.gz"
+          tar -xzf "$RUNNER_TEMP/nginx.tar.gz" -C "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/nginx-${ver}" "$RUNNER_TEMP/nginx-src"
+          cd "$RUNNER_TEMP/nginx-src"
+          CC=gcc ./configure --with-compat \
+            --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null
+      - name: flawfinder (gate on >=4)
+        run: |
+          set -euo pipefail
+          flawfinder --minlevel=1 "$GITHUB_WORKSPACE/src/" 2>&1 | tee flawfinder.log
+          if flawfinder --minlevel=4 --quiet "$GITHUB_WORKSPACE/src/" 2>/dev/null \
+               | grep -Eq 'Hits = [1-9]'; then
+            echo "flawfinder: high-severity (>=4) findings present" >&2
+            exit 1
+          fi
+          echo "flawfinder: clean at >=4"
+      - name: clang-tidy (cert-*, security.*)
+        run: |
+          set -euo pipefail
+          N="$RUNNER_TEMP/nginx-src"
+          INCLUDES="-I$N/src/core -I$N/src/event -I$N/src/event/modules \
+            -I$N/src/os/unix -I$N/objs -I$N/src/http -I$N/src/http/modules \
+            -I$N/src/http/v2 -I$GITHUB_WORKSPACE/src -I/usr/include"
+          status=0
+          for src in "$GITHUB_WORKSPACE"/src/*.c; do
+            echo "--- clang-tidy: $(basename "$src") ---"
+            # shellcheck disable=SC2086
+            clang-tidy "$src" \
+              --checks='-*,cert-*,clang-analyzer-security.*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling' \
+              --warnings-as-errors='*' \
+              -- $INCLUDES 2>&1 | tee -a clang-tidy.log || status=1
+          done
+          exit "$status"
+      - name: semgrep
+        run: |
+          semgrep scan --config p/c --config p/security-audit \
+            "$GITHUB_WORKSPACE/src/" 2>&1 | tee semgrep.log || true
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: security-reports
+          path: |
+            ${{ github.workspace }}/flawfinder.log
+            ${{ github.workspace }}/clang-tidy.log
+            ${{ github.workspace }}/semgrep.log
+          retention-days: 14
