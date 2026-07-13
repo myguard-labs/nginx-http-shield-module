@@ -390,6 +390,59 @@ ngx_http_shield_check_range(ngx_http_request_t *r,
 }
 
 
+/*
+ * Control characters in the request target.
+ *
+ * A structural check, not a signature: it is the SHAPE of the byte that is
+ * wrong, so no signature list can go stale and no encoding trick evades it.
+ *
+ * nginx already rejects a RAW control byte in the request line with 400, so
+ * only the percent-encoded form ever reaches a phase handler -- and it arrives
+ * decoded, as a real control byte, in r->uri. No legitimate client sends one:
+ * they are used to smuggle terminators past filters and log parsers, and to
+ * split records in downstream systems that treat the URI as text.
+ *
+ * NUL and CR/LF are deliberately NOT flagged here. They already have their own
+ * categories (nullbyte, crlf), which name the attack more precisely and which
+ * an operator may have skipped on purpose; taking them over would silently
+ * change the reported category and override that choice. DEL (0x7f) is left
+ * out too -- it is not a C0 control and shows up in enough legacy junk to be a
+ * false-positive risk without a real attack behind it.
+ */
+static ngx_int_t
+ngx_http_shield_check_ctrl_char(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
+{
+    size_t   i;
+    u_char   c;
+
+    if (slcf->skip & ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_CTRL_CHAR)) {
+        return NGX_DECLINED;
+    }
+
+    /* r->uri is the decoded path: nginx has already percent-decoded it, so a
+     * "%01" in the request line is a 0x01 byte here. The query string is not
+     * decoded by nginx and is covered by the signature scan instead. */
+    for (i = 0; i < r->uri.len; i++) {
+        c = r->uri.data[i];
+
+        if (c >= 0x20) {
+            continue;
+        }
+
+        if (c == '\0' || c == CR || c == LF) {
+            continue;   /* owned by nullbyte / crlf */
+        }
+
+        hit->category = NGX_HTTP_SHIELD_NAME_CTRL_CHAR;
+        hit->source = "uri";
+        return NGX_OK;
+    }
+
+    return NGX_DECLINED;
+}
+
+
 /* ---- pre-body inspection (request target + headers) -------------------- */
 
 static ngx_int_t
@@ -408,6 +461,10 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     }
 
     if (ngx_http_shield_check_range(r, slcf, hit) == NGX_OK) {
+        return NGX_OK;
+    }
+
+    if (ngx_http_shield_check_ctrl_char(r, slcf, hit) == NGX_OK) {
         return NGX_OK;
     }
 
@@ -1149,6 +1206,13 @@ ngx_http_shield_cat_by_name(ngx_str_t *name)
            == 0)
     {
         return NGX_HTTP_SHIELD_CAT_RANGE_DOS;
+    }
+
+    if (name->len == sizeof(NGX_HTTP_SHIELD_NAME_CTRL_CHAR) - 1
+        && ngx_strncmp(name->data, NGX_HTTP_SHIELD_NAME_CTRL_CHAR, name->len)
+           == 0)
+    {
+        return NGX_HTTP_SHIELD_CAT_CTRL_CHAR;
     }
 
     return -1;

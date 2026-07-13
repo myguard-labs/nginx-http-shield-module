@@ -259,3 +259,19 @@ GET /t?next=/api/setup/validate
 --- request
 GET /t?q=how%20does%20sleep(3)%20work%20in%20mysql
 --- error_code: 200
+
+=== TEST 34: a UTF-8 path is not a control character
+# ctrl_char flags C0 bytes (< 0x20) only. UTF-8 continuation bytes are >= 0x80
+# and must not trip it, or every non-ASCII URL on the internet breaks.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/caf%C3%A9/%E6%97%A5%E6%9C%AC
+--- error_code: 200
+
+=== TEST 35: a tab-free ordinary path with punctuation is not a control char
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/a-b_c.d~e/f%20g
+--- error_code: 200
