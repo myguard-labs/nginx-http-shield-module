@@ -173,3 +173,58 @@ Content-Type: application/json
 --- request
 GET /t/api/token?grant_type=client_credentials
 --- error_code: 200
+
+=== TEST 23: an SQL tutorial query mentioning sleep() as prose
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=how+to+use+sleep(5)+in+mysql
+--- error_code: 200
+
+=== TEST 24: a legitimate WordPress wp.getUsersBlogs XML-RPC call
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+<methodCall><methodName>wp.getUsersBlogs</methodName></methodCall>"
+--- more_headers
+Content-Type: text/xml
+--- error_code: 405
+
+=== TEST 25: a normal Microsoft Autodiscover request
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/autodiscover/autodiscover.json?Email=user@example.com&Protocol=Autodiscoverv1
+--- error_code: 200
+
+=== TEST 26: time-based SQLi in quote context is still blocked
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?id=1'+or+sleep(5)--
+--- error_code: 403
+
+=== TEST 27: ProxyShell path-confusion Autodiscover SSRF is still blocked
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?p=/autodiscover/autodiscover.json?@evil.com/mapi/nspi/
+--- error_code: 403
+
+=== TEST 28: encoded ProxyShell path-confusion marker is still blocked
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?p=autodiscover.json%3f@evil.com/powershell
+--- error_code: 403
+
+=== TEST 29: xmlrpc system.multicall amplification is still blocked
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+<methodCall><methodName>system.multicall</methodName></methodCall>"
+--- more_headers
+Content-Type: text/xml
+--- error_code: 403

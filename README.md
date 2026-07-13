@@ -25,7 +25,7 @@ Run a real WAF on top where you need one.
 
 ## What it blocks
 
-28 categories (≈405 signatures), all matched case-insensitively after
+28 categories (≈400 signatures), all matched case-insensitively after
 percent-decoding:
 
 | Category | Examples |
