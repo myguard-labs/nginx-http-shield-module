@@ -54,6 +54,21 @@ mkdir -p "$ROOT"
 if [ ! -f "$ROOT/${DIR}.tar.gz" ]; then
     curl -fsSL "$URL" -o "$ROOT/${DIR}.tar.gz"
 fi
+
+# Verify BEFORE extraction, and verify the cached copy too: a poisoned Actions
+# cache is exactly as dangerous as a poisoned mirror, and HTTPS stops neither.
+# An unrecorded version is a hard failure, never a silent trust decision.
+DIGESTS="$MODULE_DIR/tools/sources.sha256"
+if ! grep -qE "[[:space:]]${DIR}\.tar\.gz\$" "$DIGESTS"; then
+    echo "no recorded sha256 for ${DIR}.tar.gz in tools/sources.sha256." >&2
+    echo "Verify the upstream PGP signature, then record its digest." >&2
+    exit 3
+fi
+(
+    cd "$ROOT"
+    grep -E "[[:space:]]${DIR}\.tar\.gz\$" "$DIGESTS" | sha256sum -c -
+)
+
 if [ ! -d "$ROOT/$DIR" ]; then
     tar -xzf "$ROOT/${DIR}.tar.gz" -C "$ROOT"
 fi
