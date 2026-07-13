@@ -81,6 +81,7 @@ typedef enum {
     NGX_HTTP_SHIELD_CAT_NOSQL,
     NGX_HTTP_SHIELD_CAT_SSTI,
     NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH,
+    NGX_HTTP_SHIELD_CAT_CTRL_CHAR,
     NGX_HTTP_SHIELD_CAT_N            /* count -- keep last */
 } ngx_http_shield_cat_e;
 
@@ -718,6 +719,7 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
 /* Structural categories carry names too, for shield_skip + logging. */
 #define NGX_HTTP_SHIELD_NAME_HTTPOXY    "httpoxy"
 #define NGX_HTTP_SHIELD_NAME_RANGE_DOS  "range_dos"
+#define NGX_HTTP_SHIELD_NAME_CTRL_CHAR  "ctrl_char"
 
 
 /* ---- AND-rules: categories that require several tokens to co-occur ------ */

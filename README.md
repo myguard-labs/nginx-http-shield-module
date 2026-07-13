@@ -28,7 +28,7 @@ Run a real WAF on top where you need one.
 
 ## What it blocks
 
-28 categories (≈400 signatures), all matched case-insensitively after
+29 categories (≈400 signatures), all matched case-insensitively after
 percent-decoding:
 
 | Category | Examples |
@@ -55,6 +55,7 @@ percent-decoding:
 | `imagetragick` | `push graphic-context` (CVE-2016-3714) |
 | `httpoxy` | a request-borne `Proxy:` header (CVE-2016-5385) |
 | `range_dos` | a `Range:` header with more than 10 ranges (CVE-2011-3192) |
+| `ctrl_char` | a C0 control byte in the decoded path (`%01`, `%1b`, …) — nginx itself rejects the *raw* form, so only the encoded one gets this far |
 | `sensitive_file` | `/.env`, `/.git/`, `wp-config.php.bak`, `/.aws/credentials` |
 | `webshell` | `c99.php`, `r57.php`, `wso.php`, `weevely`, `behinder`, `shell.php?cmd=` |
 | `ssrf_meta` | `169.254.169.254`, `100.100.100.200` (Alibaba), `192.0.0.192` (Oracle), `metadata.google.internal`, IMDSv2 `/latest/api/token`, `iam/security-credentials/`, decimal/hex IMDS IPs |
@@ -121,7 +122,7 @@ http {
 | `shield_body` | http, server, location | `on` | Inspect the request body (text-shaped content types only). |
 | `shield_max_body` | http, server, location | `8k` | Bytes of body scanned. Larger bodies are passed through unscanned — uploads are never blocked for being big. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
-| `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus `httpoxy` and `range_dos`). |
+| `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus `httpoxy`, `range_dos` and `ctrl_char`). |
 
 ### Rollout
 
@@ -136,8 +137,8 @@ http {
 The module runs in the `PRECONTENT` phase. For each request it builds two
 normalized copies of every inspected input — a lowercased raw copy and a
 percent-decoded (once), `+`→space, lowercased copy — and runs every enabled
-category's patterns over them in a **single Aho-Corasick pass per buffer**. Two
-categories (`httpoxy`, `range_dos`) are structural checks rather than
+category's patterns over them in a **single Aho-Corasick pass per buffer**. Three
+categories (`httpoxy`, `range_dos`, `ctrl_char`) are structural checks rather than
 literal matches. There is no regex and no per-request allocation beyond the two
 scratch buffers, so the cost is a few microseconds on typical request sizes.
 

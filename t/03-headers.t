@@ -78,3 +78,49 @@ GET /t
 --- more_headers
 Proxy: http://attacker:8080
 --- error_code: 200
+
+=== TEST 9: an encoded control byte in the path is blocked
+# nginx rejects a RAW control byte in the request line with 400, so only the
+# percent-encoded form reaches a phase handler -- and it arrives decoded, as a
+# real control byte, in r->uri. No legitimate client sends one.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t%01x
+--- error_code: 403
+
+=== TEST 10: the control-byte check reports the ctrl_char category
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t%01x
+--- error_log
+category=ctrl_char
+--- error_code: 403
+
+=== TEST 11: an ESC byte in the path is blocked too
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t%1bx
+--- error_code: 403
+
+=== TEST 12: the control-byte check can be skipped
+--- config
+    location /t { shield block; shield_skip ctrl_char; empty_gif; }
+--- request
+GET /t%01x
+--- error_code: 200
+
+=== TEST 13: NUL in the QUERY STRING stays with the nullbyte category
+# ctrl_char deliberately does not take over the bytes that already have a more
+# precise category -- an operator who skipped nullbyte must keep that choice.
+# (An encoded NUL in the PATH never gets here: nginx 400s it in the parser.
+# The query string is not decoded by nginx, so it reaches the signature scan.)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?x=%00
+--- error_log
+category=nullbyte
+--- error_code: 403
