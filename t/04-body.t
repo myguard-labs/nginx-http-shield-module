@@ -89,3 +89,21 @@ Content-Type: application/x-www-form-urlencoded
 --- more_headers
 Content-Type: application/x-www-form-urlencoded
 --- error_code: 403
+
+=== TEST 9: default shield_max_body is 8k -- attack inside it is caught
+--- config
+    location /t { shield block; empty_gif; }
+--- request eval
+"POST /t\n" . ("x=" . ("a" x 6000) . "&q=union select 1")
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 403
+
+=== TEST 10: default shield_max_body is 8k -- attack past it is not scanned
+--- config
+    location /t { shield block; empty_gif; }
+--- request eval
+"POST /t\n" . ("x=" . ("a" x 12000) . "&q=union select 1")
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 405
