@@ -173,6 +173,13 @@ done:
  * correct -- is the reference; any divergence aborts and libFuzzer saves the
  * input.
  *
+ * Keep this port in lockstep with the module. out[] is a MASK of the categories
+ * accepting at a state, not a single id: one state can accept several (shared
+ * signature string, or a short signature ending inside a longer one from
+ * another category, unioned along fail links). Storing one id per state is
+ * exactly the detection bypass this harness caught -- the naive oracle checks
+ * every signature independently and so never had it.
+ *
  * Note: this asserts hit/no-hit parity, NOT same-category. The naive scan is
  * category-major (first matching category in table order) while AC is
  * buffer-major (whole RAW automaton, then whole DECODED); on an input matching
@@ -183,7 +190,7 @@ done:
 
 typedef struct {
     uint16_t  *next;   /* [nstates][256] */
-    int       *out;    /* [nstates] category enum, or -1 */
+    uint64_t  *out;    /* [nstates] accepting-category mask */
     size_t     nstates;
 } ac_t;
 
@@ -197,7 +204,7 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
     size_t     i, j, k, cap, nstates, head, tail;
     ngx_uint_t b;
     uint16_t  *next, *queue, *fail, s, v, f;
-    int       *out;
+    uint64_t  *out;
 
     cap = 1;
     for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
@@ -214,15 +221,11 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
     }
 
     next = calloc(cap * AC_ALPHABET, sizeof(*next));
-    out = malloc(cap * sizeof(*out));
+    out = calloc(cap, sizeof(*out));
     queue = malloc(cap * sizeof(*queue));
     fail = calloc(cap, sizeof(*fail));
     if (next == NULL || out == NULL || queue == NULL || fail == NULL) {
         abort();
-    }
-
-    for (i = 0; i < cap; i++) {
-        out[i] = -1;
     }
 
     nstates = 1;
@@ -241,9 +244,7 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
                 }
                 s = next[(size_t) s * AC_ALPHABET + b];
             }
-            if (out[s] < 0) {
-                out[s] = (int) ngx_http_shield_categories[i].cat;
-            }
+            out[s] |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
         }
     }
 
@@ -264,9 +265,7 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
                 continue;
             }
             fail[v] = f;
-            if (out[v] < 0) {
-                out[v] = out[f];
-            }
+            out[v] |= out[f];
             queue[tail++] = v;
         }
     }
@@ -283,13 +282,15 @@ static int
 ac_scan_fuzz(const ac_t *ac, u_char *data, size_t len, uint64_t skip)
 {
     size_t    i;
-    int       cat;
     uint16_t  s = 0;
 
     for (i = 0; i < len; i++) {
         s = ac->next[(size_t) s * AC_ALPHABET + data[i]];
-        cat = ac->out[s];
-        if (cat >= 0 && !(skip & ((uint64_t) 1 << cat))) {
+
+        /* out[s] is the SET of categories accepting here; ~skip drops the
+         * disabled ones. Hit/no-hit only -- the caller does not care which
+         * category, so no table-order tiebreak is needed (unlike the module). */
+        if (ac->out[s] & ~skip) {
             return 1;
         }
     }

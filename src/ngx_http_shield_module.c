@@ -547,6 +547,25 @@ static ngx_http_shield_ac_t  ngx_http_shield_ac_decoded;
 static ngx_http_shield_ac_t  ngx_http_shield_ac_raw;
 
 
+/* Index of the lowest set bit. Only ever called with m != 0. */
+static ngx_inline ngx_uint_t
+ngx_http_shield_ac_lowest_bit(uint64_t m)
+{
+#if (__GNUC__ || __clang__)
+    return (ngx_uint_t) __builtin_ctzll(m);
+#else
+    ngx_uint_t  n = 0;
+
+    while (!(m & 1)) {
+        m >>= 1;
+        n++;
+    }
+
+    return n;
+#endif
+}
+
+
 /*
  * Build the automaton over every signature of every category carrying `match`.
  *
@@ -554,9 +573,10 @@ static ngx_http_shield_ac_t  ngx_http_shield_ac_raw;
  * them into the goto table, so the scan never walks a fail chain -- each input
  * byte is exactly one array lookup.
  *
- * Output states are propagated along fail links (out[v] inherits out[fail[v]]
- * when unset), which is what lets a short signature be found while the trie is
- * deep inside a longer one that shares its prefix.
+ * Output sets are UNIONED along fail links (out[v] |= out[fail[v]]), which is
+ * what lets a short signature be found while the trie is deep inside a longer
+ * one that shares its suffix -- including when the two belong to different
+ * categories, which is why out[] is a mask rather than a single category id.
  */
 static ngx_int_t
 ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
@@ -565,7 +585,7 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
     size_t                       i, j, k, cap, nstates, head, tail;
     ngx_uint_t                   b;
     ngx_pool_t                  *temp;
-    ngx_int_t                   *out;
+    uint64_t                    *out;
     ngx_http_shield_ac_state_t  *next, *queue, *fail, s, v, f;
 
     /* Upper bound on trie size: one state per signature byte, plus the root.
@@ -593,7 +613,7 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
      * in a temporary pool that is destroyed before this function returns. */
     next = ngx_pcalloc(cf->pool,
                        cap * NGX_HTTP_SHIELD_AC_ALPHABET * sizeof(*next));
-    out = ngx_palloc(cf->pool, cap * sizeof(*out));
+    out = ngx_pcalloc(cf->pool, cap * sizeof(*out));
 
     if (next == NULL || out == NULL) {
         return NGX_ERROR;
@@ -612,8 +632,16 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
         return NGX_ERROR;
     }
 
-    for (i = 0; i < cap; i++) {
-        out[i] = -1;
+    /* Reverse index: accepting-mask bit -> category table row. Only rows in
+     * THIS automaton are mapped; bits for the others are never set in out[]. */
+    for (i = 0; i < 64; i++) {
+        ac->row[i] = NGX_HTTP_SHIELD_NCATEGORIES;
+    }
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
+        if (ngx_http_shield_categories[i].match & match) {
+            ac->row[ngx_http_shield_categories[i].cat] = (ngx_uint_t) i;
+        }
     }
 
     /* Pass 1: goto-trie. State 0 is the root; 0 in next[] means "absent" here,
@@ -643,12 +671,10 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
                 s = next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b];
             }
 
-            /* First writer wins: if two categories share a signature, the
-             * earlier category owns it. Deterministic, and matches the old
-             * engine, which scanned categories in table order. */
-            if (out[s] < 0) {
-                out[s] = (ngx_int_t) i;
-            }
+            /* Accept for THIS category, without evicting any other category
+             * that also accepts here (two categories may share a signature
+             * string). ac_scan resolves a multi-category state by table order. */
+            out[s] |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
         }
     }
 
@@ -682,9 +708,11 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
 
             fail[v] = f;
 
-            if (out[v] < 0) {
-                out[v] = out[f];
-            }
+            /* UNION, not copy-if-unset: v may already accept its own category
+             * while its fail state f accepts a different one (a shorter
+             * signature ending at the same offset). Keeping only the first
+             * dropped the other -- the detection bypass this replaces. */
+            out[v] |= out[f];
 
             queue[tail++] = v;
         }
@@ -767,19 +795,25 @@ ngx_http_shield_scan_input(ngx_http_request_t *r,
 
 
 /*
- * One pass over the buffer for every signature in the automaton. out[] holds
- * the index of the category table row that owns the accepting state. A hit in
- * a category disabled via shield_skip is stepped over and the scan continues,
- * so a skipped category can never mask a live one behind it.
+ * One pass over the buffer for every signature in the automaton. out[s] is the
+ * set of categories accepting at state s, as a bitmask; masking it with ~skip
+ * drops the categories disabled via shield_skip in one operation, so a skipped
+ * category can neither be reported nor mask a live one sharing its state.
+ *
+ * A state may accept several live categories at once. The winner is the one
+ * with the lowest CATEGORY TABLE ROW, which is the category the old per-
+ * signature engine would have reported (it scanned the table in order). Bit
+ * position is deliberately not used as the tiebreak: it tracks the enum, and
+ * the enum and the table are free to diverge.
  */
 static const ngx_http_shield_catdef_t *
 ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
     size_t len, uint64_t skip)
 {
-    size_t                           i;
-    ngx_int_t                        row;
-    const ngx_http_shield_catdef_t  *cat;
-    ngx_http_shield_ac_state_t       s = 0;
+    size_t                      i;
+    uint64_t                    live;
+    ngx_uint_t                  row, best;
+    ngx_http_shield_ac_state_t  s = 0;
 
     if (ac->nstates == 0) {
         return NULL;
@@ -788,15 +822,23 @@ ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
     for (i = 0; i < len; i++) {
         s = ac->next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + data[i]];
 
-        row = ac->out[s];
-        if (row < 0) {
+        live = ac->out[s] & ~skip;
+        if (live == 0) {
             continue;
         }
 
-        cat = &ngx_http_shield_categories[row];
+        best = NGX_HTTP_SHIELD_NCATEGORIES;
 
-        if (!(skip & ((uint64_t) 1 << cat->cat))) {
-            return cat;
+        do {
+            row = ac->row[ngx_http_shield_ac_lowest_bit(live)];
+            if (row < best) {
+                best = row;
+            }
+            live &= live - 1;   /* clear lowest set bit */
+        } while (live);
+
+        if (best < NGX_HTTP_SHIELD_NCATEGORIES) {
+            return &ngx_http_shield_categories[best];
         }
     }
 

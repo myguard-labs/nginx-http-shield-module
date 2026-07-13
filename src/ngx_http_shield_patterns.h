@@ -707,9 +707,18 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
  * hostile all-'/' buffer costs the same as a benign one.
  *
  * Two automatons are built because categories disagree about which buffer they
- * apply to (MATCH_DECODED / MATCH_RAW). Each accepting state records the
- * CATEGORY it belongs to, so a hit in a category disabled via shield_skip is
- * stepped over and the scan continues -- per-location skip still works.
+ * apply to (MATCH_DECODED / MATCH_RAW). Each accepting state records the SET of
+ * categories accepting there, as a bitmask over ngx_http_shield_cat_e -- the
+ * same bit space as shield_skip, so the scan's accept test is a single
+ * out[s] & ~skip. A hit in a category disabled via shield_skip is stepped over
+ * and the scan continues -- per-location skip still works.
+ *
+ * The set must be a MASK, not a single id: one state can accept signatures from
+ * several categories at once, either because they share a signature string or
+ * because a short signature ends inside a longer one from another category
+ * (out is unioned along fail links). Storing one id per state silently dropped
+ * every category but the first -- a detection bypass, e.g. the traversal "../"
+ * tail of an exploit_path signature going unreported.
  *
  * Built once at postconfiguration from cf->pool, then read-only for the life
  * of the cycle: no per-request allocation, no locking, safe to share.
@@ -725,10 +734,20 @@ typedef uint16_t  ngx_http_shield_ac_state_t;
 
 #define NGX_HTTP_SHIELD_AC_MAX_STATES  65535
 
+/* out[] is a bitmask over ngx_http_shield_cat_e, so the category space must fit
+ * in a uint64. shield_skip already assumes this; assert it once, here. */
+typedef char ngx_http_shield_cat_fits_in_mask[
+    (NGX_HTTP_SHIELD_CAT_N <= 64) ? 1 : -1];
+
 typedef struct {
     ngx_http_shield_ac_state_t  *next;   /* [nstates][256] goto table        */
-    ngx_int_t                   *out;    /* [nstates] category id, or -1     */
+    uint64_t                    *out;    /* [nstates] accepting-category mask */
     ngx_uint_t                   nstates;
+
+    /* bit -> ngx_http_shield_categories[] row, for reporting a hit. Set to
+     * NGX_HTTP_SHIELD_NCATEGORIES for categories with no table in this
+     * automaton (never set in out[], so never looked up). */
+    ngx_uint_t                   row[64];
 } ngx_http_shield_ac_t;
 
 #endif /* NGX_HTTP_SHIELD_PATTERNS_H_INCLUDED_ */
