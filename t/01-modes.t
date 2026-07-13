@@ -74,3 +74,24 @@ GET /t?f=../../etc/passwd
 --- request
 GET /t?id=1%20union%20select%20pw
 --- error_code: 403
+
+=== TEST 10: a skipped category does not mask a live one later in the buffer
+--- config
+    location /t { shield block; shield_skip sqli; empty_gif; }
+--- request
+GET /t?a=union%20select%201&b=../../etc/passwd
+--- error_code: 403
+
+=== TEST 11: skipped-first ordering holds in the other direction too
+--- config
+    location /t { shield block; shield_skip traversal; empty_gif; }
+--- request
+GET /t?a=../../etc/passwd&b=union%20select%201
+--- error_code: 403
+
+=== TEST 12: skipping every category that matches still passes the request
+--- config
+    location /t { shield block; shield_skip sqli traversal; empty_gif; }
+--- request
+GET /t?a=union%20select%201&b=../../etc/passwd
+--- error_code: 200

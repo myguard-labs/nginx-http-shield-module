@@ -10,9 +10,10 @@
  * large, mixed, not-fully-patched customer base.
  *
  * Signatures live in ngx_http_shield_patterns.h. The engine here normalizes
- * each input (percent-decode once, lowercase, '+' -> space) and runs a plain
- * substring scan of every enabled category's patterns over it, plus two
- * structural checks (httpoxy Proxy header, Apache-Killer Range).
+ * each input (percent-decode once, lowercase, '+' -> space) and matches every
+ * signature against it in a single Aho-Corasick pass, plus two structural
+ * checks (httpoxy Proxy header, Apache-Killer Range). Scan cost is O(bytes)
+ * and independent of the size of the signature set.
  *
  * Runs in the PRECONTENT phase so that, when body inspection is enabled, it
  * can read the request body and then resume phase processing -- the same
@@ -68,8 +69,10 @@ static ngx_int_t ngx_http_shield_act(ngx_http_request_t *r,
 static ngx_int_t ngx_http_shield_scan_input(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, u_char *data, size_t len,
     const char *source, ngx_http_shield_hit_t *hit);
-static u_char *ngx_http_shield_memmem(u_char *haystack, size_t hlen,
-    const char *needle, size_t nlen);
+static ngx_int_t ngx_http_shield_ac_build(ngx_conf_t *cf,
+    ngx_http_shield_ac_t *ac, ngx_uint_t match);
+static const ngx_http_shield_catdef_t *ngx_http_shield_ac_scan(
+    const ngx_http_shield_ac_t *ac, u_char *data, size_t len, uint64_t skip);
 static ngx_int_t ngx_http_shield_scannable_body(ngx_http_request_t *r);
 
 static void *ngx_http_shield_create_loc_conf(ngx_conf_t *cf);
@@ -536,6 +539,167 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
 }
 
 
+/* ---- Aho-Corasick ------------------------------------------------------ */
+
+/* Built once at postconfiguration, read-only thereafter. One automaton per
+ * buffer flavour, because categories disagree about which buffer they scan. */
+static ngx_http_shield_ac_t  ngx_http_shield_ac_decoded;
+static ngx_http_shield_ac_t  ngx_http_shield_ac_raw;
+
+
+/*
+ * Build the automaton over every signature of every category carrying `match`.
+ *
+ * Two passes: a goto-trie, then a BFS that resolves fail links and flattens
+ * them into the goto table, so the scan never walks a fail chain -- each input
+ * byte is exactly one array lookup.
+ *
+ * Output states are propagated along fail links (out[v] inherits out[fail[v]]
+ * when unset), which is what lets a short signature be found while the trie is
+ * deep inside a longer one that shares its prefix.
+ */
+static ngx_int_t
+ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
+    ngx_uint_t match)
+{
+    size_t                       i, j, k, cap, nstates, head, tail;
+    ngx_uint_t                   b;
+    ngx_pool_t                  *temp;
+    ngx_int_t                   *out;
+    ngx_http_shield_ac_state_t  *next, *queue, *fail, s, v, f;
+
+    /* Upper bound on trie size: one state per signature byte, plus the root.
+     * The BFS below never creates a state, so this is never exceeded. */
+    cap = 1;
+    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
+        if (!(ngx_http_shield_categories[i].match & match)) {
+            continue;
+        }
+        for (j = 0; j < ngx_http_shield_categories[i].nsigs; j++) {
+            cap += ngx_http_shield_categories[i].sigs[j].len;
+        }
+    }
+
+    if (cap > NGX_HTTP_SHIELD_AC_MAX_STATES) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "shield: signature set too large for the "
+                           "automaton (%uz states, max %d)",
+                           cap, NGX_HTTP_SHIELD_AC_MAX_STATES);
+        return NGX_ERROR;
+    }
+
+    /* next[] and out[] outlive the build and are read by every request, so
+     * they come from cf->pool. queue[] and fail[] are build scratch: they go
+     * in a temporary pool that is destroyed before this function returns. */
+    next = ngx_pcalloc(cf->pool,
+                       cap * NGX_HTTP_SHIELD_AC_ALPHABET * sizeof(*next));
+    out = ngx_palloc(cf->pool, cap * sizeof(*out));
+
+    if (next == NULL || out == NULL) {
+        return NGX_ERROR;
+    }
+
+    temp = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, cf->log);
+    if (temp == NULL) {
+        return NGX_ERROR;
+    }
+
+    queue = ngx_palloc(temp, cap * sizeof(*queue));
+    fail = ngx_pcalloc(temp, cap * sizeof(*fail));
+
+    if (queue == NULL || fail == NULL) {
+        ngx_destroy_pool(temp);
+        return NGX_ERROR;
+    }
+
+    for (i = 0; i < cap; i++) {
+        out[i] = -1;
+    }
+
+    /* Pass 1: goto-trie. State 0 is the root; 0 in next[] means "absent" here,
+     * which is unambiguous because the root can never be a target. */
+    nstates = 1;
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
+        if (!(ngx_http_shield_categories[i].match & match)) {
+            continue;
+        }
+
+        for (j = 0; j < ngx_http_shield_categories[i].nsigs; j++) {
+            const ngx_http_shield_sig_t  *sig =
+                &ngx_http_shield_categories[i].sigs[j];
+
+            s = 0;
+
+            for (k = 0; k < sig->len; k++) {
+                b = (u_char) sig->s[k];
+
+                if (next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b] == 0) {
+                    next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b] =
+                        (ngx_http_shield_ac_state_t) nstates;
+                    nstates++;
+                }
+
+                s = next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b];
+            }
+
+            /* First writer wins: if two categories share a signature, the
+             * earlier category owns it. Deterministic, and matches the old
+             * engine, which scanned categories in table order. */
+            if (out[s] < 0) {
+                out[s] = (ngx_int_t) i;
+            }
+        }
+    }
+
+    /* Pass 2: BFS. Resolve fail links and flatten them into next[], so an
+     * absent transition already points at the correct fallback state. */
+    head = 0;
+    tail = 0;
+
+    for (b = 0; b < NGX_HTTP_SHIELD_AC_ALPHABET; b++) {
+        v = next[b];
+        if (v != 0) {
+            queue[tail++] = v;
+        }
+    }
+
+    while (head < tail) {
+        s = queue[head++];
+
+        /* fail(s) is already flattened into next[] by the time s is dequeued,
+         * because BFS visits s's parent before s. */
+        for (b = 0; b < NGX_HTTP_SHIELD_AC_ALPHABET; b++) {
+            v = next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b];
+
+            /* fail state of s, reached via this byte */
+            f = next[(size_t) fail[s] * NGX_HTTP_SHIELD_AC_ALPHABET + b];
+
+            if (v == 0) {
+                next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b] = f;
+                continue;
+            }
+
+            fail[v] = f;
+
+            if (out[v] < 0) {
+                out[v] = out[f];
+            }
+
+            queue[tail++] = v;
+        }
+    }
+
+    ngx_destroy_pool(temp);
+
+    ac->next = next;
+    ac->out = out;
+    ac->nstates = nstates;
+
+    return NGX_OK;
+}
+
+
 /* ---- normalization + scan ---------------------------------------------- */
 
 /*
@@ -554,7 +718,7 @@ ngx_http_shield_scan_input(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, u_char *data, size_t len,
     const char *source, ngx_http_shield_hit_t *hit)
 {
-    size_t                           i, j, dlen;
+    size_t                           i, dlen;
     u_char                          *raw_lc, *dec, *dst, *src;
     const ngx_http_shield_catdef_t  *cat;
 
@@ -582,56 +746,57 @@ ngx_http_shield_scan_input(ngx_http_request_t *r,
     }
     ngx_strlow(dec, dec, dlen);
 
-    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
-        cat = &ngx_http_shield_categories[i];
+    cat = ngx_http_shield_ac_scan(&ngx_http_shield_ac_raw, raw_lc, len,
+                                  slcf->skip);
+    if (cat != NULL) {
+        hit->category = cat->name;
+        hit->source = source;
+        return NGX_OK;
+    }
 
-        if (slcf->skip & ((uint64_t) 1 << cat->cat)) {
-            continue;
-        }
-
-        for (j = 0; j < cat->nsigs; j++) {
-            const ngx_http_shield_sig_t  *sig = &cat->sigs[j];
-
-            if ((cat->match & NGX_HTTP_SHIELD_MATCH_RAW)
-                && ngx_http_shield_memmem(raw_lc, len, sig->s, sig->len)
-                   != NULL)
-            {
-                hit->category = cat->name;
-                hit->source = source;
-                return NGX_OK;
-            }
-
-            if ((cat->match & NGX_HTTP_SHIELD_MATCH_DECODED)
-                && ngx_http_shield_memmem(dec, dlen, sig->s, sig->len) != NULL)
-            {
-                hit->category = cat->name;
-                hit->source = source;
-                return NGX_OK;
-            }
-        }
+    cat = ngx_http_shield_ac_scan(&ngx_http_shield_ac_decoded, dec, dlen,
+                                  slcf->skip);
+    if (cat != NULL) {
+        hit->category = cat->name;
+        hit->source = source;
+        return NGX_OK;
     }
 
     return NGX_DECLINED;
 }
 
 
-static u_char *
-ngx_http_shield_memmem(u_char *haystack, size_t hlen, const char *needle,
-    size_t nlen)
+/*
+ * One pass over the buffer for every signature in the automaton. out[] holds
+ * the index of the category table row that owns the accepting state. A hit in
+ * a category disabled via shield_skip is stepped over and the scan continues,
+ * so a skipped category can never mask a live one behind it.
+ */
+static const ngx_http_shield_catdef_t *
+ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
+    size_t len, uint64_t skip)
 {
-    u_char  *p, *last;
+    size_t                           i;
+    ngx_int_t                        row;
+    const ngx_http_shield_catdef_t  *cat;
+    ngx_http_shield_ac_state_t       s = 0;
 
-    if (nlen == 0 || hlen < nlen) {
+    if (ac->nstates == 0) {
         return NULL;
     }
 
-    last = haystack + hlen - nlen;
+    for (i = 0; i < len; i++) {
+        s = ac->next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + data[i]];
 
-    for (p = haystack; p <= last; p++) {
-        if (*p == (u_char) needle[0]
-            && ngx_memcmp(p, needle, nlen) == 0)
-        {
-            return p;
+        row = ac->out[s];
+        if (row < 0) {
+            continue;
+        }
+
+        cat = &ngx_http_shield_categories[row];
+
+        if (!(skip & ((uint64_t) 1 << cat->cat))) {
+            return cat;
         }
     }
 
@@ -800,6 +965,23 @@ ngx_http_shield_init(ngx_conf_t *cf)
 {
     ngx_http_handler_pt        *h;
     ngx_http_core_main_conf_t  *cmcf;
+
+    /* Build both automatons once, here, from the compiled-in tables. Failure
+     * is fatal: running with a half-built automaton would silently stop
+     * matching signatures. */
+    if (ngx_http_shield_ac_build(cf, &ngx_http_shield_ac_decoded,
+                                 NGX_HTTP_SHIELD_MATCH_DECODED)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_shield_ac_build(cf, &ngx_http_shield_ac_raw,
+                                 NGX_HTTP_SHIELD_MATCH_RAW)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
