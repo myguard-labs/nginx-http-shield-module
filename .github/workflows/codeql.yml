@@ -1,0 +1,66 @@
+name: CodeQL
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NGINX_VERSION: "1.31.1"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Monthly, day 4 @ 04:47 UTC (staggered per repo like ci-deep).
+    - cron: "47 4 4 * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze C
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl libpcre2-dev zlib1g-dev
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        with:
+          languages: c-cpp
+          queries: security-extended
+          config: |
+            paths:
+              - src/ngx_http_shield_module.c
+            paths-ignore:
+              - .build/**
+
+      # CI-7: reuse the downloaded nginx tarball across runs.
+      - name: Cache source tarball
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .build/nginx-${{ env.NGINX_VERSION }}.tar.gz
+          key: src-nginx-${{ env.NGINX_VERSION }}
+
+      - name: Build traced source
+        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" debug
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        with:
+          category: /language:c-cpp

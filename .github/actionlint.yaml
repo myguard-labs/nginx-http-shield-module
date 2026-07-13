@@ -1,0 +1,6 @@
+self-hosted-runner:
+  # Custom labels for the myguard-labs builder02 self-hosted runner pool (incus LXC).
+  labels:
+    - builder02
+    - lxc
+    - docker

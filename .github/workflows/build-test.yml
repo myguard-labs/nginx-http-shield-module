@@ -1,0 +1,164 @@
+name: Build and Test
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NGINX_VERSION: "1.31.1"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    name: Validation
+    runs-on: [self-hosted, builder02, lxc]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck shellcheck
+
+      - name: Validate scripts and source
+        run: |
+          bash -n tools/ci-build.sh
+          shellcheck tools/ci-build.sh
+          cppcheck \
+            --enable=warning,performance,portability \
+            --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            --suppress=normalCheckLevelMaxBranches \
+            --suppress=unusedFunction \
+            --suppress=unusedStructMember \
+            -I src \
+            src/ngx_http_shield_module.c
+          git diff --check
+
+      - name: Lint workflows
+        run: |
+          version=1.7.7
+          base="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          tarball="actionlint_${version}_linux_amd64.tar.gz"
+          # Verify the tarball against the checksums file published in the same
+          # signed release before executing it, so a tampered asset fails.
+          curl -fsSL -o /tmp/actionlint.tgz "${base}/${tarball}"
+          curl -fsSL -o /tmp/actionlint.checksums \
+            "${base}/actionlint_${version}_checksums.txt"
+          ( cd /tmp && grep " ${tarball}\$" actionlint.checksums \
+              | sed 's#'"${tarball}"'#actionlint.tgz#' | sha256sum -c - )
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+          /tmp/actionlint -color .github/workflows/*.yml
+
+  build:
+    name: Build
+    runs-on: [self-hosted, builder02, lxc]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl libpcre2-dev zlib1g-dev
+
+      - name: Cache source tarball
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .build/nginx-${{ env.NGINX_VERSION }}.tar.gz
+          key: src-nginx-${{ env.NGINX_VERSION }}
+
+      - name: Build server and dynamic module
+        run: |
+          bash tools/ci-build.sh nginx "$NGINX_VERSION"
+          build=".build/nginx-${NGINX_VERSION}/objs"
+          test -f "$build/ngx_http_shield_module.so"
+
+      - name: Strict module compile
+        run: |
+          build=".build/nginx-${NGINX_VERSION}"
+          cflags=$(awk '/^CFLAGS[[:space:]]*=/{sub(/^CFLAGS[[:space:]]*=[[:space:]]*/,""); print; exit}' "$build/objs/Makefile")
+          incs=$(awk '/^ALL_INCS[[:space:]]*=/{found=1} found{line=$0; sub(/^ALL_INCS[[:space:]]*=[[:space:]]*/,"",line); continued=(line ~ /\\$/); gsub(/\\$/, "", line); printf "%s ", line; if (!continued) exit}' "$build/objs/Makefile")
+          # cflags and incs are compiler flag lists and must word-split.
+          # shellcheck disable=SC2086
+          (
+            cd "$build"
+            cc -c -fPIC $cflags \
+              -Wall -Wextra -Wshadow -Wstrict-prototypes \
+              -Wstrict-aliasing -Wunreachable-code -Werror \
+              -Wno-unused-parameter \
+              -I "$GITHUB_WORKSPACE/src" \
+              $incs "$GITHUB_WORKSPACE/src/ngx_http_shield_module.c" \
+              -o /tmp/module.o
+          )
+
+  test-nginx:
+    name: Test::Nginx
+    runs-on: [self-hosted, builder02, lxc]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl libpcre2-dev zlib1g-dev \
+            cpanminus libio-socket-ssl-perl
+          # Test::Nginx is not packaged on the runner; install it from CPAN.
+          sudo cpanm --notest --quiet Test::Nginx
+
+      - name: Build dynamic module
+        run: bash tools/ci-build.sh nginx "$NGINX_VERSION"
+
+      - name: Run t/
+        env:
+          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
+          TEST_NGINX_LOAD_MODULES: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/ngx_http_shield_module.so
+          TEST_NGINX_TIMEOUT: "20"
+        run: prove -v t/
+
+  asan:
+    name: ASan and UBSan
+    runs-on: [self-hosted, builder02, lxc]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl libpcre2-dev zlib1g-dev \
+            cpanminus libio-socket-ssl-perl
+          sudo cpanm --notest --quiet Test::Nginx
+
+      # Static + sanitizer build so the ASan/UBSan runtime is linked into the
+      # server binary; then drive every attack path through the Test::Nginx
+      # suite with halt-on-error so any memory or UB fault fails the job.
+      - name: Build with sanitizers
+        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" asan
+
+      - name: Run t/ under ASan and UBSan
+        env:
+          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
+          TEST_NGINX_TIMEOUT: "30"
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: prove -v t/

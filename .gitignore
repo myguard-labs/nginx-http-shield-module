@@ -1,0 +1,12 @@
+# Build output from tools/ci-build.sh
+.build/
+
+# Test::Nginx scratch
+t/servroot/
+t/*.t.tmp
+
+# Editor / OS
+*.o
+*.so
+*~
+.DS_Store
