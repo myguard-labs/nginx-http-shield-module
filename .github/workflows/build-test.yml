@@ -69,6 +69,14 @@ jobs:
           tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
           /tmp/actionlint -color .github/workflows/*.yml
 
+      - name: Audit workflows (zizmor)
+        run: |
+          # Pinned: an unpinned scanner is both a supply-chain risk and a
+          # source of surprise CI breakage. Fails the job on any finding, so a
+          # reintroduced template injection cannot merge.
+          pip install --quiet 'zizmor==1.26.1'
+          zizmor --no-progress .github/workflows/
+
   build:
     name: Build
     runs-on: ubuntu-latest
