@@ -236,6 +236,11 @@ tools/ci-build.sh nginx 1.31.1 debug
 USE_VALGRIND=1 tools/soak.sh .build/nginx-1.31.1/objs/nginx 120 4
 ```
 
+## See also
+
+- Blog article: [nginx-http-shield-module: Block Ancient Exploits Without a WAF](https://deb.myguard.nl/articles/nginx-http-shield-module/) —
+  what it blocks, the Aho-Corasick engine design, and a detect-to-block rollout guide.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
