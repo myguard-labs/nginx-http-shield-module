@@ -13,6 +13,11 @@ fuzz/leak-*
 fuzz/oom-*
 fuzz/timeout-*
 
+# libFuzzer corpus growth: every input it keeps is written back to the corpus
+# dir under its SHA1. The 16 hand-written seeds are word-named and stay tracked;
+# these accumulate by the hundred on every run and must never be committed.
+fuzz/corpus/fuzz_scan/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]
+
 # Editor / OS
 *.o
 *.so
