@@ -1,0 +1,37 @@
+# Valgrind leak/race suppressions for nginx CORE internals that are not this
+# module. Each is pinned to a specific nginx core frame, so a real fault in
+# shield code (which always carries an ngx_http_shield_* frame) is never hidden.
+#
+# The shield module is stateless per request -- it allocates two scratch
+# buffers from r->pool and frees nothing itself (the pool is torn down by
+# nginx). So the only expected noise is nginx's own never-freed startup arenas
+# and its process-shared shmtx semaphore, both suppressed below.
+
+{
+   nginx-set-environment-not-freed-at-exit
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   fun:malloc
+   fun:ngx_alloc
+   fun:ngx_set_environment
+}
+
+{
+   nginx-event-process-init-arena-not-freed-at-exit
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   fun:malloc
+   fun:ngx_alloc
+   fun:ngx_event_process_init
+}
+
+# ngx_shmtx is a process-shared POSIX semaphore in shm; the matching sem_post
+# comes from ANOTHER worker process, which helgrind's single-process view
+# cannot see ("Bug in libpthread: sem_wait succeeded on semaphore without prior
+# sem_post"). Match with a frame wildcard and pin on ngx_shmtx_lock.
+{
+   helgrind-ngx-shmtx-process-shared-semaphore
+   Helgrind:Misc
+   ...
+   fun:ngx_shmtx_lock
+}

@@ -113,3 +113,81 @@ GET /t?id=1;%20DROP%20TABLE%20users
 --- request
 GET /t?name=%7B%7B7*7%7D%7D&u%5B%24ne%5D=1
 --- error_code: 200
+
+
+=== TEST 15: third-pass exploit_path — vCenter uploadova (CVE-2021-21972)
+--- config
+    location /ui/vropspluginui/rest/services/uploadova { shield block; empty_gif; }
+--- request
+POST /ui/vropspluginui/rest/services/uploadova
+--- error_code: 403
+
+=== TEST 16: third-pass exploit_path — Citrix /vpn/../vpns/ (CVE-2019-19781)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/vpn/../vpns/cfg/smb.conf
+--- error_code: 403
+
+=== TEST 17: third-pass exploit_path — Fortinet sslvpn_websession (CVE-2018-13379)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/remote/fgt_lang?lang=/../../../..//////////dev/cmdb/sslvpn_websession
+--- error_code: 403
+
+=== TEST 18: third-pass exploit_path — OFBiz XML-RPC deserial path (CVE-2020-9496)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/webtools/control/xmlrpc
+--- error_code: 403
+
+=== TEST 19: third-pass exploit_path — OFBiz ProgramExport (CVE-2023-49070)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/webtools/control/ProgramExport
+--- error_code: 403
+
+=== TEST 20: Grafana plugin traversal (CVE-2021-43798) — caught by traversal cat
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?file=/public/plugins/alertlist/..%2f..%2f..%2f..%2fetc%2fpasswd
+--- error_code: 403
+
+=== TEST 21: third-pass exploit_path — F5 TMUI (CVE-2020-5902)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/tmui/login.jsp/..;/tmui/locallb/workspace/fileread.jsp
+--- error_code: 403
+
+=== TEST 22: third-pass java_rce — Confluence OGNL Runtime gadget (CVE-2022-26134)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/%24%7B%28%23a%3D@java.lang.Runtime@getRuntime%28%29.exec%28%22id%22%29%29%7D/
+--- error_code: 403
+
+=== TEST 23: third-pass java_rce — OGNL member-access bypass (Confluence)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?x=@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS
+--- error_code: 403
+
+=== TEST 24: third-pass ssrf — AWS IMDSv2 token endpoint
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?url=http://169.254.169.254/latest/api/token
+--- error_code: 403
+
+=== TEST 25: third-pass ssrf — IAM security-credentials tail
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?u=/latest/meta-data/iam/security-credentials/admin-role
+--- error_code: 403
