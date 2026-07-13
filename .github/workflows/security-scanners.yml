@@ -10,6 +10,11 @@ name: Security scanners
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Keep in sync with build-test.yml. Pinned, not scraped: the digest for this
+  # version is recorded in tools/sources.sha256 and verified before extraction.
+  NGINX_VERSION: "1.31.1"
+  # Pinned so a scanner release cannot silently change the gate.
+  SEMGREP_VERSION: "1.169.0"
 
 on:
   push:
@@ -44,22 +49,28 @@ jobs:
           # semgrep: isolate via pipx (PEP 668 blocks a bare pip3 install into
           # the system Python on the Ubuntu 24.04 self-hosted runner).
           if command -v pipx >/dev/null; then
-            pipx install --quiet semgrep
+            pipx install --quiet "semgrep==${SEMGREP_VERSION}"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           else
-            pip3 install --quiet --user --break-system-packages semgrep
+            pip3 install --quiet --user --break-system-packages \
+              "semgrep==${SEMGREP_VERSION}"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
       - name: Generate nginx build headers (for clang-tidy)
         run: |
-          # Analyze against the same latest-mainline nginx the build jobs use.
+          # Pinned to the same NGINX_VERSION the build jobs use, and verified
+          # against tools/sources.sha256 before extraction: scraping "latest"
+          # and executing its configure script trusts whatever the origin
+          # serves at that moment.
           set -euo pipefail
-          ver=$(curl -fsSL https://nginx.org/en/download.html \
-            | grep -oP 'nginx-\K[0-9]+\.[0-9]+\.[0-9]+(?=\.tar\.gz)' | sort -V | tail -1)
-          wget -q -O "$RUNNER_TEMP/nginx.tar.gz" \
-            "https://nginx.org/download/nginx-${ver}.tar.gz"
-          tar -xzf "$RUNNER_TEMP/nginx.tar.gz" -C "$RUNNER_TEMP"
-          mv "$RUNNER_TEMP/nginx-${ver}" "$RUNNER_TEMP/nginx-src"
+          tarball="nginx-${NGINX_VERSION}.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://nginx.org/download/$tarball"
+          ( cd "$RUNNER_TEMP" \
+            && grep -E "[[:space:]]${tarball}\$" \
+                 "$GITHUB_WORKSPACE/tools/sources.sha256" | sha256sum -c - )
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/nginx-${NGINX_VERSION}" "$RUNNER_TEMP/nginx-src"
           cd "$RUNNER_TEMP/nginx-src"
           CC=gcc ./configure --with-compat \
             --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null
@@ -90,10 +101,15 @@ jobs:
               -- $INCLUDES 2>&1 | tee -a clang-tidy.log || status=1
           done
           exit "$status"
-      - name: semgrep
+      - name: semgrep (gate)
         run: |
-          semgrep scan --config p/c --config p/security-audit \
-            "$GITHUB_WORKSPACE/src/" 2>&1 | tee semgrep.log || true
+          # --error makes a finding a non-zero exit; without it (and with the
+          # old `|| true`) both findings and a scanner crash produced a green
+          # job, so the advertised gate could not fail. set -o pipefail keeps
+          # `tee` from swallowing that status.
+          set -euo pipefail
+          semgrep scan --error --config p/c --config p/security-audit \
+            "$GITHUB_WORKSPACE/src/" 2>&1 | tee semgrep.log
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5

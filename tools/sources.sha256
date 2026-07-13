@@ -1,0 +1,12 @@
+# Digest allowlist for every source tarball CI downloads and executes.
+#
+# HTTPS protects the transport, not the origin: a compromised mirror, a mutable
+# re-cut release, or a poisoned Actions cache all survive it. Every tarball is
+# verified against this file before it is extracted, and an unknown version is
+# a hard failure rather than a silent trust decision.
+#
+# Each digest below was verified once against the upstream PGP signature (the
+# tarball's .asc, checked with the upstream signing key) before being recorded.
+#
+# Format: <sha256>  <tarball basename>
+9fcaaeb8f22544b09a19a761f3412c4112215422401634bebdd1296a403cc4bc  nginx-1.31.1.tar.gz
