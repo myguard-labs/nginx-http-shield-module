@@ -33,7 +33,7 @@ percent-decoding:
 
 | Category | Examples |
 |----------|----------|
-| `sqli` | `union select`, `' or 1=1`, `sleep(`, `into outfile`, `information_schema` |
+| `sqli` | `union select`, `' or 1=1`, `into outfile`, `information_schema`; `sleep(` **+** a `select` ([AND-rule](#and-rules)) |
 | `xss` | `<script`, `javascript:`, `onerror=`, `document.cookie` |
 | `traversal` | `../`, `..\`, `..;/`, `.%2e/` (CVE-2021-41773), `/etc/passwd` |
 | `overlong` | overlong-UTF-8 `/` and `\` (`%c0%af`, `%c1%9c`) — IIS/Nimda era |
@@ -144,6 +144,35 @@ scratch buffers, so the cost is a few microseconds on typical request sizes.
 Body inspection reads the buffered request body (up to `shield_max_body`) and
 scans it the same way, then resumes phase processing — the same mechanism the
 stock `ngx_http_mirror_module` uses.
+
+### AND-rules
+
+Some exploits are only distinguishable from ordinary traffic by a *combination*
+of tokens. Grafana's path-traversal CVE-2021-43798 rides on `/public/plugins/`
+— which is also how every Grafana instance serves its plugin assets on every
+page load. As a plain signature it blocks the product; left out, the exploit is
+uncovered. Neither is acceptable for a near-zero-FP floor.
+
+An **AND-rule** requires a *set* of terms to co-occur in the same buffer before
+its category fires:
+
+| Rule | Category | Fires only when the buffer has… |
+|---|---|---|
+| `grafana_plugin_lfi` | `traversal` | `/public/plugins/` **and** `../` |
+| `ofbiz_authbypass` | `exploit_path` | `requirepasswordchange=y` **and** `/webtools/control/` |
+| `metabase_jdbc_rce` | `exploit_path` | `/api/setup/validate` **and** `jdbc:h2:` |
+| `sqli_time_based` | `sqli` | `sleep(` **and** `select ` |
+
+Rule terms are **not** signatures: a term never fires on its own, and none of
+the four left-hand tokens above will block a request by itself. That is checked
+in both directions — `t/07-and-rules.t` proves the full set blocks, and
+`t/05-fp-negative.t` proves each term alone does not.
+
+The terms are matched by the same single automaton pass, so a rule costs no
+extra scan time: the pass just records which terms it saw and evaluates the sets
+once at the end. Rules are same-buffer only (a term in the URI and a term in the
+body do not combine), and `shield_skip <category>` disables that category's
+rules along with its signatures.
 
 ### When inspection itself fails
 

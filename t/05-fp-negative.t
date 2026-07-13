@@ -228,3 +228,34 @@ GET /t?p=autodiscover.json%3f@evil.com/powershell
 --- more_headers
 Content-Type: text/xml
 --- error_code: 403
+
+=== TEST 30: Grafana serving a plugin asset is not a traversal
+# AND-rule terms in isolation (TESTS 30-34). Each is one term of an AND-rule.
+# Alone, every one of them is ordinary traffic, and blocking it is exactly the
+# false positive the rule exists to avoid. Only the full term set (t/07) blocks.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?url=/public/plugins/graph/module.js
+--- error_code: 200
+
+=== TEST 31: an OFBiz password-change flow is not an auth bypass
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?requirePasswordChange=Y
+--- error_code: 200
+
+=== TEST 32: Metabase first-run setup validation is not an RCE
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?next=/api/setup/validate
+--- error_code: 200
+
+=== TEST 33: the word sleep( in prose is not time-based SQLi
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=how%20does%20sleep(3)%20work%20in%20mysql
+--- error_code: 200
