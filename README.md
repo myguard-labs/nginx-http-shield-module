@@ -7,6 +7,9 @@
 [![CI Deep](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml)
 [![CodeQL](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml)
 
+> 📖 **Read the article:** [nginx-http-shield-module: Block Ancient Exploits Without a WAF](https://deb.myguard.nl/articles/nginx-http-shield-module/)
+> — what it blocks, why the engine is an Aho-Corasick automaton, and how to roll it out from `detect` to `block`.
+
 A small nginx dynamic module that blocks exploitation of web vulnerabilities
 that were **patched years ago** — SQL injection, ancient PHP/Java RCE chains,
 Log4Shell, Shellshock, path traversal, cloud-metadata SSRF, and more.
@@ -238,8 +241,13 @@ USE_VALGRIND=1 tools/soak.sh .build/nginx-1.31.1/objs/nginx 120 4
 
 ## See also
 
-- Blog article: [nginx-http-shield-module: Block Ancient Exploits Without a WAF](https://deb.myguard.nl/articles/nginx-http-shield-module/) —
-  what it blocks, the Aho-Corasick engine design, and a detect-to-block rollout guide.
+- [nginx-http-shield-module: Block Ancient Exploits Without a WAF](https://deb.myguard.nl/articles/nginx-http-shield-module/)
+  — the full article: what it blocks, the engine design, and a detect-to-block rollout guide.
+- [NGINX for Debian & Ubuntu](https://deb.myguard.nl/nginx-modules/) and
+  [Angie](https://deb.myguard.nl/angie-modules-optimized-extended/) — the prebuilt APT stack this
+  module is packaged for: HTTP/3, hardening patches, 100+ curated dynamic modules, no compiling.
+- [Where to find us](https://deb.myguard.nl/where-to-find-us/) — every repo, Docker image and
+  download URL we publish, in one place.
 
 ## License
 
