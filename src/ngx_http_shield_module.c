@@ -644,9 +644,9 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
     ngx_uint_t match)
 {
     size_t                       i, j, k, cap, nstates, head, tail;
-    ngx_uint_t                   b;
+    ngx_uint_t                   b, term;
     ngx_pool_t                  *temp;
-    uint64_t                    *out;
+    uint64_t                    *out, *rout;
     ngx_http_shield_ac_state_t  *next, *queue, *fail, s, v, f;
 
     /* Upper bound on trie size: one state per signature byte, plus the root.
@@ -658,6 +658,16 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
         }
         for (j = 0; j < ngx_http_shield_categories[i].nsigs; j++) {
             cap += ngx_http_shield_categories[i].sigs[j].len;
+        }
+    }
+
+    /* Rule terms live in the same trie -- they are matched by the same pass. */
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        if (!(ngx_http_shield_rules[i].match & match)) {
+            continue;
+        }
+        for (j = 0; j < ngx_http_shield_rules[i].nterms; j++) {
+            cap += ngx_http_shield_rules[i].terms[j].len;
         }
     }
 
@@ -675,8 +685,9 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
     next = ngx_pcalloc(cf->pool,
                        cap * NGX_HTTP_SHIELD_AC_ALPHABET * sizeof(*next));
     out = ngx_pcalloc(cf->pool, cap * sizeof(*out));
+    rout = ngx_pcalloc(cf->pool, cap * sizeof(*rout));
 
-    if (next == NULL || out == NULL) {
+    if (next == NULL || out == NULL || rout == NULL) {
         return NGX_ERROR;
     }
 
@@ -702,6 +713,23 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
     for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
         if (ngx_http_shield_categories[i].match & match) {
             ac->row[ngx_http_shield_categories[i].cat] = (ngx_uint_t) i;
+        }
+    }
+
+    /* A rule reports a category, and it may be one whose signature TABLE is not
+     * in this automaton (a RAW rule naming a DECODED-only category). Map those
+     * rows too, or the rule would match and then have nothing to report. */
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        if (!(ngx_http_shield_rules[i].match & match)) {
+            continue;
+        }
+
+        for (j = 0; j < NGX_HTTP_SHIELD_NCATEGORIES; j++) {
+            if (ngx_http_shield_categories[j].cat == ngx_http_shield_rules[i].cat)
+            {
+                ac->row[ngx_http_shield_rules[i].cat] = (ngx_uint_t) j;
+                break;
+            }
         }
     }
 
@@ -736,6 +764,44 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
              * that also accepts here (two categories may share a signature
              * string). ac_scan resolves a multi-category state by table order. */
             out[s] |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
+        }
+    }
+
+    /* Pass 1b: rule terms into the SAME trie. A term sets a bit in rout[] and
+     * never in out[], so it is matched by the same per-byte lookup but cannot
+     * fire a category by itself -- only a rule whose whole term set was seen
+     * can. Term ids are assigned across ngx_http_shield_rules[] in declaration
+     * order, independently of `match`, so a term's bit means the same thing in
+     * both automatons. */
+    term = 0;
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        ac->need[i] = 0;
+
+        for (j = 0; j < ngx_http_shield_rules[i].nterms; j++, term++) {
+            const ngx_http_shield_sig_t  *t = &ngx_http_shield_rules[i].terms[j];
+
+            if (!(ngx_http_shield_rules[i].match & match)) {
+                continue;
+            }
+
+            ac->need[i] |= (uint64_t) 1 << term;
+
+            s = 0;
+
+            for (k = 0; k < t->len; k++) {
+                b = (u_char) t->s[k];
+
+                if (next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b] == 0) {
+                    next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b] =
+                        (ngx_http_shield_ac_state_t) nstates;
+                    nstates++;
+                }
+
+                s = next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + b];
+            }
+
+            rout[s] |= (uint64_t) 1 << term;
         }
     }
 
@@ -775,6 +841,11 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
              * dropped the other -- the detection bypass this replaces. */
             out[v] |= out[f];
 
+            /* Rule terms union along the fail links for the same reason: a
+             * term ending inside a longer signature (or inside another term)
+             * must still be recorded, or its rule could never complete. */
+            rout[v] |= rout[f];
+
             queue[tail++] = v;
         }
     }
@@ -783,6 +854,7 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
 
     ac->next = next;
     ac->out = out;
+    ac->rout = rout;
     ac->nstates = nstates;
 
     return NGX_OK;
@@ -873,7 +945,7 @@ ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
     size_t len, uint64_t skip)
 {
     size_t                      i;
-    uint64_t                    live;
+    uint64_t                    live, seen;
     ngx_uint_t                  row, best;
     ngx_http_shield_ac_state_t  s = 0;
 
@@ -881,8 +953,15 @@ ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
         return NULL;
     }
 
+    seen = 0;
+
     for (i = 0; i < len; i++) {
         s = ac->next[(size_t) s * NGX_HTTP_SHIELD_AC_ALPHABET + data[i]];
+
+        /* Rule terms: accumulate, never decide. This is the only added work in
+         * the hot loop -- one OR against a mask that is zero for every state
+         * that ends no rule term, which is nearly all of them. */
+        seen |= ac->rout[s];
 
         live = ac->out[s] & ~skip;
         if (live == 0) {
@@ -900,7 +979,39 @@ ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
         } while (live);
 
         if (best < NGX_HTTP_SHIELD_NCATEGORIES) {
+            /* A standalone signature already decides the request, so there is
+             * nothing an AND-rule could add: return without evaluating them.
+             * This keeps the standalone path exactly as fast as it was. */
             return &ngx_http_shield_categories[best];
+        }
+    }
+
+    /* No standalone signature fired. Evaluate the AND-rules: a rule matches
+     * when every one of its terms was seen somewhere in this buffer. */
+    if (seen == 0) {
+        return NULL;
+    }
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+
+        /* need == 0 means the rule contributes no term to THIS automaton
+         * (wrong `match` flavour); it must not match trivially. */
+        if (ac->need[i] == 0) {
+            continue;
+        }
+
+        if ((seen & ac->need[i]) != ac->need[i]) {
+            continue;
+        }
+
+        if (skip & ((uint64_t) 1 << ngx_http_shield_rules[i].cat)) {
+            continue;
+        }
+
+        row = ac->row[ngx_http_shield_rules[i].cat];
+
+        if (row < NGX_HTTP_SHIELD_NCATEGORIES) {
+            return &ngx_http_shield_categories[row];
         }
     }
 

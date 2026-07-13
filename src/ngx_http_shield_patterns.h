@@ -15,6 +15,10 @@
  *   - Never a bare single keyword ("select", "or", "cat"). Use a multi-token
  *     combination that only appears in an attack ("union select", "; wget ").
  *     t/05-fp-negative.t exists to catch violations of this rule.
+ *     If the attack token is ALSO legitimate traffic on its own (a real
+ *     product path, a word that occurs in prose), it does not belong here at
+ *     all -- make it an AND-rule term instead, so it only fires alongside the
+ *     gadget that makes it an attack. See ngx_http_shield_rules[] below.
  *   - Percent-encoding is already decoded by the engine, so write the
  *     decoded form ("../"), not "%2e%2e%2f". The exceptions are signatures
  *     that only make sense in their encoded form (overlong UTF-8, %00, %0d%0a);
@@ -433,11 +437,12 @@ static const ngx_http_shield_sig_t  ngx_http_shield_vbulletin[] = {
 static const ngx_http_shield_sig_t  ngx_http_shield_xmlrpc[] = {
     NGX_HTTP_SHIELD_SIG("system.multicall"),
     /* No "wp.getusersblogs": it is a documented, legitimate WordPress XML-RPC
-     * method that ordinary clients call. It only signals abuse in volume, and
-     * the engine matches each signature independently -- it cannot yet require
-     * a SET of co-occurring tokens -- so it stays out per the
+     * method that ordinary clients call. It signals abuse only in VOLUME, and
+     * volume is not expressible as a term set -- an AND-rule pairing it with
+     * the <methodCall> envelope would match the legitimate call too, since
+     * every XML-RPC request carries that envelope. It stays out per the
      * near-zero-false-positive contract. The brute-force amplifier itself
-     * (system.multicall) is still blocked. */
+     * (system.multicall) is still blocked as a standalone signature. */
 };
 
 /* ---- 19. SSI injection ------------------------------------------------- */
@@ -615,9 +620,9 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/webtools/control/programexport"), /* OFBiz 2023-49070 */
     /* OFBiz requirePasswordChange=Y and Metabase /api/setup/validate are both
      * reachable on legitimate flows (password change / first-run install), so
-     * they are deliberately omitted -- the engine matches each signature
-     * independently and cannot yet AND them with the gadget token that would
-     * make them attack-only. */
+     * neither is a standalone signature. Both are covered as AND-rules
+     * (ofbiz_authbypass, metabase_jdbc_rce) -- paired with the gadget token
+     * that makes them attack-only. */
     NGX_HTTP_SHIELD_SIG("/gwtest/formssso?event="),  /* Citrix 2023-3519     */
     NGX_HTTP_SHIELD_SIG("/vpn/../vpns/"),            /* Citrix 2019-19781    */
     NGX_HTTP_SHIELD_SIG("/newbm.pl"),                /* Citrix bookmark smuggle */
@@ -715,6 +720,102 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
 #define NGX_HTTP_SHIELD_NAME_RANGE_DOS  "range_dos"
 
 
+/* ---- AND-rules: categories that require several tokens to co-occur ------ */
+
+/*
+ * Some attacks are only distinguishable from legitimate traffic by a
+ * COMBINATION of tokens. The path a Grafana path-traversal exploit uses is
+ * "/public/plugins/" -- which is also how every Grafana instance serves its
+ * plugin assets. The exploit is that path AND a traversal gadget. Listing
+ * "/public/plugins/" as an ordinary signature would block the whole product;
+ * omitting it leaves the exploit uncovered. The same shape appears for OFBiz
+ * requirePasswordChange, Metabase's first-run setup endpoint, WordPress
+ * xmlrpc method-volume abuse, and time-based SQLi via a bare "sleep(".
+ *
+ * An AND-rule expresses that: a set of terms that must ALL appear in the same
+ * buffer before the rule's category fires.
+ *
+ * Rule terms are deliberately NOT ordinary signatures -- they live only here.
+ * A term never sets a category bit in the automaton's out[] mask, so it can
+ * never fire on its own, and the standalone-signature fast path (and its cost)
+ * is untouched. Terms are matched by the same single automaton pass; each is
+ * assigned a rule-term id whose bit is recorded in a side mask.
+ *
+ * Same-buffer only: every term of a rule must be found in one normalized
+ * buffer. That covers every rule below (they are all single-URI patterns).
+ * Cross-source AND (path in the URI, gadget in the body) is not expressible
+ * and is not needed yet.
+ */
+
+/* Terms are grouped per rule; a term string may repeat across rules (it gets
+ * its own id in each -- the sets are what matter, not term identity). */
+typedef struct {
+    ngx_http_shield_cat_e         cat;    /* category reported on a match    */
+    const char                   *name;   /* rule label, for the error log   */
+    const ngx_http_shield_sig_t  *terms;
+    ngx_uint_t                    nterms;
+    ngx_uint_t                    match;  /* DECODED and/or RAW              */
+} ngx_http_shield_ruledef_t;
+
+/* Grafana CVE-2021-43798: plugin asset path plus a traversal gadget. The path
+ * alone is how Grafana serves plugin assets on every page load. */
+static const ngx_http_shield_sig_t  ngx_http_shield_rule_grafana[] = {
+    NGX_HTTP_SHIELD_SIG("/public/plugins/"),
+    NGX_HTTP_SHIELD_SIG("../"),
+};
+
+/* Apache OFBiz CVE-2023-51467 auth bypass: the bypass parameter is only an
+ * attack when it is steering a request at the webtools control endpoint.
+ * requirePasswordChange=Y on its own is an ordinary password-change flow. */
+static const ngx_http_shield_sig_t  ngx_http_shield_rule_ofbiz[] = {
+    NGX_HTTP_SHIELD_SIG("requirepasswordchange=y"),
+    NGX_HTTP_SHIELD_SIG("/webtools/control/"),
+};
+
+/* Metabase CVE-2023-38646 pre-auth RCE: the setup-validate endpoint is a real
+ * first-run install endpoint. The attack carries an H2 JDBC connection string
+ * with an INIT script -- that is the part no installer sends. */
+static const ngx_http_shield_sig_t  ngx_http_shield_rule_metabase[] = {
+    NGX_HTTP_SHIELD_SIG("/api/setup/validate"),
+    NGX_HTTP_SHIELD_SIG("jdbc:h2:"),
+};
+
+/* Time-based SQL injection via a bare "sleep(". "sleep(" alone is ordinary
+ * text in SQL tutorials, documentation and search queries -- it was removed as
+ * a standalone signature for exactly that reason. Paired with a SQL gadget it
+ * has no benign reading. */
+static const ngx_http_shield_sig_t  ngx_http_shield_rule_sqli_sleep[] = {
+    NGX_HTTP_SHIELD_SIG("sleep("),
+    NGX_HTTP_SHIELD_SIG("select "),
+};
+
+/* No wp.getUsersBlogs rule. The obvious pairing -- wp.getUsersBlogs AND a
+ * <methodCall> wrapper -- is worthless: <methodCall> is the XML-RPC envelope
+ * EVERY client sends for EVERY method, so the rule would block the legitimate
+ * call (t/05 TEST 24 catches exactly that). What distinguishes the brute-force
+ * from a real client is request VOLUME, which no same-buffer term set can
+ * express. The amplifier it rides on, system.multicall, is a standalone
+ * signature and stays blocked. Left out until there is a term that actually
+ * separates the two. */
+
+#define NGX_HTTP_SHIELD_RULE(c, nm, arr, m)                                   \
+    { (c), (nm), (arr), sizeof(arr) / sizeof((arr)[0]), (m) }
+
+static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_TRAVERSAL, "grafana_plugin_lfi",
+        ngx_http_shield_rule_grafana, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "ofbiz_authbypass",
+        ngx_http_shield_rule_ofbiz, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "metabase_jdbc_rce",
+        ngx_http_shield_rule_metabase, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_SQLI, "sqli_time_based",
+        ngx_http_shield_rule_sqli_sleep, NGX_HTTP_SHIELD_MATCH_DECODED),
+};
+
+#define NGX_HTTP_SHIELD_NRULES                                                \
+    (sizeof(ngx_http_shield_rules) / sizeof(ngx_http_shield_rules[0]))
+
+
 /* ---- Aho-Corasick automaton -------------------------------------------- */
 
 /*
@@ -762,10 +863,40 @@ typedef uint16_t  ngx_http_shield_ac_state_t;
 typedef char ngx_http_shield_cat_fits_in_mask[
     (NGX_HTTP_SHIELD_CAT_N <= 64) ? 1 : -1];
 
+/* Rule terms are numbered across ngx_http_shield_rules[] in declaration order
+ * (rule 0's terms first, then rule 1's, ...). The id is a bit position in the
+ * per-state rule mask, so the total number of terms must fit in a uint64. Ten
+ * today; the assert makes an overflow a compile error rather than a silently
+ * mis-evaluated rule. */
+#define NGX_HTTP_SHIELD_NRULE_TERMS                                           \
+    (sizeof(ngx_http_shield_rule_grafana)                                     \
+       / sizeof(ngx_http_shield_rule_grafana[0])                              \
+     + sizeof(ngx_http_shield_rule_ofbiz)                                     \
+       / sizeof(ngx_http_shield_rule_ofbiz[0])                                \
+     + sizeof(ngx_http_shield_rule_metabase)                                  \
+       / sizeof(ngx_http_shield_rule_metabase[0])                             \
+     + sizeof(ngx_http_shield_rule_sqli_sleep)                                \
+       / sizeof(ngx_http_shield_rule_sqli_sleep[0]))
+
+typedef char ngx_http_shield_rule_terms_fit_in_mask[
+    (NGX_HTTP_SHIELD_NRULE_TERMS <= 64) ? 1 : -1];
+
 typedef struct {
     ngx_http_shield_ac_state_t  *next;   /* [nstates][256] goto table        */
     uint64_t                    *out;    /* [nstates] accepting-category mask */
     ngx_uint_t                   nstates;
+
+    /* [nstates] accepting rule-TERM mask, in the NGX_HTTP_SHIELD_NRULE_TERMS
+     * bit space. Kept separate from out[] on purpose: a rule term must never
+     * fire a category on its own, so it sets no bit in out[] and the standalone
+     * fast path -- and its cost -- is exactly what it was. NULL if this
+     * automaton carries no rule terms. */
+    uint64_t                    *rout;
+
+    /* Per-rule required-term masks, in the same bit space. A rule fires when
+     * (seen & need[i]) == need[i]. Zero for rules not in this automaton, which
+     * would match trivially, so ac_scan skips those explicitly. */
+    uint64_t                     need[NGX_HTTP_SHIELD_NRULES];
 
     /* bit -> ngx_http_shield_categories[] row, for reporting a hit. Set to
      * NGX_HTTP_SHIELD_NCATEGORIES for categories with no table in this

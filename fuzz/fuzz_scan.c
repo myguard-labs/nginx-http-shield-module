@@ -156,6 +156,47 @@ shield_scan(u_char *data, size_t len, uint64_t skip)
         }
     }
 
+    /* AND-rules, the same way the module evaluates them: a rule fires when
+     * EVERY one of its terms is present in the SAME normalized buffer. Kept in
+     * lockstep with ngx_http_shield_ac_scan() by construction -- if the module
+     * grows a rule and this does not, the differential diverges and aborts,
+     * which is the point.
+     *
+     * Note the per-buffer quantifier: all terms in the raw copy, or all terms
+     * in the decoded copy. "One term raw, one term decoded" is NOT a match. */
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        const ngx_http_shield_ruledef_t  *rule = &ngx_http_shield_rules[i];
+        int                               all_raw, all_dec;
+
+        if (skip & ((uint64_t) 1 << rule->cat)) {
+            continue;
+        }
+
+        all_raw = (rule->match & NGX_HTTP_SHIELD_MATCH_RAW) ? 1 : 0;
+        all_dec = (rule->match & NGX_HTTP_SHIELD_MATCH_DECODED) ? 1 : 0;
+
+        for (j = 0; j < rule->nterms; j++) {
+            const ngx_http_shield_sig_t  *t = &rule->terms[j];
+
+            if (all_raw
+                && shield_memmem(raw_lc, len, t->s, t->len) == NULL)
+            {
+                all_raw = 0;
+            }
+
+            if (all_dec
+                && shield_memmem(dec, dlen, t->s, t->len) == NULL)
+            {
+                all_dec = 0;
+            }
+        }
+
+        if (all_raw || all_dec) {
+            hit = 1;
+            goto done;
+        }
+    }
+
 done:
     free(raw_lc);
     free(dec);
@@ -191,6 +232,8 @@ done:
 typedef struct {
     uint16_t  *next;   /* [nstates][256] */
     uint64_t  *out;    /* [nstates] accepting-category mask */
+    uint64_t  *rout;   /* [nstates] accepting rule-TERM mask */
+    uint64_t   need[NGX_HTTP_SHIELD_NRULES];  /* per-rule required term set */
     size_t     nstates;
 } ac_t;
 
@@ -202,9 +245,9 @@ static void
 ac_build_fuzz(ac_t *ac, ngx_uint_t match)
 {
     size_t     i, j, k, cap, nstates, head, tail;
-    ngx_uint_t b;
+    ngx_uint_t b, term;
     uint16_t  *next, *queue, *fail, s, v, f;
-    uint64_t  *out;
+    uint64_t  *out, *rout;
 
     cap = 1;
     for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
@@ -215,6 +258,14 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
             cap += ngx_http_shield_categories[i].sigs[j].len;
         }
     }
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        if (!(ngx_http_shield_rules[i].match & match)) {
+            continue;
+        }
+        for (j = 0; j < ngx_http_shield_rules[i].nterms; j++) {
+            cap += ngx_http_shield_rules[i].terms[j].len;
+        }
+    }
 
     if (cap > 65535) {
         abort();
@@ -222,9 +273,12 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
 
     next = calloc(cap * AC_ALPHABET, sizeof(*next));
     out = calloc(cap, sizeof(*out));
+    rout = calloc(cap, sizeof(*rout));
     queue = malloc(cap * sizeof(*queue));
     fail = calloc(cap, sizeof(*fail));
-    if (next == NULL || out == NULL || queue == NULL || fail == NULL) {
+    if (next == NULL || out == NULL || rout == NULL || queue == NULL
+        || fail == NULL)
+    {
         abort();
     }
 
@@ -248,6 +302,28 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
         }
     }
 
+    /* Rule terms into the same trie: rout[] only, never out[]. */
+    term = 0;
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        ac->need[i] = 0;
+        for (j = 0; j < ngx_http_shield_rules[i].nterms; j++, term++) {
+            const ngx_http_shield_sig_t  *t = &ngx_http_shield_rules[i].terms[j];
+            if (!(ngx_http_shield_rules[i].match & match)) {
+                continue;
+            }
+            ac->need[i] |= (uint64_t) 1 << term;
+            s = 0;
+            for (k = 0; k < t->len; k++) {
+                b = (u_char) t->s[k];
+                if (next[(size_t) s * AC_ALPHABET + b] == 0) {
+                    next[(size_t) s * AC_ALPHABET + b] = (uint16_t) nstates++;
+                }
+                s = next[(size_t) s * AC_ALPHABET + b];
+            }
+            rout[s] |= (uint64_t) 1 << term;
+        }
+    }
+
     head = tail = 0;
     for (b = 0; b < AC_ALPHABET; b++) {
         v = next[b];
@@ -266,6 +342,7 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
             }
             fail[v] = f;
             out[v] |= out[f];
+            rout[v] |= rout[f];
             queue[tail++] = v;
         }
     }
@@ -275,6 +352,7 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
 
     ac->next = next;
     ac->out = out;
+    ac->rout = rout;
     ac->nstates = nstates;
 }
 
@@ -282,10 +360,13 @@ static int
 ac_scan_fuzz(const ac_t *ac, u_char *data, size_t len, uint64_t skip)
 {
     size_t    i;
+    uint64_t  seen = 0;
     uint16_t  s = 0;
 
     for (i = 0; i < len; i++) {
         s = ac->next[(size_t) s * AC_ALPHABET + data[i]];
+
+        seen |= ac->rout[s];
 
         /* out[s] is the SET of categories accepting here; ~skip drops the
          * disabled ones. Hit/no-hit only -- the caller does not care which
@@ -294,6 +375,21 @@ ac_scan_fuzz(const ac_t *ac, u_char *data, size_t len, uint64_t skip)
             return 1;
         }
     }
+
+    /* AND-rules: every term of the rule seen in THIS buffer. */
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        if (ac->need[i] == 0) {
+            continue;
+        }
+        if ((seen & ac->need[i]) != ac->need[i]) {
+            continue;
+        }
+        if (skip & ((uint64_t) 1 << ngx_http_shield_rules[i].cat)) {
+            continue;
+        }
+        return 1;
+    }
+
     return 0;
 }
 
