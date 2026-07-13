@@ -65,6 +65,8 @@ static ngx_int_t ngx_http_shield_inspect_body(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit);
 static ngx_int_t ngx_http_shield_act(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit);
+static ngx_int_t ngx_http_shield_fail(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, const char *what);
 
 static ngx_int_t ngx_http_shield_scan_input(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, u_char *data, size_t len,
@@ -190,6 +192,11 @@ ngx_http_shield_handler(ngx_http_request_t *r)
     ngx_memzero(&hit, sizeof(ngx_http_shield_hit_t));
 
     rc = ngx_http_shield_inspect_prebody(r, slcf, &hit);
+
+    if (rc == NGX_ERROR) {
+        return ngx_http_shield_fail(r, slcf, "request target or headers");
+    }
+
     if (rc == NGX_OK) {
         rc = ngx_http_shield_act(r, slcf, &hit);
         if (rc != NGX_DECLINED) {
@@ -234,9 +241,15 @@ ngx_http_shield_body_handler(ngx_http_request_t *r)
 
     ngx_memzero(&hit, sizeof(ngx_http_shield_hit_t));
 
-    if (ngx_http_shield_inspect_body(r, slcf, &hit) == NGX_OK) {
+    rc = ngx_http_shield_inspect_body(r, slcf, &hit);
+
+    if (rc == NGX_OK) {
         rc = ngx_http_shield_act(r, slcf, &hit);
         ctx->status = (rc == NGX_DECLINED) ? NGX_DECLINED : rc;
+
+    } else if (rc == NGX_ERROR) {
+        ctx->status = ngx_http_shield_fail(r, slcf, "request body");
+
     } else {
         ctx->status = NGX_DECLINED;
     }
@@ -272,6 +285,31 @@ ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
                   "shield: detected attack from %V, category=%s source=%s "
                   "(detect mode, not blocked)",
                   &r->connection->addr_text, hit->category, hit->source);
+    return NGX_DECLINED;
+}
+
+
+/*
+ * Inspection itself failed -- a pool allocation or a request-body temp-file
+ * read did not succeed, so a buffer went unscanned. An unscanned buffer is not
+ * a clean one, so `shield block` fails CLOSED with 500 rather than authorizing
+ * a request it never actually inspected. `shield detect` is an observation
+ * mode by definition and must not change the response, so it only logs.
+ */
+static ngx_int_t
+ngx_http_shield_fail(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
+    const char *what)
+{
+    if (slcf->mode == NGX_HTTP_SHIELD_BLOCK) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "shield: could not inspect %s, failing closed "
+                      "(block mode)", what);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "shield: could not inspect %s, request left unscanned "
+                  "(detect mode)", what);
     return NGX_DECLINED;
 }
 
@@ -358,7 +396,12 @@ static ngx_int_t
 ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
 {
+    ngx_int_t         rc;
     ngx_table_elt_t  *h;
+
+    /* Every scan is three-valued: NGX_OK (hit), NGX_DECLINED (clean),
+     * NGX_ERROR (the buffer could not be scanned). NGX_ERROR must never be
+     * flattened into NGX_DECLINED -- an unscanned buffer is not a clean one. */
 
     if (ngx_http_shield_check_httpoxy(r, slcf, hit) == NGX_OK) {
         return NGX_OK;
@@ -369,35 +412,39 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     }
 
     /* Request target as sent by the client (path + query, still encoded). */
-    if (r->unparsed_uri.len
-        && ngx_http_shield_scan_input(r, slcf, r->unparsed_uri.data,
-                                      r->unparsed_uri.len, "uri", hit) == NGX_OK)
-    {
-        return NGX_OK;
+    if (r->unparsed_uri.len) {
+        rc = ngx_http_shield_scan_input(r, slcf, r->unparsed_uri.data,
+                                        r->unparsed_uri.len, "uri", hit);
+        if (rc != NGX_DECLINED) {
+            return rc;
+        }
     }
 
     h = r->headers_in.user_agent;
-    if (h != NULL
-        && ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                      "user-agent", hit) == NGX_OK)
-    {
-        return NGX_OK;
+    if (h != NULL) {
+        rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
+                                        "user-agent", hit);
+        if (rc != NGX_DECLINED) {
+            return rc;
+        }
     }
 
     h = r->headers_in.referer;
-    if (h != NULL
-        && ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                      "referer", hit) == NGX_OK)
-    {
-        return NGX_OK;
+    if (h != NULL) {
+        rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
+                                        "referer", hit);
+        if (rc != NGX_DECLINED) {
+            return rc;
+        }
     }
 
     h = r->headers_in.content_type;
-    if (h != NULL
-        && ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                      "content-type", hit) == NGX_OK)
-    {
-        return NGX_OK;
+    if (h != NULL) {
+        rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
+                                        "content-type", hit);
+        if (rc != NGX_DECLINED) {
+            return rc;
+        }
     }
 
     return NGX_DECLINED;
@@ -469,7 +516,8 @@ ngx_http_shield_scannable_body(ngx_http_request_t *r)
 static ngx_int_t
 ngx_http_shield_collect_body(ngx_http_request_t *r, size_t max, ngx_str_t *out)
 {
-    size_t        len, total;
+    off_t         off;
+    size_t        len, total, done;
     ssize_t       rn;
     u_char       *p;
     ngx_buf_t    *b;
@@ -506,12 +554,24 @@ ngx_http_shield_collect_body(ngx_http_request_t *r, size_t max, ngx_str_t *out)
             if (len > max - total) {
                 len = max - total;
             }
-            rn = ngx_read_file(b->file, p + total, len, b->file_pos);
-            if (rn == NGX_ERROR) {
-                /* Scan whatever was collected so far rather than fail open. */
-                break;
+
+            /* A partial scan is not a clean scan: an attack could sit in the
+             * bytes we failed to read. Loop short reads, and treat a read
+             * error or a truncated buffer as an inspection failure so the
+             * caller can fail closed. */
+            off = b->file_pos;
+            done = 0;
+
+            while (done < len) {
+                rn = ngx_read_file(b->file, p + total + done, len - done, off);
+                if (rn <= 0) {
+                    return NGX_ERROR;
+                }
+                done += (size_t) rn;
+                off += rn;
             }
-            total += (size_t) rn;
+
+            total += done;
         }
     }
 
@@ -527,7 +587,8 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
     ngx_str_t  body;
 
     if (ngx_http_shield_collect_body(r, slcf->max_body, &body) != NGX_OK) {
-        return NGX_DECLINED;
+        /* Allocation or temp-file read failure: the body was not scanned. */
+        return NGX_ERROR;
     }
 
     if (body.len == 0) {
@@ -757,7 +818,8 @@ ngx_http_shield_scan_input(ngx_http_request_t *r,
     raw_lc = ngx_pnalloc(r->pool, len);
     dec = ngx_pnalloc(r->pool, len);
     if (raw_lc == NULL || dec == NULL) {
-        return NGX_DECLINED;
+        /* Never report an unscanned buffer as clean: the caller fails closed. */
+        return NGX_ERROR;
     }
 
     ngx_strlow(raw_lc, data, len);

@@ -107,3 +107,43 @@ Content-Type: application/x-www-form-urlencoded
 --- more_headers
 Content-Type: application/x-www-form-urlencoded
 --- error_code: 405
+
+=== TEST 11: an attack in a temp-file-buffered body is caught
+--- config
+    location /t {
+        client_body_buffer_size 512;
+        shield block;
+        empty_gif;
+    }
+--- request eval
+"POST /t\n" . ("x=" . ("a" x 3000) . "&q=union select 1")
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 403
+
+=== TEST 12: a benign temp-file-buffered body is passed through
+--- config
+    location /t {
+        client_body_buffer_size 512;
+        shield block;
+        empty_gif;
+    }
+--- request eval
+"POST /t\n" . ("x=" . ("a" x 3000) . "&q=hello+world")
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 405
+
+=== TEST 13: an attack at the very end of a temp-file-buffered body is caught
+--- config
+    location /t {
+        client_body_buffer_size 512;
+        shield block;
+        shield_max_body 64k;
+        empty_gif;
+    }
+--- request eval
+"POST /t\n" . ("x=" . ("a" x 20000) . "&q=<!--#exec cmd=\"id\"-->")
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 403
