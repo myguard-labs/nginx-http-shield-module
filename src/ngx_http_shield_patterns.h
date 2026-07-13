@@ -691,4 +691,44 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
 #define NGX_HTTP_SHIELD_NAME_HTTPOXY    "httpoxy"
 #define NGX_HTTP_SHIELD_NAME_RANGE_DOS  "range_dos"
 
+
+/* ---- Aho-Corasick automaton -------------------------------------------- */
+
+/*
+ * All signatures are matched in a SINGLE pass over each buffer, instead of one
+ * linear sweep per signature. The old engine was O(n * m): ~500 sweeps per
+ * buffer (391 signatures, six categories scanning both the raw and the decoded
+ * copy). It was also defeated by its own prefilter -- the inner loop only
+ * reached memcmp when the first byte matched, and 132 signature-passes begin
+ * with '/', the most common byte in a URI.
+ *
+ * Aho-Corasick removes both problems: cost is O(n) in the buffer and no longer
+ * depends on the number of signatures, so the table can grow for free and a
+ * hostile all-'/' buffer costs the same as a benign one.
+ *
+ * Two automatons are built because categories disagree about which buffer they
+ * apply to (MATCH_DECODED / MATCH_RAW). Each accepting state records the
+ * CATEGORY it belongs to, so a hit in a category disabled via shield_skip is
+ * stepped over and the scan continues -- per-location skip still works.
+ *
+ * Built once at postconfiguration from cf->pool, then read-only for the life
+ * of the cycle: no per-request allocation, no locking, safe to share.
+ */
+
+#define NGX_HTTP_SHIELD_AC_ALPHABET  256
+
+/* Node indices are uint16_t. The full table builds to ~4k nodes, far under the
+ * 65535 ceiling; ngx_http_shield_ac_build() enforces this and fails config
+ * rather than overflowing, so adding signatures can never silently corrupt the
+ * automaton. */
+typedef uint16_t  ngx_http_shield_ac_state_t;
+
+#define NGX_HTTP_SHIELD_AC_MAX_STATES  65535
+
+typedef struct {
+    ngx_http_shield_ac_state_t  *next;   /* [nstates][256] goto table        */
+    ngx_int_t                   *out;    /* [nstates] category id, or -1     */
+    ngx_uint_t                   nstates;
+} ngx_http_shield_ac_t;
+
 #endif /* NGX_HTTP_SHIELD_PATTERNS_H_INCLUDED_ */

@@ -144,25 +144,35 @@ stock `ngx_http_mirror_module` uses.
 
 ## Cost
 
-Scanning is linear in the size of each buffer, so the body cap is the dominant
-knob. Measured over the scan core:
+All signatures are matched in a **single pass** per buffer by an Aho-Corasick
+automaton, so scan time is O(bytes) and does **not** grow with the number of
+signatures — the table can be extended for free.
+
+Measured over the scan core:
 
 | buffer | bytes | µs/scan |
 |---|---|---|
-| typical URI | 64 | 13.5 |
-| user-agent | 120 | 23 |
-| 1 KB body | 1 024 | 174 |
-| 8 KB body (default cap) | 8 192 | 1 370 |
-| 64 KB body | 65 536 | 10 774 |
+| typical URI + user-agent | 358 | 1.0 |
+| 8 KB body (default cap) | 8 192 | 23 |
+| hostile all-`/` buffer | 512 | 1.4 |
 
-An nginx worker is single-threaded, so this time is blocking: whatever the
-scan costs, that worker serves nobody else. Both the body length and the
-`Content-Type` that opts a request into body scanning are attacker-controlled,
-so **treat `shield_max_body` as a DoS budget, not a coverage dial.** The 64k
-default this module shipped with let one client pin a worker at ~90 req/s;
-it is now 8k.
+A worker is single-threaded, so scan time is blocking — whatever it costs, that
+worker serves nobody else. Two properties keep that safe:
+
+- **No pathological input.** Cost depends only on length, never on content. The
+  hostile all-`/` case above costs the same as benign traffic. (The previous
+  naive engine ran one linear sweep *per signature* — ~500 per buffer — and its
+  first-byte prefilter was defeated by `/`, the most common byte in a URI. That
+  buffer cost 120 µs; it now costs 1.4.)
+- **Bounded body work.** `shield_max_body` (default 8k) caps the largest buffer
+  an attacker can hand you. Still treat it as a DoS budget: both the body length
+  and the `Content-Type` that opts a request into body scanning are
+  attacker-controlled.
 
 Set `shield_body off` on endpoints that take large uploads.
+
+The automaton costs ~3.4 MB, built once at configuration load and shared
+read-only by every worker. There is no per-request allocation for matching.
 
 ## Adding a signature
 
