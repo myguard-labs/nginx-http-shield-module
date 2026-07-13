@@ -93,8 +93,8 @@ shield_memmem(u_char *haystack, size_t hlen, const char *needle, size_t nlen)
 /*
  * Faithful copy of the scan body of ngx_http_shield_scan_input(), with the
  * two scratch buffers taken from the caller (heap) instead of r->pool. The
- * skip mask is fuzzed too (first byte) so both the enabled and skipped paths
- * of the category loop are exercised.
+ * skip mask is fuzzed too (first eight bytes of the input, little-endian) so
+ * both the enabled and skipped paths of the category loop are exercised.
  */
 static int
 shield_scan(u_char *data, size_t len, uint64_t skip)
@@ -351,12 +351,19 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         built = 1;
     }
 
-    /* Consume the first byte as a skip-mask selector so the fuzzer reaches
-     * both the enabled and the skipped branch of the category loop. */
-    if (size >= 1) {
-        skip = (uint64_t) data[0] * 0x0101010101010101ULL;
-        data++;
-        size--;
+    /* Consume the first eight bytes (explicit little-endian decode) as the
+     * FULL skip mask. Expanding a single byte across the mask tied together
+     * every pair of categories whose enum positions agree modulo 8, so the
+     * oracle could never skip one while leaving the other enabled -- the
+     * exact cross-category masking class this harness exists to find. */
+    if (size >= 8) {
+        size_t  i;
+
+        for (i = 0; i < 8; i++) {
+            skip |= (uint64_t) data[i] << (i * 8);
+        }
+        data += 8;
+        size -= 8;
     }
 
     if (size == 0) {
