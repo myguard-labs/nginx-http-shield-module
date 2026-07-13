@@ -96,9 +96,21 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sqli[] = {
     NGX_HTTP_SHIELD_SIG("' or ''='"),
     NGX_HTTP_SHIELD_SIG("' and '1'='1"),
     NGX_HTTP_SHIELD_SIG("' and sleep("),
+    NGX_HTTP_SHIELD_SIG("' or sleep("),
+    NGX_HTTP_SHIELD_SIG("\" and sleep("),
+    NGX_HTTP_SHIELD_SIG("\" or sleep("),
+    NGX_HTTP_SHIELD_SIG(") and sleep("),
+    NGX_HTTP_SHIELD_SIG(") or sleep("),
+    NGX_HTTP_SHIELD_SIG(";sleep("),
+    NGX_HTTP_SHIELD_SIG("select sleep("),
+    NGX_HTTP_SHIELD_SIG(" or sleep("),
+    NGX_HTTP_SHIELD_SIG(" and sleep("),
     NGX_HTTP_SHIELD_SIG("admin'--"),
     NGX_HTTP_SHIELD_SIG("'='') or"),
-    NGX_HTTP_SHIELD_SIG("sleep("),
+    /* No bare "sleep(" — it is ordinary text in SQL documentation, tutorials
+     * and search queries, so it blocks legitimate traffic. Time-based SQLi is
+     * covered by the quote-context form above and by the vendor-specific
+     * functions below, which have no benign meaning in a request. */
     NGX_HTTP_SHIELD_SIG("pg_sleep("),
     NGX_HTTP_SHIELD_SIG("benchmark("),
     NGX_HTTP_SHIELD_SIG("waitfor delay"),
@@ -420,7 +432,11 @@ static const ngx_http_shield_sig_t  ngx_http_shield_vbulletin[] = {
 /* ---- 18. WordPress xmlrpc multicall abuse (body) ----------------------- */
 static const ngx_http_shield_sig_t  ngx_http_shield_xmlrpc[] = {
     NGX_HTTP_SHIELD_SIG("system.multicall"),
-    NGX_HTTP_SHIELD_SIG("wp.getusersblogs"),
+    /* No "wp.getusersblogs": it is a documented, legitimate WordPress XML-RPC
+     * method that ordinary clients call. It only signals abuse in volume, and
+     * a substring engine cannot express that, so it stays out per the
+     * near-zero-false-positive contract. The brute-force amplifier itself
+     * (system.multicall) is still blocked. */
 };
 
 /* ---- 19. SSI injection ------------------------------------------------- */
@@ -576,7 +592,12 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/_ignition/execute-solution"), /* Laravel 2021-3129 */
     NGX_HTTP_SHIELD_SIG("/api/jsonws/invoke"),       /* Liferay 2020-7961    */
     NGX_HTTP_SHIELD_SIG("/console/css/%252e"),       /* WebLogic 2020-14882  */
-    NGX_HTTP_SHIELD_SIG("/autodiscover/autodiscover.json"), /* ProxyShell    */
+    /* ProxyShell (CVE-2021-34473) — the bare Autodiscover path is what every
+     * normal Outlook client requests, so only the path-confusion form that
+     * carries the SSRF is a signature: a "?@" (or its encoded "%3f@") right
+     * after autodiscover.json, which is what smuggles the backend host. */
+    NGX_HTTP_SHIELD_SIG("autodiscover.json?@"),
+    NGX_HTTP_SHIELD_SIG("autodiscover.json%3f@"),
     NGX_HTTP_SHIELD_SIG("/owa/auth/x."),             /* ProxyLogon probe     */
     NGX_HTTP_SHIELD_SIG("/vpns/portal/scripts"),     /* Citrix 2019-19781    */
     NGX_HTTP_SHIELD_SIG("/securityrealm/user/admin/descriptorbyname"), /* Jenkins */
