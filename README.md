@@ -18,7 +18,8 @@ Run a real WAF on top where you need one.
 
 ## What it blocks
 
-25 categories, all matched case-insensitively after percent-decoding:
+28 categories (≈370 signatures), all matched case-insensitively after
+percent-decoding:
 
 | Category | Examples |
 |----------|----------|
@@ -30,8 +31,8 @@ Run a real WAF on top where you need one.
 | `lfi` | `php://filter`, `data://`, `expect://`, `phar://` |
 | `crlf` | `%0d%0a`, response-splitting `\r\nSet-Cookie:` |
 | `nullbyte` | `%00`, double-encoded `.` / `/` |
-| `template` | `${jndi:` (Log4Shell), `${env:`, nested `${${` |
-| `deserial` | Java stream magic, Joomla object injection (CVE-2015-8562), XXE `<!entity` |
+| `template` | `${jndi:` + `jndi:ldap/rmi/dns/iiop`, `${env:`, `${::-`, nested `${${` |
+| `deserial` | Java stream magic, gadget classes (`jdbcRowSetImpl`, `TemplatesImpl`, commons-collections), Fastjson `@type` autotype, WebLogic/XStream, Joomla obj-injection (CVE-2015-8562), XXE `<!entity` |
 | `shellshock` | `() {` (CVE-2014-6271) |
 | `php_rce` | PHP-CGI `-d allow_url_include` (CVE-2012-1823), PHPUnit `eval-stdin.php`, ThinkPHP |
 | `java_rce` | Struts OGNL `%{(#` (CVE-2017-5638), Spring4Shell `class.module.classloader` |
@@ -45,8 +46,11 @@ Run a real WAF on top where you need one.
 | `httpoxy` | a request-borne `Proxy:` header (CVE-2016-5385) |
 | `range_dos` | a `Range:` header with more than 10 ranges (CVE-2011-3192) |
 | `sensitive_file` | `/.env`, `/.git/`, `wp-config.php.bak`, `/.aws/credentials` |
-| `webshell` | `c99.php`, `r57.php`, `wso.php`, `shell.php?cmd=` |
-| `ssrf_meta` | `169.254.169.254`, `metadata.google.internal`, `/latest/meta-data/` |
+| `webshell` | `c99.php`, `r57.php`, `wso.php`, `weevely`, `behinder`, `shell.php?cmd=` |
+| `ssrf_meta` | `169.254.169.254`, `100.100.100.200` (Alibaba), `192.0.0.192` (Oracle), `metadata.google.internal`, decimal/hex IMDS IPs |
+| `nosql` | MongoDB operator injection `[$ne]`, `[$where]`, `{"$where":`, `$func:` |
+| `ssti` | template-probe forms `{{7*7}}`, `${7*7}`, `{{''.__class__`, `<%= 7*7`, `#set($` |
+| `exploit_path` | fixed n-day paths: `/wls-wsat/`, `/remote/fgt_lang`, `/actuator/gateway/routes`, `/_ignition/execute-solution`, `/api/jsonws/invoke`, GPON/HNAP/Zyxel probes |
 
 What is inspected: the request line and query string, the `User-Agent`,
 `Referer` and `Content-Type` headers, and — when enabled — the request body.

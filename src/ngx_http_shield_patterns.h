@@ -74,6 +74,9 @@ typedef enum {
     NGX_HTTP_SHIELD_CAT_SENSITIVE_FILE,
     NGX_HTTP_SHIELD_CAT_WEBSHELL,
     NGX_HTTP_SHIELD_CAT_SSRF_META,
+    NGX_HTTP_SHIELD_CAT_NOSQL,
+    NGX_HTTP_SHIELD_CAT_SSTI,
+    NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH,
     NGX_HTTP_SHIELD_CAT_N            /* count -- keep last */
 } ngx_http_shield_cat_e;
 
@@ -81,15 +84,25 @@ typedef enum {
 static const ngx_http_shield_sig_t  ngx_http_shield_sqli[] = {
     NGX_HTTP_SHIELD_SIG("union select"),
     NGX_HTTP_SHIELD_SIG("union all select"),
+    NGX_HTTP_SHIELD_SIG("union distinct select"),
     NGX_HTTP_SHIELD_SIG("' or 1=1"),
     NGX_HTTP_SHIELD_SIG("\" or 1=1"),
     NGX_HTTP_SHIELD_SIG("or '1'='1"),
+    NGX_HTTP_SHIELD_SIG("or \"1\"=\"1"),
     NGX_HTTP_SHIELD_SIG("or 1=1--"),
     NGX_HTTP_SHIELD_SIG("or 1=1#"),
+    NGX_HTTP_SHIELD_SIG("or 1=1/*"),
     NGX_HTTP_SHIELD_SIG(") or ('1'='1"),
+    NGX_HTTP_SHIELD_SIG("' or ''='"),
+    NGX_HTTP_SHIELD_SIG("' and '1'='1"),
+    NGX_HTTP_SHIELD_SIG("' and sleep("),
+    NGX_HTTP_SHIELD_SIG("admin'--"),
+    NGX_HTTP_SHIELD_SIG("'='') or"),
     NGX_HTTP_SHIELD_SIG("sleep("),
+    NGX_HTTP_SHIELD_SIG("pg_sleep("),
     NGX_HTTP_SHIELD_SIG("benchmark("),
     NGX_HTTP_SHIELD_SIG("waitfor delay"),
+    NGX_HTTP_SHIELD_SIG("dbms_pipe.receive_message"),
     NGX_HTTP_SHIELD_SIG("information_schema"),
     NGX_HTTP_SHIELD_SIG("group_concat("),
     NGX_HTTP_SHIELD_SIG("load_file("),
@@ -97,6 +110,16 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sqli[] = {
     NGX_HTTP_SHIELD_SIG("into dumpfile"),
     NGX_HTTP_SHIELD_SIG("extractvalue("),
     NGX_HTTP_SHIELD_SIG("updatexml("),
+    NGX_HTTP_SHIELD_SIG("procedure analyse("),
+    NGX_HTTP_SHIELD_SIG("; drop table"),
+    NGX_HTTP_SHIELD_SIG("; drop database"),
+    NGX_HTTP_SHIELD_SIG("xp_cmdshell"),
+    NGX_HTTP_SHIELD_SIG("utl_inaddr"),
+    NGX_HTTP_SHIELD_SIG("utl_http.request"),
+    NGX_HTTP_SHIELD_SIG("json_arrayagg("),
+    NGX_HTTP_SHIELD_SIG("/**/union/**/"),
+    NGX_HTTP_SHIELD_SIG("/*!50000"),          /* MySQL versioned-comment bypass */
+    NGX_HTTP_SHIELD_SIG("0x53514c"),
 };
 
 /* ---- 2. XSS ------------------------------------------------------------ */
@@ -109,24 +132,54 @@ static const ngx_http_shield_sig_t  ngx_http_shield_xss[] = {
     NGX_HTTP_SHIELD_SIG("onload="),
     NGX_HTTP_SHIELD_SIG("onmouseover="),
     NGX_HTTP_SHIELD_SIG("onfocus="),
+    NGX_HTTP_SHIELD_SIG("ontoggle="),
+    NGX_HTTP_SHIELD_SIG("onanimationstart="),
+    NGX_HTTP_SHIELD_SIG("onpointerover="),
     NGX_HTTP_SHIELD_SIG("document.cookie"),
+    NGX_HTTP_SHIELD_SIG("document.location"),
+    NGX_HTTP_SHIELD_SIG("window.location"),
     NGX_HTTP_SHIELD_SIG("<svg/onload"),
+    NGX_HTTP_SHIELD_SIG("<svg onload"),
     NGX_HTTP_SHIELD_SIG("<iframe"),
     NGX_HTTP_SHIELD_SIG("<img src=x"),
+    NGX_HTTP_SHIELD_SIG("<body onload"),
+    NGX_HTTP_SHIELD_SIG("<details open onto"),
+    NGX_HTTP_SHIELD_SIG("<object data="),
+    NGX_HTTP_SHIELD_SIG("<embed src="),
+    NGX_HTTP_SHIELD_SIG("<base href="),
+    NGX_HTTP_SHIELD_SIG("formaction="),
+    NGX_HTTP_SHIELD_SIG("srcdoc="),
+    NGX_HTTP_SHIELD_SIG("expression("),          /* legacy IE CSS expression */
+    NGX_HTTP_SHIELD_SIG("fromcharcode("),
+    NGX_HTTP_SHIELD_SIG("eval(atob("),
+    NGX_HTTP_SHIELD_SIG("alert(document."),
+    NGX_HTTP_SHIELD_SIG("<script>alert"),
+    NGX_HTTP_SHIELD_SIG("javascript&colon;"),
 };
 
 /* ---- 3. Path traversal ------------------------------------------------- */
 static const ngx_http_shield_sig_t  ngx_http_shield_traversal[] = {
     NGX_HTTP_SHIELD_SIG("../"),
     NGX_HTTP_SHIELD_SIG("..\\"),
+    NGX_HTTP_SHIELD_SIG("....//"),        /* filter-bypass collapse         */
+    NGX_HTTP_SHIELD_SIG("....\\\\"),
     NGX_HTTP_SHIELD_SIG("..;/"),          /* Tomcat / Citrix path bypass    */
     NGX_HTTP_SHIELD_SIG(".%2e/"),         /* Apache CVE-2021-41773          */
+    NGX_HTTP_SHIELD_SIG("%2e%2e/"),
+    NGX_HTTP_SHIELD_SIG("..%2f"),
+    NGX_HTTP_SHIELD_SIG("..%5c"),
+    NGX_HTTP_SHIELD_SIG(".%%32%65"),      /* Apache CVE-2021-42013          */
     NGX_HTTP_SHIELD_SIG("/etc/passwd"),
     NGX_HTTP_SHIELD_SIG("/etc/shadow"),
+    NGX_HTTP_SHIELD_SIG("/etc/hosts"),
+    NGX_HTTP_SHIELD_SIG("/etc/group"),
     NGX_HTTP_SHIELD_SIG("/proc/self/environ"),
+    NGX_HTTP_SHIELD_SIG("/proc/self/cmdline"),
+    NGX_HTTP_SHIELD_SIG("/proc/self/fd/"),
     NGX_HTTP_SHIELD_SIG("win.ini"),
     NGX_HTTP_SHIELD_SIG("boot.ini"),
     NGX_HTTP_SHIELD_SIG("\\windows\\system32"),
+    NGX_HTTP_SHIELD_SIG("/windows/win.ini"),
 };
 
 /* ---- 4. Overlong-UTF-8 traversal (matched against RAW input) ----------- */
@@ -146,14 +199,34 @@ static const ngx_http_shield_sig_t  ngx_http_shield_cmdi[] = {
     NGX_HTTP_SHIELD_SIG("|curl "),
     NGX_HTTP_SHIELD_SIG("&&cat "),
     NGX_HTTP_SHIELD_SIG(";cat "),
+    NGX_HTTP_SHIELD_SIG(";id;"),
+    NGX_HTTP_SHIELD_SIG(";id "),
+    NGX_HTTP_SHIELD_SIG(";uname"),
+    NGX_HTTP_SHIELD_SIG("$(id)"),
     NGX_HTTP_SHIELD_SIG("$(curl"),
     NGX_HTTP_SHIELD_SIG("$(wget"),
     NGX_HTTP_SHIELD_SIG("`wget"),
     NGX_HTTP_SHIELD_SIG("`curl"),
+    NGX_HTTP_SHIELD_SIG("`id`"),
     NGX_HTTP_SHIELD_SIG("/bin/sh"),
     NGX_HTTP_SHIELD_SIG("/bin/bash"),
+    NGX_HTTP_SHIELD_SIG("bash -i"),
+    NGX_HTTP_SHIELD_SIG("/dev/tcp/"),
+    NGX_HTTP_SHIELD_SIG("${ifs}"),
+    NGX_HTTP_SHIELD_SIG("$ifs$"),
+    NGX_HTTP_SHIELD_SIG(";nc "),
+    NGX_HTTP_SHIELD_SIG("nc -e"),
+    NGX_HTTP_SHIELD_SIG("ncat -e"),
+    NGX_HTTP_SHIELD_SIG(";python -c"),
+    NGX_HTTP_SHIELD_SIG(";perl -e"),
     NGX_HTTP_SHIELD_SIG("chmod 777"),
+    NGX_HTTP_SHIELD_SIG("chmod +x"),
     NGX_HTTP_SHIELD_SIG("cmd.exe?/c"),
+    NGX_HTTP_SHIELD_SIG("/c powershell"),
+    NGX_HTTP_SHIELD_SIG("powershell -e"),
+    NGX_HTTP_SHIELD_SIG("powershell -enc"),
+    NGX_HTTP_SHIELD_SIG("certutil -urlcache"),
+    NGX_HTTP_SHIELD_SIG("certutil.exe -urlcache"),
     NGX_HTTP_SHIELD_SIG("/winnt/system32"),   /* Code Red / Nimda era       */
 };
 
@@ -161,11 +234,20 @@ static const ngx_http_shield_sig_t  ngx_http_shield_cmdi[] = {
 static const ngx_http_shield_sig_t  ngx_http_shield_lfi_rfi[] = {
     NGX_HTTP_SHIELD_SIG("php://input"),
     NGX_HTTP_SHIELD_SIG("php://filter"),
+    NGX_HTTP_SHIELD_SIG("php://fd"),
     NGX_HTTP_SHIELD_SIG("data://text"),
     NGX_HTTP_SHIELD_SIG("expect://"),
     NGX_HTTP_SHIELD_SIG("zip://"),
     NGX_HTTP_SHIELD_SIG("phar://"),
     NGX_HTTP_SHIELD_SIG("glob://"),
+    NGX_HTTP_SHIELD_SIG("rar://"),
+    NGX_HTTP_SHIELD_SIG("ogg://"),
+    NGX_HTTP_SHIELD_SIG("compress.zlib://"),
+    NGX_HTTP_SHIELD_SIG("compress.bzip2://"),
+    NGX_HTTP_SHIELD_SIG("gopher://"),        /* SSRF/RFI smuggling wrapper   */
+    NGX_HTTP_SHIELD_SIG("dict://"),
+    NGX_HTTP_SHIELD_SIG("file:///etc/"),
+    NGX_HTTP_SHIELD_SIG("pearcmd.php"),      /* LFI-to-RCE via PEAR          */
     /* Deliberately NOT "=http://" / "=https://": legitimate redirect and
      * callback params (?return=https://..., ?next=https://...) carry those
      * constantly, so they are far too broad for a near-zero-FP ruleset.
@@ -179,7 +261,13 @@ static const ngx_http_shield_sig_t  ngx_http_shield_crlf[] = {
     NGX_HTTP_SHIELD_SIG("%0a%0d"),
     NGX_HTTP_SHIELD_SIG("\r\nset-cookie"),
     NGX_HTTP_SHIELD_SIG("\r\nlocation:"),
+    NGX_HTTP_SHIELD_SIG("\r\ncontent-length"),
     NGX_HTTP_SHIELD_SIG("%0d%0aset-cookie"),
+    NGX_HTTP_SHIELD_SIG("%0d%0alocation:"),
+    NGX_HTTP_SHIELD_SIG("%0d%0acontent-length"),
+    NGX_HTTP_SHIELD_SIG("%0aset-cookie"),
+    NGX_HTTP_SHIELD_SIG("%e5%98%8a%e5%98%8d"), /* overlong-UTF-8 CR LF        */
+    NGX_HTTP_SHIELD_SIG("%u000d%u000a"),       /* IIS %u-encoded CRLF         */
 };
 
 /* ---- 8. Null byte / encoding abuse (matched against RAW input) --------- */
@@ -193,11 +281,22 @@ static const ngx_http_shield_sig_t  ngx_http_shield_nullbyte[] = {
 /* ---- 9. JNDI / template injection -------------------------------------- */
 static const ngx_http_shield_sig_t  ngx_http_shield_template[] = {
     NGX_HTTP_SHIELD_SIG("${jndi:"),       /* Log4Shell CVE-2021-44228       */
+    NGX_HTTP_SHIELD_SIG("jndi:ldap:"),
+    NGX_HTTP_SHIELD_SIG("jndi:rmi:"),
+    NGX_HTTP_SHIELD_SIG("jndi:dns:"),
+    NGX_HTTP_SHIELD_SIG("jndi:iiop:"),
+    NGX_HTTP_SHIELD_SIG("jndi:ldaps:"),
+    NGX_HTTP_SHIELD_SIG("jndi:nis:"),
     NGX_HTTP_SHIELD_SIG("${env:"),
     NGX_HTTP_SHIELD_SIG("${lower:"),
     NGX_HTTP_SHIELD_SIG("${upper:"),
     NGX_HTTP_SHIELD_SIG("${sys:"),
+    NGX_HTTP_SHIELD_SIG("${date:"),
+    NGX_HTTP_SHIELD_SIG("${ctx:"),
+    NGX_HTTP_SHIELD_SIG("${main:"),
+    NGX_HTTP_SHIELD_SIG("${::-"),         /* Log4Shell defanging bypass     */
     NGX_HTTP_SHIELD_SIG("${${"),          /* nested obfuscation             */
+    NGX_HTTP_SHIELD_SIG("${${lower:"),
     NGX_HTTP_SHIELD_SIG("#{7*7}"),
 };
 
@@ -206,6 +305,24 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
     NGX_HTTP_SHIELD_SIG("ro0ab"),         /* base64 of Java stream header    */
     NGX_HTTP_SHIELD_SIG("aced0005"),      /* hex of Java stream header       */
     NGX_HTTP_SHIELD_SIG("o:21:\"jdatabasedrivermysqli\""), /* Joomla 2015-8562 */
+    /* Well-known Java deserialization gadget classes -- no legitimate request
+     * carries these by name. */
+    NGX_HTTP_SHIELD_SIG("jdbcrowsetimpl"),
+    NGX_HTTP_SHIELD_SIG("templatesimpl"),
+    NGX_HTTP_SHIELD_SIG("com.sun.org.apache.xalan"),
+    NGX_HTTP_SHIELD_SIG("badattributevalueexpexception"),
+    NGX_HTTP_SHIELD_SIG("org.apache.commons.collections.functors"),
+    NGX_HTTP_SHIELD_SIG("org.apache.commons.collections4.functors"),
+    NGX_HTTP_SHIELD_SIG("com.mchange.v2.c3p0"),
+    NGX_HTTP_SHIELD_SIG("<java.lang.processbuilder"), /* XStream CVE-2017-9805 */
+    NGX_HTTP_SHIELD_SIG("<work:workcontext"),         /* WebLogic 2017-10271  */
+    NGX_HTTP_SHIELD_SIG("wls-wsat/coordinatorporttype"),
+    /* Fastjson / Jackson autotype to a native class. */
+    NGX_HTTP_SHIELD_SIG("\"@type\":\"com.sun."),
+    NGX_HTTP_SHIELD_SIG("\"@type\":\"java.lang"),
+    NGX_HTTP_SHIELD_SIG("\"@type\":\"org.apache"),
+    NGX_HTTP_SHIELD_SIG("\"@type\":\"ch.qos.logback"),
+    NGX_HTTP_SHIELD_SIG("\"@type\":\"com.alibaba"),
     NGX_HTTP_SHIELD_SIG("<!entity"),
     /* Deliberately NOT "<!doctype": legitimate HTML/XML bodies carry it.
      * XXE is caught by the entity declaration + an external system reference. */
@@ -223,9 +340,20 @@ static const ngx_http_shield_sig_t  ngx_http_shield_shellshock[] = {
 static const ngx_http_shield_sig_t  ngx_http_shield_php_rce[] = {
     NGX_HTTP_SHIELD_SIG("-d allow_url_include"),        /* CVE-2012-1823    */
     NGX_HTTP_SHIELD_SIG("-d auto_prepend_file"),
+    NGX_HTTP_SHIELD_SIG("-d auto_append_file"),
+    NGX_HTTP_SHIELD_SIG("-d allow_url_fopen"),
+    NGX_HTTP_SHIELD_SIG("-dsafe_mode"),
     NGX_HTTP_SHIELD_SIG("eval-stdin.php"),              /* CVE-2017-9841    */
     NGX_HTTP_SHIELD_SIG("invokefunction&function=call_user_func_array"), /* ThinkPHP */
     NGX_HTTP_SHIELD_SIG("s=/index/\\think"),
+    NGX_HTTP_SHIELD_SIG("think\\app/invokefunction"),
+    NGX_HTTP_SHIELD_SIG("?a=fetch&content=<?php"),
+    NGX_HTTP_SHIELD_SIG("<?php system("),
+    NGX_HTTP_SHIELD_SIG("<?php eval("),
+    NGX_HTTP_SHIELD_SIG("<?php passthru("),
+    NGX_HTTP_SHIELD_SIG("php_value auto_prepend"),
+    NGX_HTTP_SHIELD_SIG("/phppath/php"),
+    NGX_HTTP_SHIELD_SIG("allow_url_include=1"),
 };
 
 /* ---- 13. Struts / Spring RCE ------------------------------------------- */
@@ -233,16 +361,31 @@ static const ngx_http_shield_sig_t  ngx_http_shield_java_rce[] = {
     NGX_HTTP_SHIELD_SIG("%{(#"),          /* Struts OGNL CVE-2017-5638      */
     NGX_HTTP_SHIELD_SIG("${(#"),
     NGX_HTTP_SHIELD_SIG("(#_memberaccess"),
+    NGX_HTTP_SHIELD_SIG("#_memberaccess["),
+    NGX_HTTP_SHIELD_SIG("ognl.ognlcontext"),
+    NGX_HTTP_SHIELD_SIG("(#context["),
+    NGX_HTTP_SHIELD_SIG("@ognl.ognlruntime@"),
+    NGX_HTTP_SHIELD_SIG("struts.devmode"),
+    NGX_HTTP_SHIELD_SIG("redirect:${"),
+    NGX_HTTP_SHIELD_SIG("action:${"),
     NGX_HTTP_SHIELD_SIG("class.module.classloader"),    /* Spring4Shell     */
     NGX_HTTP_SHIELD_SIG("class['module']"),
+    NGX_HTTP_SHIELD_SIG("class.classloader"),
 };
 
 /* ---- 14. Java runtime eval --------------------------------------------- */
 static const ngx_http_shield_sig_t  ngx_http_shield_java_eval[] = {
     NGX_HTTP_SHIELD_SIG("java.lang.runtime"),
     NGX_HTTP_SHIELD_SIG("getruntime().exec"),
+    NGX_HTTP_SHIELD_SIG("runtime.getruntime"),
     NGX_HTTP_SHIELD_SIG("java.lang.processbuilder"),
+    NGX_HTTP_SHIELD_SIG("new processbuilder"),
     NGX_HTTP_SHIELD_SIG("t(java.lang.runtime)"),        /* ES Groovy 2015-1427 */
+    NGX_HTTP_SHIELD_SIG("javax.script.scriptengine"),
+    NGX_HTTP_SHIELD_SIG("freemarker.template.utility.execute"),
+    NGX_HTTP_SHIELD_SIG("<#assign"),                    /* Freemarker SSTI     */
+    NGX_HTTP_SHIELD_SIG("com.opensymphony.xwork2"),
+    NGX_HTTP_SHIELD_SIG("javax.naming.initialcontext"),
 };
 
 /* ---- 15. Rails YAML deserialization ------------------------------------ */
@@ -295,14 +438,31 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sensitive_file[] = {
     NGX_HTTP_SHIELD_SIG("/.git/"),
     NGX_HTTP_SHIELD_SIG("/.svn/"),
     NGX_HTTP_SHIELD_SIG("/.hg/"),
+    NGX_HTTP_SHIELD_SIG("/.bzr/"),
     NGX_HTTP_SHIELD_SIG("wp-config.php.bak"),
     NGX_HTTP_SHIELD_SIG("wp-config.php.save"),
     NGX_HTTP_SHIELD_SIG("wp-config.php.swp"),
+    NGX_HTTP_SHIELD_SIG("wp-config.php.orig"),
     NGX_HTTP_SHIELD_SIG("wp-config.php~"),
     NGX_HTTP_SHIELD_SIG("/.aws/credentials"),
     NGX_HTTP_SHIELD_SIG("/.ssh/id_rsa"),
+    NGX_HTTP_SHIELD_SIG("/.ssh/id_dsa"),
+    NGX_HTTP_SHIELD_SIG("/.ssh/authorized_keys"),
     NGX_HTTP_SHIELD_SIG("/.ds_store"),
     NGX_HTTP_SHIELD_SIG("/.htpasswd"),
+    NGX_HTTP_SHIELD_SIG("/.bash_history"),
+    NGX_HTTP_SHIELD_SIG("/.mysql_history"),
+    NGX_HTTP_SHIELD_SIG("/.npmrc"),
+    NGX_HTTP_SHIELD_SIG("/.dockercfg"),
+    NGX_HTTP_SHIELD_SIG("/.docker/config.json"),
+    NGX_HTTP_SHIELD_SIG("/.kube/config"),
+    NGX_HTTP_SHIELD_SIG("/backup.sql"),
+    NGX_HTTP_SHIELD_SIG("/dump.sql"),
+    NGX_HTTP_SHIELD_SIG("/database.sql"),
+    NGX_HTTP_SHIELD_SIG("/.git-credentials"),
+    NGX_HTTP_SHIELD_SIG("/config/database.yml"),
+    NGX_HTTP_SHIELD_SIG("/.env.production"),
+    NGX_HTTP_SHIELD_SIG("/.env.local"),
 };
 
 /* ---- 24. Webshell probes ----------------------------------------------- */
@@ -314,16 +474,101 @@ static const ngx_http_shield_sig_t  ngx_http_shield_webshell[] = {
     NGX_HTTP_SHIELD_SIG("alfa.php"),
     NGX_HTTP_SHIELD_SIG("/shell.php?cmd="),
     NGX_HTTP_SHIELD_SIG("/cmd.php?cmd="),
+    NGX_HTTP_SHIELD_SIG("/shell.jsp"),
+    NGX_HTTP_SHIELD_SIG("/cmd.jsp"),
+    NGX_HTTP_SHIELD_SIG("/tunnel.jsp"),
     NGX_HTTP_SHIELD_SIG("filesman"),
+    NGX_HTTP_SHIELD_SIG("indoxploit"),
+    NGX_HTTP_SHIELD_SIG("p0wny"),
+    NGX_HTTP_SHIELD_SIG("weevely"),
+    NGX_HTTP_SHIELD_SIG("antsword"),
+    NGX_HTTP_SHIELD_SIG("behinder"),
+    NGX_HTTP_SHIELD_SIG("regeorg"),
+    NGX_HTTP_SHIELD_SIG("gel4y"),
+    NGX_HTTP_SHIELD_SIG("aspxspy"),
 };
 
 /* ---- 25. Cloud metadata SSRF ------------------------------------------- */
 static const ngx_http_shield_sig_t  ngx_http_shield_ssrf_meta[] = {
     NGX_HTTP_SHIELD_SIG("169.254.169.254"),
+    NGX_HTTP_SHIELD_SIG("100.100.100.200"),       /* Alibaba Cloud metadata  */
+    NGX_HTTP_SHIELD_SIG("192.0.0.192"),           /* Oracle Cloud metadata   */
     NGX_HTTP_SHIELD_SIG("metadata.google.internal"),
     NGX_HTTP_SHIELD_SIG("/latest/meta-data/"),
+    NGX_HTTP_SHIELD_SIG("/latest/user-data"),
+    NGX_HTTP_SHIELD_SIG("/latest/dynamic/instance-identity"),
     NGX_HTTP_SHIELD_SIG("/metadata/v1/"),
+    NGX_HTTP_SHIELD_SIG("/metadata/instance"),    /* Azure IMDS              */
     NGX_HTTP_SHIELD_SIG("/computemetadata/v1/"),
+    NGX_HTTP_SHIELD_SIG("/opc/v1/instance"),      /* Oracle IMDS             */
+    NGX_HTTP_SHIELD_SIG("2852039166"),            /* decimal 169.254.169.254 */
+    NGX_HTTP_SHIELD_SIG("0xa9fea9fe"),            /* hex 169.254.169.254     */
+};
+
+/* ---- 26. NoSQL injection ----------------------------------------------- */
+/* Only the operator forms that no legitimate query param carries verbatim --
+ * bracketed MongoDB operators and server-side-JS $where. Plain values like a
+ * param literally named "gt" are not matched. */
+static const ngx_http_shield_sig_t  ngx_http_shield_nosql[] = {
+    NGX_HTTP_SHIELD_SIG("[$ne]"),
+    NGX_HTTP_SHIELD_SIG("[$gt]"),
+    NGX_HTTP_SHIELD_SIG("[$lt]"),
+    NGX_HTTP_SHIELD_SIG("[$regex]"),
+    NGX_HTTP_SHIELD_SIG("[$where]"),
+    NGX_HTTP_SHIELD_SIG("[$exists]"),
+    NGX_HTTP_SHIELD_SIG("{\"$where\":"),
+    NGX_HTTP_SHIELD_SIG("{\"$where\" :"),
+    NGX_HTTP_SHIELD_SIG("$where:function"),
+    NGX_HTTP_SHIELD_SIG("$func:"),
+    NGX_HTTP_SHIELD_SIG("';return true;var"),
+};
+
+/* ---- 27. Server-side template injection -------------------------------- */
+/* The arithmetic-probe and object-traversal forms attackers use to detect an
+ * SSTI sink -- never a normal request value. */
+static const ngx_http_shield_sig_t  ngx_http_shield_ssti[] = {
+    NGX_HTTP_SHIELD_SIG("{{7*7}}"),
+    NGX_HTTP_SHIELD_SIG("${7*7}"),
+    NGX_HTTP_SHIELD_SIG("#{7*7}"),
+    NGX_HTTP_SHIELD_SIG("*{7*7}"),
+    NGX_HTTP_SHIELD_SIG("{{7*'7'}}"),
+    NGX_HTTP_SHIELD_SIG("<%= 7*7"),
+    NGX_HTTP_SHIELD_SIG("{{config"),
+    NGX_HTTP_SHIELD_SIG("{{request"),
+    NGX_HTTP_SHIELD_SIG("{{self"),
+    NGX_HTTP_SHIELD_SIG("{{''.__class__"),
+    NGX_HTTP_SHIELD_SIG("{{().__class__"),
+    NGX_HTTP_SHIELD_SIG("${t(java"),
+    NGX_HTTP_SHIELD_SIG("#set($"),
+    NGX_HTTP_SHIELD_SIG("[[${"),                  /* Thymeleaf inline        */
+};
+
+/* ---- 28. Known n-day exploit paths ------------------------------------- */
+/* Fixed request paths that only appear in mass-scan exploitation of specific
+ * long-patched products. No legitimate client on a general host requests them. */
+static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
+    NGX_HTTP_SHIELD_SIG("/wls-wsat/"),               /* WebLogic 2017-10271  */
+    NGX_HTTP_SHIELD_SIG("/mgmt/tm/util/bash"),       /* F5 CVE-2021-22986    */
+    NGX_HTTP_SHIELD_SIG("/mgmt/shared/authn/login"), /* F5 CVE-2022-1388     */
+    NGX_HTTP_SHIELD_SIG("/hipreport.esp"),           /* PAN-OS CVE-2024-3400 */
+    NGX_HTTP_SHIELD_SIG("/remote/fgt_lang"),         /* Fortinet 2018-13379  */
+    NGX_HTTP_SHIELD_SIG("/+cscoe+/"),                /* Cisco ASA path       */
+    NGX_HTTP_SHIELD_SIG("/dana-na/"),                /* Pulse Secure         */
+    NGX_HTTP_SHIELD_SIG("/cgi-bin/luci"),            /* OpenWrt/router       */
+    NGX_HTTP_SHIELD_SIG("/boaform/admin/formlogin"), /* router botnet probe  */
+    NGX_HTTP_SHIELD_SIG("/gponform/diag_form"),      /* GPON CVE-2018-10561  */
+    NGX_HTTP_SHIELD_SIG("/hnap1/"),                  /* D-Link HNAP          */
+    NGX_HTTP_SHIELD_SIG("/setup.cgi?next_file"),     /* Netgear             */
+    NGX_HTTP_SHIELD_SIG("/solr/admin/cores"),        /* Solr RCE probes      */
+    NGX_HTTP_SHIELD_SIG("/actuator/gateway/routes"), /* Spring Gateway RCE   */
+    NGX_HTTP_SHIELD_SIG("/_ignition/execute-solution"), /* Laravel 2021-3129 */
+    NGX_HTTP_SHIELD_SIG("/api/jsonws/invoke"),       /* Liferay 2020-7961    */
+    NGX_HTTP_SHIELD_SIG("/console/css/%252e"),       /* WebLogic 2020-14882  */
+    NGX_HTTP_SHIELD_SIG("/autodiscover/autodiscover.json"), /* ProxyShell    */
+    NGX_HTTP_SHIELD_SIG("/owa/auth/x."),             /* ProxyLogon probe     */
+    NGX_HTTP_SHIELD_SIG("/vpns/portal/scripts"),     /* Citrix 2019-19781    */
+    NGX_HTTP_SHIELD_SIG("/securityrealm/user/admin/descriptorbyname"), /* Jenkins */
+    NGX_HTTP_SHIELD_SIG("/config/getuser?index="),   /* Zyxel 2020-29583     */
 };
 
 /* One row per signature-table category. Structural categories (httpoxy,
@@ -344,8 +589,11 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
         ngx_http_shield_sqli, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_XSS, "xss",
         ngx_http_shield_xss, NGX_HTTP_SHIELD_MATCH_DECODED),
+    /* traversal also matches RAW: several signatures are encoded forms
+     * (..%2f, ..%5c, .%%32%65) whose whole point is the still-encoded bytes. */
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_TRAVERSAL, "traversal",
-        ngx_http_shield_traversal, NGX_HTTP_SHIELD_MATCH_DECODED),
+        ngx_http_shield_traversal,
+        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_OVERLONG, "overlong",
         ngx_http_shield_overlong, NGX_HTTP_SHIELD_MATCH_RAW),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_CMDI, "cmdi",
@@ -391,6 +639,15 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
         ngx_http_shield_webshell, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SSRF_META, "ssrf_meta",
         ngx_http_shield_ssrf_meta, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_NOSQL, "nosql",
+        ngx_http_shield_nosql,
+        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
+    NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SSTI, "ssti",
+        ngx_http_shield_ssti,
+        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
+    NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "exploit_path",
+        ngx_http_shield_exploit_path,
+        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
 };
 
 #define NGX_HTTP_SHIELD_NCATEGORIES                                           \

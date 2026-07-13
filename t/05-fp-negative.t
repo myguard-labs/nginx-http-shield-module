@@ -82,3 +82,55 @@ GET /t?q=java+runtime+environment+download
 --- request
 GET /t?section=environment
 --- error_code: 200
+
+=== TEST 11: a param named "gt"/"ne" without the operator-bracket form
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?sort=gt&order=ne&greater=true
+--- error_code: 200
+
+=== TEST 12: mustache-looking value without the SSTI probe form
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?tpl=hello%20%7B%7Bname%7D%7D%20welcome%20back
+--- error_code: 200
+
+=== TEST 13: "runtime"/"configuration" prose is fine
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=spring%20boot%20runtime%20configuration%20guide
+--- error_code: 200
+
+=== TEST 14: a legitimate redirect to an https URL is fine
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?redirect_uri=https://app.example.com/callback&next=https://example.com/
+--- error_code: 200
+
+=== TEST 15: a normal Git-related word without the /.git/ path
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?repo=github-actions&topic=gitops
+--- error_code: 200
+
+=== TEST 16: a JSON body with a legit "type" field (not @type gadget)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"type":"user","name":"alice","runtime":"node"}
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 17: an actuator health check that is not the gateway RCE path
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/actuator/health
+--- error_code: 200
