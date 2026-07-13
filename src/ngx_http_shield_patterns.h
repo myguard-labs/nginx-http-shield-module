@@ -14,8 +14,8 @@
  *     scanning, so uppercase bytes here can never match.
  *   - Never a bare single keyword ("select", "or", "cat"). Use a multi-token
  *     combination that only appears in an attack ("union select", "; wget ").
- *     t/28-fp-negative.t exists to catch violations of this rule.
- *   - Percent-encoding is already decoded twice by the engine, so write the
+ *     t/05-fp-negative.t exists to catch violations of this rule.
+ *   - Percent-encoding is already decoded by the engine, so write the
  *     decoded form ("../"), not "%2e%2e%2f". The exceptions are signatures
  *     that only make sense in their encoded form (overlong UTF-8, %00, %0d%0a);
  *     those are matched against the RAW input as well as the decoded one.
@@ -434,7 +434,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_xmlrpc[] = {
     NGX_HTTP_SHIELD_SIG("system.multicall"),
     /* No "wp.getusersblogs": it is a documented, legitimate WordPress XML-RPC
      * method that ordinary clients call. It only signals abuse in volume, and
-     * a substring engine cannot express that, so it stays out per the
+     * the engine matches each signature independently -- it cannot yet require
+     * a SET of co-occurring tokens -- so it stays out per the
      * near-zero-false-positive contract. The brute-force amplifier itself
      * (system.multicall) is still blocked. */
 };
@@ -614,8 +615,9 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/webtools/control/programexport"), /* OFBiz 2023-49070 */
     /* OFBiz requirePasswordChange=Y and Metabase /api/setup/validate are both
      * reachable on legitimate flows (password change / first-run install), so
-     * they are deliberately omitted -- the substring engine cannot AND them
-     * with the gadget token that would make them attack-only. */
+     * they are deliberately omitted -- the engine matches each signature
+     * independently and cannot yet AND them with the gadget token that would
+     * make them attack-only. */
     NGX_HTTP_SHIELD_SIG("/gwtest/formssso?event="),  /* Citrix 2023-3519     */
     NGX_HTTP_SHIELD_SIG("/vpn/../vpns/"),            /* Citrix 2019-19781    */
     NGX_HTTP_SHIELD_SIG("/newbm.pl"),                /* Citrix bookmark smuggle */

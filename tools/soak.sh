@@ -4,7 +4,7 @@
 #
 # Fires a mixed storm of attack payloads (must be blocked) and benign requests
 # (must pass) at a `shield block` location, in both URI and request-body form,
-# so the module's normalize + substring-scan + body-buffering paths churn for
+# so the module's normalize + Aho-Corasick scan + body-buffering paths churn for
 # minutes under a sanitizer or valgrind. The single-shot Test::Nginx suite
 # proves correctness once per case; this proves the same code stays clean under
 # sustained, concurrent, adversarial load with no leak / OOB / race.
