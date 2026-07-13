@@ -5,6 +5,15 @@ name: CI Deep
 # regression), valgrind.yml (memcheck lite soak) and security-scanners.yml
 # (scanners) — this file stays the exhaustive monthly + dispatch run.
 #
+# RUNNER TRUST BOUNDARY: this is the ONLY workflow allowed on the self-hosted
+# builder02 runner, because it is never triggered by `pull_request` — schedule
+# and workflow_dispatch both run repository-owner-approved code from a branch.
+# Every PR-triggered workflow MUST run on a GitHub-hosted runner: this is a
+# public repository, so a fork PR would otherwise execute attacker-controlled
+# repository scripts (tools/ci-build.sh, fuzz/build.sh, tools/soak.sh) on the
+# build host. See GitHub's guidance on self-hosted runners and public repos:
+# https://docs.github.com/en/actions/reference/security/secure-use
+#
 # Jobs: fuzz (long, scan target) · memcheck soak · helgrind soak · scanners.
 #   * memcheck AND helgrind run via tools/soak.sh (USE_VALGRIND / USE_HELGRIND),
 #     which passes --suppressions=tools/valgrind.supp and --error-exitcode=99.
@@ -43,6 +52,8 @@ jobs:
     steps:
       - name: Checkout module
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Install build deps
         run: |
@@ -120,6 +131,8 @@ jobs:
     steps:
       - name: Checkout module
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -152,6 +165,8 @@ jobs:
     steps:
       - name: Checkout module
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -184,6 +199,8 @@ jobs:
     steps:
       - name: Checkout module
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           sudo apt-get update
