@@ -80,3 +80,33 @@ GET /t?url=/public/plugins/graph/x/y/z/module.js
 --- request
 GET /t?url=/public/plugins/graph/module.js
 --- error_code: 200
+
+=== TEST 9: Jenkins CLI file read -- /cli AND remoting=true (CVE-2024-23897)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/cli?remoting=true
+--- error_code: 403
+
+=== TEST 10: /cli alone is a legitimate Jenkins endpoint, not blocked
+# The browser CLI uses the websocket transport; only the remoting channel
+# carries remoting=true. The endpoint on its own must pass.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/cli
+--- error_code: 200
+
+=== TEST 11: VMware Workspace ONE SSTI -- catalog-portal verify AND freemarker (CVE-2022-22954)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?x=/catalog-portal/ui/oauth/verify+freemarker
+--- error_code: 403
+
+=== TEST 12: the catalog-portal verify endpoint alone is a real route, not blocked
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?x=/catalog-portal/ui/oauth/verify
+--- error_code: 200

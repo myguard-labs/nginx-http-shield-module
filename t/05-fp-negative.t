@@ -425,3 +425,24 @@ Content-Type: application/json
 --- more_headers
 Content-Type: application/json
 --- error_code: 405
+
+=== TEST 51: a changelog body naming the phase-4 n-day paths is not exploit_path
+# Same NO_BODY guarantee for the paths added in the CVE sweep: naming them in
+# prose is ordinary security-writeup content, not an attack.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"note\":\"Patched MOVEit /moveitisapi/moveitisapi.dll and TeamCity /app/rest/debug/authenticationtest.jsp today.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 52: the Jenkins remoting=true toggle alone is not command injection
+# A rule TERM on its own must never block: "remoting=true" is an ordinary
+# query value until it is paired with the /cli endpoint.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?transport=remoting=true
+--- error_code: 200

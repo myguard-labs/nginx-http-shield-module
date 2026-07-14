@@ -787,6 +787,17 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/remote/fgt_lang?lang=/../"), /* Fortinet 2018-13379 tail */
     NGX_HTTP_SHIELD_SIG("sslvpn_websession"),        /* Fortinet 2018-13379 target */
     NGX_HTTP_SHIELD_SIG("/api/v1/totp/user-backup-code/../"), /* Ivanti 2024-21887 */
+    /* Phase-4 CVE sweep: mass-exploited n-day endpoints. Each is a request
+     * PATH that only a scanner requests -- attack-only in the target, and
+     * exempt from the body scan (exploit_path carries NO_BODY), so a writeup
+     * naming any of them in prose is not blocked. */
+    NGX_HTTP_SHIELD_SIG("/moveitisapi/moveitisapi.dll"), /* MOVEit 2023-34362  */
+    NGX_HTTP_SHIELD_SIG("/guestaccess.aspx"),            /* MOVEit 2023-34362  */
+    NGX_HTTP_SHIELD_SIG("/app/rest/debug/authenticationtest.jsp"), /* TeamCity 2023-42793 */
+    NGX_HTTP_SHIELD_SIG("/json/setup-restore"),          /* Confluence 2023-22518 */
+    NGX_HTTP_SHIELD_SIG("/setup/setupadministrator.action"), /* Confluence 2023-22515 */
+    NGX_HTTP_SHIELD_SIG("/dana-ws/saml20.ws"),           /* Ivanti 2024-21893  */
+    NGX_HTTP_SHIELD_SIG("/_async/asyncresponseservice"), /* WebLogic 2019-2725 */
     NGX_HTTP_SHIELD_SIG("/goform/set_limitclient_cfg"), /* router botnet probe */
 };
 
@@ -995,6 +1006,25 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_sqli_sleep[] = {
     NGX_HTTP_SHIELD_SIG("select "),
 };
 
+/* Jenkins CVE-2024-23897: arbitrary file read through the CLI. "/cli" is a
+ * real, routinely-hit Jenkins endpoint, so it is not a signature on its own.
+ * The exploit specifically drives the remoting-protocol download channel --
+ * "remoting=true" -- which the web UI never sends (the browser CLI uses the
+ * websocket transport). The pair is attack-only. */
+static const ngx_http_shield_sig_t  ngx_http_shield_rule_jenkins_cli[] = {
+    NGX_HTTP_SHIELD_SIG("/cli"),
+    NGX_HTTP_SHIELD_SIG("remoting=true"),
+};
+
+/* VMware Workspace ONE Access CVE-2022-22954: server-side template injection.
+ * The catalog-portal verify endpoint is a legitimate product route; the attack
+ * is that route carrying a FreeMarker payload. Pairing the two keeps the whole
+ * product working while blocking the injection. */
+static const ngx_http_shield_sig_t  ngx_http_shield_rule_vmware_ssti[] = {
+    NGX_HTTP_SHIELD_SIG("/catalog-portal/ui/oauth/verify"),
+    NGX_HTTP_SHIELD_SIG("freemarker"),
+};
+
 /* No wp.getUsersBlogs rule. The obvious pairing -- wp.getUsersBlogs AND a
  * <methodCall> wrapper -- is worthless: <methodCall> is the XML-RPC envelope
  * EVERY client sends for EVERY method, so the rule would block the legitimate
@@ -1024,6 +1054,10 @@ static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
         ngx_http_shield_rule_metabase, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_SQLI, "sqli_time_based",
         ngx_http_shield_rule_sqli_sleep, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "jenkins_cli_read",
+        ngx_http_shield_rule_jenkins_cli, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "vmware_wsone_ssti",
+        ngx_http_shield_rule_vmware_ssti, NGX_HTTP_SHIELD_MATCH_DECODED),
 };
 
 #define NGX_HTTP_SHIELD_NRULES                                                \
@@ -1090,7 +1124,11 @@ typedef char ngx_http_shield_cat_fits_in_mask[
      + sizeof(ngx_http_shield_rule_metabase)                                  \
        / sizeof(ngx_http_shield_rule_metabase[0])                             \
      + sizeof(ngx_http_shield_rule_sqli_sleep)                                \
-       / sizeof(ngx_http_shield_rule_sqli_sleep[0]))
+       / sizeof(ngx_http_shield_rule_sqli_sleep[0])                           \
+     + sizeof(ngx_http_shield_rule_jenkins_cli)                               \
+       / sizeof(ngx_http_shield_rule_jenkins_cli[0])                          \
+     + sizeof(ngx_http_shield_rule_vmware_ssti)                               \
+       / sizeof(ngx_http_shield_rule_vmware_ssti[0]))
 
 typedef char ngx_http_shield_rule_terms_fit_in_mask[
     (NGX_HTTP_SHIELD_NRULE_TERMS <= 64) ? 1 : -1];
