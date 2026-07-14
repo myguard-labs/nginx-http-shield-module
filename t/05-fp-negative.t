@@ -467,6 +467,19 @@ GET /t?transport=remoting=true
 Content-Type: application/json
 --- error_code: 405
 
+=== TEST 53b: a README body naming AI-agent config dirs is not sensitive_file
+# session-14 CRS-derived rows (/.claude/, /.cursor/, /.terraform/, ...) must
+# inherit the same NO_BODY guarantee as the rest of this table -- a docs page
+# explaining where these tools keep their config is ordinary content.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"post\":\"Add /.claude/ and /.cursor/ to .gitignore; Terraform state lives under /.terraform/.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
 === TEST 54: a security writeup body naming known webshell tool names is webshell
 # webshell sigs are malware NAMES, not code -- unlike sensitive_file they are
 # body-scanned by design (session 9). A blog post naming these tools in prose
