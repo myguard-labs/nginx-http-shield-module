@@ -36,14 +36,14 @@ percent-decoding:
 | `sqli` | `union select`, `' or 1=1`, `into outfile`, `information_schema`; `sleep(` **+** a `select` ([AND-rule](#and-rules)) |
 | `xss` | `<script`, `javascript:`, `onerror=`, `document.cookie` |
 | `traversal` | `../`, `..\`, `..;/`, `.%2e/` (CVE-2021-41773), `/etc/passwd` |
-| `overlong` | overlong-UTF-8 `/` and `\` (`%c0%af`, `%c1%9c`) — IIS/Nimda era |
+| `overlong` | overlong-UTF-8 `/`, `\`, `.` and NUL in every width (`%c0%af`, `%e0%80%af`, `%f0%80%80%af`, `%c1%9c`, `%c0%80`), IIS `%u002f` — illegal UTF-8 by definition, so attack-only |
 | `cmdi` | `;wget `, `$(curl`, `/bin/sh`, `chmod 777`, `/winnt/system32` |
 | `lfi` | `php://filter`, `data://`, `expect://`, `phar://` |
 | `crlf` | `%0d%0a`, response-splitting `\r\nSet-Cookie:` |
-| `nullbyte` | `%00`, double-encoded `.` / `/` |
+| `nullbyte` | `%00`, `%u0000`, double- and triple-encoded `.` / `/` / `\` (`%252e`, `%25252f`, `%25%32%65`) |
 | `template` | `${jndi:` + `jndi:ldap/rmi/dns/iiop`, `${env:`, `${::-`, nested `${${` |
 | `deserial` | Java stream magic, gadget classes (`jdbcRowSetImpl`, `TemplatesImpl`, commons-collections), Fastjson `@type` autotype, WebLogic/XStream, Joomla obj-injection (CVE-2015-8562), XXE `<!entity` |
-| `shellshock` | `() {` (CVE-2014-6271) |
+| `shellshock` | the exported-function prologue with a **shell** body — `() { :;}` and its spacing variants, `() { echo`, `() { /bin/`, CVE-2014-6278's `() { _;} >_[$($())]`. Not the bare `() {`: that is also JavaScript's anonymous-function token, and this module scans `text/*` and JSON bodies |
 | `php_rce` | PHP-CGI `-d allow_url_include` (CVE-2012-1823), PHPUnit `eval-stdin.php`, ThinkPHP |
 | `java_rce` | Struts OGNL `%{(#` (CVE-2017-5638), Spring4Shell `class.module.classloader`, Confluence OGNL `@java.lang.runtime@getruntime().exec(` (CVE-2022-26134) |
 | `java_eval` | `java.lang.runtime`, `getruntime().exec` |
