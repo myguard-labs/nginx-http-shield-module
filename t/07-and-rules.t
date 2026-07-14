@@ -45,6 +45,8 @@ GET /t?p=/webtools/control/main&requirePasswordChange=Y
 {\"token\":\"x\",\"details\":{\"details\":{\"db\":\"zip:/app/metabase.jar\"},\"engine\":\"h2\"},\"url\":\"/api/setup/validate\",\"conn\":\"jdbc:h2:mem:test\"}"
 --- more_headers
 Content-Type: application/json
+--- error_log
+category=deserial
 --- error_code: 403
 
 === TEST 5: time-based SQLi -- sleep( paired with a SELECT
