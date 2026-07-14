@@ -453,3 +453,30 @@ Content-Type: application/json
 --- request
 GET /t?transport=remoting=true
 --- error_code: 200
+
+=== TEST 53: a security writeup body naming credential-leak filenames is not sensitive_file
+# sensitive_file is NO_BODY: its signatures are request PATHS attackers probe
+# for, delivered in the target, never the body. New session-13 rows
+# (/id_rsa, /.netrc, /composer.json.bak, ...) must inherit the same guarantee.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"post\":\"Never commit /id_rsa or /.netrc; a leaked /composer.json.bak once exposed prod creds.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 54: a security writeup body naming known webshell tool names is webshell
+# webshell sigs are malware NAMES, not code -- unlike sensitive_file they are
+# body-scanned by design (session 9). A blog post naming these tools in prose
+# IS expected to fire; this pins that the new session-13 names behave the same
+# as the pre-existing ones (weevely/antsword), not a silent NO_BODY regression.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"post\":\"Incident review: attacker dropped smevk on the box, same crew linked to xleet marketplace listings.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 403
