@@ -674,6 +674,18 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sensitive_file[] = {
     NGX_HTTP_SHIELD_SIG("/.ftpconfig"),
     NGX_HTTP_SHIELD_SIG("/composer.json.bak"),
     NGX_HTTP_SHIELD_SIG("/artisan.bak"),
+    /* AI coding-agent config/credential directories -- attackers now probe for
+     * these the same way they probe .git/.aws/.ssh. Sourced from CRS
+     * ai-critical-artifacts.data. NO_BODY like the rest of this table: these
+     * are dotfile directory names that tutorials and READMEs name in prose. */
+    NGX_HTTP_SHIELD_SIG("/.claude/"),
+    NGX_HTTP_SHIELD_SIG("/.cursor/"),
+    NGX_HTTP_SHIELD_SIG("/.aider/"),
+    NGX_HTTP_SHIELD_SIG("/.codex/"),
+    NGX_HTTP_SHIELD_SIG("/.n8n/"),
+    NGX_HTTP_SHIELD_SIG("/.gemini/"),
+    NGX_HTTP_SHIELD_SIG("/.terraform/"),
+    NGX_HTTP_SHIELD_SIG("/.dockerenv"),
 };
 
 /* ---- 24. Webshell probes ----------------------------------------------- */

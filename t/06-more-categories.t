@@ -452,32 +452,23 @@ GET /t/developmentserver/metadatauploader
 GET /t/_layouts/15/ToolPane.aspx
 --- error_code: 403
 
-=== TEST 58: session-14 deserial -- BeanShell gadget class in body
+=== TEST 61: session-14 sensitive_file -- Claude Code project config probe
 --- config
     location /t { shield block; empty_gif; }
 --- request
-POST /t
-{"class":"bsh.Interpreter","source":"exec('id')"}
---- more_headers
-Content-Type: application/json
+GET /t/.claude/settings.local.json
 --- error_code: 403
 
-=== TEST 59: session-14 deserial -- Groovy shell gadget class in body
+=== TEST 62: session-14 sensitive_file -- Cursor config probe
 --- config
     location /t { shield block; empty_gif; }
 --- request
-POST /t
-{"class":"groovy.lang.GroovyShell","script":"'id'.execute()"}
---- more_headers
-Content-Type: application/json
+GET /t/.cursor/mcp.json
 --- error_code: 403
 
-=== TEST 60: session-14 deserial -- javax EL processor gadget class in body
+=== TEST 63: session-14 sensitive_file -- Terraform state probe
 --- config
     location /t { shield block; empty_gif; }
 --- request
-POST /t
-{"class":"javax.el.ELProcessor","expr":"''.getClass()"}
---- more_headers
-Content-Type: application/json
+GET /t/.terraform/terraform.tfstate
 --- error_code: 403
