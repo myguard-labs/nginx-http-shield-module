@@ -199,13 +199,53 @@ static const ngx_http_shield_sig_t  ngx_http_shield_traversal[] = {
     NGX_HTTP_SHIELD_SIG("/windows/win.ini"),
 };
 
-/* ---- 4. Overlong-UTF-8 traversal (matched against RAW input) ----------- */
+/* ---- 4. Overlong-UTF-8 traversal (matched against RAW input) -----------
+ *
+ * An overlong encoding is a UTF-8 sequence that uses more bytes than the code
+ * point needs. It is ILLEGAL UTF-8 by definition -- a conforming encoder never
+ * emits one -- and that is exactly why it is here: a decoder that accepts it
+ * (older IIS, some Java and PHP stacks) turns "%c0%af" back into '/', so the
+ * sequence is a way to smuggle a path separator past a filter that only looked
+ * for the ASCII byte. Nothing legitimate is being under-matched by listing
+ * every width: the 2-, 3-, 4- and 5-byte forms of the same character are all
+ * invalid, so all of them are attack-only.
+ *
+ * The IIS "%u" forms are the same idea in a different notation: %u002f decodes
+ * to '/' on stacks that honour it. No client has a reason to %u-encode a plain
+ * ASCII character.
+ *
+ * Deliberately NOT here: %uff0f (fullwidth solidus, U+FF0F) and %u2215
+ * (division slash). Those are real, legal characters that CJK text carries, so
+ * they are a false-positive risk rather than an encoding trick.
+ */
 static const ngx_http_shield_sig_t  ngx_http_shield_overlong[] = {
-    NGX_HTTP_SHIELD_SIG("%c0%af"),        /* overlong '/'                   */
-    NGX_HTTP_SHIELD_SIG("%c1%9c"),        /* overlong '\'                   */
-    NGX_HTTP_SHIELD_SIG("%c0%2f"),
-    NGX_HTTP_SHIELD_SIG("%c0%ae"),        /* overlong '.'                   */
+    /* '/' -- 2, 3, 4 and 5 byte overlong forms. */
+    NGX_HTTP_SHIELD_SIG("%c0%af"),
     NGX_HTTP_SHIELD_SIG("%e0%80%af"),
+    NGX_HTTP_SHIELD_SIG("%f0%80%80%af"),
+    NGX_HTTP_SHIELD_SIG("%f8%80%80%80%af"),
+    NGX_HTTP_SHIELD_SIG("%fc%80%80%80%80%af"),
+    /* '/' with the trailing byte left as a literal ASCII '/' percent-encoded. */
+    NGX_HTTP_SHIELD_SIG("%c0%2f"),
+    NGX_HTTP_SHIELD_SIG("%e0%80%2f"),
+    /* '\' -- the Windows separator, 2 and 3 byte overlong forms. */
+    NGX_HTTP_SHIELD_SIG("%c1%9c"),
+    NGX_HTTP_SHIELD_SIG("%c0%9c"),
+    NGX_HTTP_SHIELD_SIG("%e0%80%9c"),
+    NGX_HTTP_SHIELD_SIG("%c1%1c"),
+    /* '.' -- the other half of a traversal. */
+    NGX_HTTP_SHIELD_SIG("%c0%ae"),
+    NGX_HTTP_SHIELD_SIG("%e0%80%ae"),
+    NGX_HTTP_SHIELD_SIG("%f0%80%80%ae"),
+    /* NUL as an overlong sequence: the "modified UTF-8" encoding of U+0000,
+     * used to terminate a string inside a decoder that rejects a bare %00. */
+    NGX_HTTP_SHIELD_SIG("%c0%80"),
+    NGX_HTTP_SHIELD_SIG("%e0%80%80"),
+    /* IIS %u-encoded ASCII: pure evasion notation, never legitimate. */
+    NGX_HTTP_SHIELD_SIG("%u002f"),        /* '/'                            */
+    NGX_HTTP_SHIELD_SIG("%u005c"),        /* '\'                            */
+    NGX_HTTP_SHIELD_SIG("%u002e"),        /* '.'                            */
+    NGX_HTTP_SHIELD_SIG("%u0025"),        /* '%' -- re-encoding gadget      */
 };
 
 /* ---- 5. Command injection ---------------------------------------------- */
@@ -287,12 +327,41 @@ static const ngx_http_shield_sig_t  ngx_http_shield_crlf[] = {
     NGX_HTTP_SHIELD_SIG("%u000d%u000a"),       /* IIS %u-encoded CRLF         */
 };
 
-/* ---- 8. Null byte / encoding abuse (matched against RAW input) --------- */
+/* ---- 8. Null byte / encoding abuse (matched against RAW input) ---------
+ *
+ * Two related tricks, both aimed at a decoder mismatch rather than at any one
+ * application.
+ *
+ * A NUL truncates the string in whatever C-backed layer eventually handles it
+ * ("/etc/passwd%00.png" passes an extension check and opens /etc/passwd), so a
+ * percent-encoded NUL in a request target has no legitimate reading at all.
+ *
+ * Double encoding is the same mismatch one level up: "%252e" is the literal
+ * text "%2e" after one decode, and ".." after a second. It only pays off when
+ * two layers each decode once -- which is precisely the bug being exploited.
+ * A client that wants a literal "%" in a value sends "%25" and stops; it does
+ * not go on to encode the digits of an escape sequence it never wrote.
+ *
+ * Matched against the RAW input, because after the engine's single decode a
+ * "%00" is a NUL byte and a "%252e" is the text "%2e" -- the encoded form IS
+ * the signature here.
+ */
 static const ngx_http_shield_sig_t  ngx_http_shield_nullbyte[] = {
+    /* Encoded NUL, in every notation a decoder has been known to honour. */
     NGX_HTTP_SHIELD_SIG("%00"),
     NGX_HTTP_SHIELD_SIG("%2500"),         /* double-encoded NUL             */
+    NGX_HTTP_SHIELD_SIG("%25%30%30"),     /* ... with the digits encoded too */
+    NGX_HTTP_SHIELD_SIG("%u0000"),        /* IIS %u-encoded NUL             */
+    /* Double-encoded traversal gadgets: one decode short of "../". */
     NGX_HTTP_SHIELD_SIG("%252e%252e"),    /* double-encoded ..              */
     NGX_HTTP_SHIELD_SIG("%252f"),         /* double-encoded /               */
+    NGX_HTTP_SHIELD_SIG("%255c"),         /* double-encoded \               */
+    NGX_HTTP_SHIELD_SIG("%25%32%65"),     /* "." with the digits encoded    */
+    NGX_HTTP_SHIELD_SIG("%25%32%66"),     /* "/" with the digits encoded    */
+    /* Triple encoding: seen against stacks that decode three times. */
+    NGX_HTTP_SHIELD_SIG("%25252e"),
+    NGX_HTTP_SHIELD_SIG("%25252f"),
+    NGX_HTTP_SHIELD_SIG("%252500"),
 };
 
 /* ---- 9. JNDI / template injection -------------------------------------- */
@@ -349,8 +418,50 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
 };
 
 /* ---- 11. Shellshock ---------------------------------------------------- */
+/*
+ * The exported-function prologue that bash 4.3 and older parsed out of an
+ * environment variable, after which they went on executing whatever trailing
+ * bytes followed the function body (CVE-2014-6271 and the 6277/6278 parser
+ * variants).
+ *
+ * The bare prologue "() {" is NOT a signature, deliberately. It is also the
+ * anonymous-function token of JavaScript -- "var f = function() { ... }" -- so
+ * it fires on any request that carries JS source: a CMS editing a theme file, a
+ * paste bin, a JSON API storing a code snippet. That is an ordinary body for a
+ * "text/..." or application/json POST, and this module scans those.
+ *
+ * What no JavaScript produces is the prologue followed by a SHELL body. ":" is
+ * a shell no-op and is not a JavaScript statement; "echo", "/bin/", "ignored;}"
+ * likewise. Each variant below is a byte string a real payload sends, and the
+ * spacing variants are spelled out rather than made loose -- a signature that
+ * has to guess at whitespace is a signature that guesses at false positives.
+ *
+ * Variants NOT listed here are still not free: the moment such a payload
+ * carries its actual command it hits cmdi ("/bin/sh", ";wget ", "$(id)") or
+ * template. Under-matching here is the intended trade.
+ */
 static const ngx_http_shield_sig_t  ngx_http_shield_shellshock[] = {
-    NGX_HTTP_SHIELD_SIG("() {"),          /* CVE-2014-6271 function prologue */
+    /* CVE-2014-6271, canonical -- ":" no-op body, in its spacing variants. */
+    NGX_HTTP_SHIELD_SIG("() { :;}"),
+    NGX_HTTP_SHIELD_SIG("() { :; }"),
+    NGX_HTTP_SHIELD_SIG("() {:;}"),
+    NGX_HTTP_SHIELD_SIG("(){ :;}"),
+    NGX_HTTP_SHIELD_SIG("(){:;}"),
+    NGX_HTTP_SHIELD_SIG("() { :\t;}"),
+    /* CVE-2014-6278: "_" body, reached through the redirection gadget. The
+     * body alone would be JavaScript-shaped ("function() { _;}" is valid), so
+     * the gadget is part of the signature, not optional. */
+    NGX_HTTP_SHIELD_SIG("() { _;} >_[$($())]"),
+    NGX_HTTP_SHIELD_SIG("() { _; } >_[$($())]"),
+    /* Mass-scanner payloads: the body is a word, not a JS statement. */
+    NGX_HTTP_SHIELD_SIG("() { ignored;}"),
+    NGX_HTTP_SHIELD_SIG("() { test;}"),
+    /* Prologue whose body is itself a command. Not JavaScript in any form. */
+    NGX_HTTP_SHIELD_SIG("() { echo"),
+    NGX_HTTP_SHIELD_SIG("() { /bin/"),
+    NGX_HTTP_SHIELD_SIG("() { curl"),
+    NGX_HTTP_SHIELD_SIG("() { wget"),
+    NGX_HTTP_SHIELD_SIG("() { :;} ;"),
 };
 
 /* ---- 12. Ancient PHP RCE chains ---------------------------------------- */

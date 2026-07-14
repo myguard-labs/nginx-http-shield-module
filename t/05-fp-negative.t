@@ -275,3 +275,75 @@ GET /t/caf%C3%A9/%E6%97%A5%E6%9C%AC
 --- request
 GET /t/a-b_c.d~e/f%20g
 --- error_code: 200
+
+=== TEST 36: a JSON body carrying a JavaScript function literal is not shellshock
+# The bare "() {" prologue used to be a signature. It is also the anonymous
+# function token of JavaScript, so every request that stores JS source -- a CMS
+# theme editor, a paste bin, a snippet API -- was blocked as shellshock.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"code\":\"var f = function() { return 1; };\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 37: a form-urlencoded body of minified JavaScript is not shellshock
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+js=%28function%28%29%20%7B%20window.x%20%3D%201%3B%20%7D%29%28%29"
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 405
+
+=== TEST 38: a jQuery-style callback in a query string is not shellshock
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?cb=%24%28document%29.ready%28function%28%29%20%7B%20init%28%29%3B%20%7D%29
+--- error_code: 200
+
+=== TEST 39: an underscore-bodied JS function is not shellshock
+# "() { _;}" IS valid JavaScript. The CVE-2014-6278 signature therefore carries
+# the redirection gadget too, so this benign shape stays unmatched.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"fn\":\"function() { _; }\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 40: a percent sign followed by ordinary text is not double-encoding
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=100%25%20discount
+--- error_code: 200
+
+=== TEST 41: a legitimately percent-encoded UTF-8 query is not an overlong form
+# %c3%a9 is the CORRECT two-byte encoding of 'e-acute'. Only the OVERLONG
+# encodings are signatures, so real accented text must pass.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?name=caf%c3%a9
+--- error_code: 200
+
+=== TEST 42: a fullwidth solidus is a real character, not an evasion
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=%ef%bc%8f
+--- error_code: 200
+
+=== TEST 43: a literal "u002f" in a value is not a %u escape
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?token=abcu002fdef
+--- error_code: 200
