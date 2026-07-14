@@ -825,6 +825,15 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/dana-ws/saml20.ws"),           /* Ivanti 2024-21893  */
     NGX_HTTP_SHIELD_SIG("/_async/asyncresponseservice"), /* WebLogic 2019-2725 */
     NGX_HTTP_SHIELD_SIG("/goform/set_limitclient_cfg"), /* router botnet probe */
+    /* Session-13 sweep: 2024-2025 CISA-KEV, mass-exploited n-days. Same
+     * TARGET bar -- fixed distinctive path, no legitimate client sends it. */
+    NGX_HTTP_SHIELD_SIG("/setupwizard.aspx/"),       /* ScreenConnect 2024-1709 */
+    NGX_HTTP_SHIELD_SIG(";.jsp"),                    /* TeamCity 2024-27198 path-param trick */
+    NGX_HTTP_SHIELD_SIG("/res/../admin/diagnostic.jsp"), /* TeamCity 2024-27199 */
+    NGX_HTTP_SHIELD_SIG("/oauth/idp/.well-known/openid-configuration"), /* Citrix Bleed 1+2, 2023-4966 / 2025-5777 */
+    NGX_HTTP_SHIELD_SIG("/databases/upgrademysqlstatus"), /* CyberPanel 2024-51567 */
+    NGX_HTTP_SHIELD_SIG("/developmentserver/metadatauploader"), /* SAP NetWeaver 2025-31324 */
+    NGX_HTTP_SHIELD_SIG("/_layouts/15/toolpane.aspx"), /* SharePoint ToolShell 2025-53770 */
 };
 
 /* One row per signature-table category. Structural categories (httpoxy,

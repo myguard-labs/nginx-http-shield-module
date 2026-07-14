@@ -402,3 +402,52 @@ GET /t/app/rest/debug/authenticationtest.jsp
 --- request
 GET /t/_async/asyncresponseservice
 --- error_code: 403
+
+=== TEST 51: session-13 exploit_path -- ScreenConnect SetupWizard (CVE-2024-1709)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/SetupWizard.aspx/anything
+--- error_code: 403
+
+=== TEST 52: session-13 exploit_path -- TeamCity ;.jsp trick (CVE-2024-27198)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/app/rest/server;.jsp
+--- error_code: 403
+
+=== TEST 53: session-13 exploit_path -- TeamCity diagnostic traversal (CVE-2024-27199)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/res/../admin/diagnostic.jsp
+--- error_code: 403
+
+=== TEST 54: session-13 exploit_path -- Citrix Bleed OIDC discovery (CVE-2023-4966 / CVE-2025-5777)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/oauth/idp/.well-known/openid-configuration
+--- error_code: 403
+
+=== TEST 55: session-13 exploit_path -- CyberPanel upgrademysqlstatus (CVE-2024-51567)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/dataBases/upgrademysqlstatus
+--- error_code: 403
+
+=== TEST 56: session-13 exploit_path -- SAP NetWeaver metadatauploader (CVE-2025-31324)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/developmentserver/metadatauploader
+--- error_code: 403
+
+=== TEST 57: session-13 exploit_path -- SharePoint ToolShell (CVE-2025-53770)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/_layouts/15/ToolPane.aspx
+--- error_code: 403
