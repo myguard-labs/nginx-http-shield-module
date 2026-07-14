@@ -35,7 +35,7 @@ percent-decoding:
 |----------|----------|
 | `sqli` | `union select`, `' or 1=1`, `into outfile`, `information_schema`; `sleep(` **+** a `select` ([AND-rule](#and-rules)) |
 | `xss` | `<script`, `javascript:`, `onerror=`, `document.cookie` |
-| `traversal` | `../`, `..\`, `..;/`, `.%2e/` (CVE-2021-41773), `/etc/passwd` |
+| `traversal` | the traversal **gadget**: `../`, `..\`, `..;/`, `.%2e/` (CVE-2021-41773), `....//` |
 | `overlong` | overlong-UTF-8 `/`, `\`, `.` and NUL in every width (`%c0%af`, `%e0%80%af`, `%f0%80%80%af`, `%c1%9c`, `%c0%80`), IIS `%u002f` — illegal UTF-8 by definition, so attack-only |
 | `cmdi` | `;wget `, `$(curl`, `/bin/sh`, `chmod 777`, `/winnt/system32` |
 | `lfi` | `php://filter`, `data://`, `expect://`, `phar://` |
@@ -56,7 +56,7 @@ percent-decoding:
 | `httpoxy` | a request-borne `Proxy:` header (CVE-2016-5385) |
 | `range_dos` | a `Range:` header with more than 10 ranges (CVE-2011-3192) |
 | `ctrl_char` | a C0 control byte in the decoded path (`%01`, `%1b`, …) — nginx itself rejects the *raw* form, so only the encoded one gets this far |
-| `sensitive_file` | `/.env`, `/.git/`, `wp-config.php.bak`, `/.aws/credentials` |
+| `sensitive_file` | `/.env`, `/.git/`, `wp-config.php.bak`, `/.aws/credentials`, and the traversal **targets** — `/etc/passwd`, `/proc/self/environ`, `win.ini` |
 | `webshell` | `c99.php`, `r57.php`, `wso.php`, `weevely`, `behinder`, `shell.php?cmd=` |
 | `ssrf_meta` | `169.254.169.254`, `100.100.100.200` (Alibaba), `192.0.0.192` (Oracle), `metadata.google.internal`, IMDSv2 `/latest/api/token`, `iam/security-credentials/`, decimal/hex IMDS IPs |
 | `nosql` | MongoDB operator injection `[$ne]`, `[$where]`, `{"$where":`, `$func:` |
@@ -145,6 +145,39 @@ scratch buffers, so the cost is a few microseconds on typical request sizes.
 Body inspection reads the buffered request body (up to `shield_max_body`) and
 scans it the same way, then resumes phase processing — the same mechanism the
 stock `ngx_http_mirror_module` uses.
+
+### Not every category is scanned in the body
+
+A signature's meaning depends on **where** it appears.
+
+A request *target* containing `/bin/sh` is an attack — there is no reading of a
+URI in which that string is content. A `text/…` or `application/json` **body**
+containing `/bin/sh` is a Tuesday: it is a CI config, a Dockerfile paste, a
+shell script in an editor, a snippet in a docs API. The same is true of
+`<script` and `document.cookie` in a CMS saving a page, of `${jndi:` in a blog
+post *about* Log4Shell, and of `<?php system(` in a code-review tool.
+
+So each category declares whether its tokens are attack-only in *any* position,
+or only in a request target. Eight are request-target-and-header only:
+
+`cmdi` · `xss` · `template` · `lfi` · `php_rce` · `java_rce` · `java_eval` · `sensitive_file`
+
+Every other category is scanned in the body too, and that is where the body scan
+earns its keep — SQL injection and path traversal in a form POST, the Java
+deserialization gadget classes, SSI injection, webshell names, the
+encoding-evasion categories, and the product-specific exploit paths. None of
+those have a benign reading in a body either.
+
+This narrows *where* a category applies, never *whether* it matches: a
+body-exempt category still blocks at full strength in the request target and in
+the scanned headers. It costs nothing at runtime — the exempt set is folded into
+the same skip bitmask `shield_skip` already uses, so there is still one
+automaton and one lookup per byte.
+
+It is also why `/etc/passwd` is a `sensitive_file` and not a `traversal`:
+traversal owns the *gadget* (`../`), `sensitive_file` owns the *target*. They
+were previously in the same table, which made the filename impossible to exempt
+from the body scan without also exempting `../`.
 
 ### AND-rules
 

