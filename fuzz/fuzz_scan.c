@@ -21,6 +21,11 @@
  * input. This fuzzes the AC build + scan, which are otherwise untested against
  * hostile input, and proves the rewrite matches the reference on every string.
  *
+ * Input layout: 8 bytes little-endian skip mask, then 1 body-mode byte (bit 0
+ * selects whether ngx_http_shield_no_body_mask() is folded into skip -- the
+ * same fold ngx_http_shield_inspect_body() applies in production), then the
+ * scanned payload.
+ *
  * Keeping the decoder path (ngx_unescape_uri) real -- rather than a stub -- is
  * still the point: it is nginx's own hostile-input decoder, and the buffer
  * sizing around it (dec is len bytes; decoding only ever shrinks) is what we
@@ -461,6 +466,24 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         data += 8;
         size -= 8;
     }
+
+    if (size == 0) {
+        return 0;
+    }
+
+    /* One more byte selects body-mode: the module folds
+     * ngx_http_shield_no_body_mask() into the skip mask ONLY on the body
+     * scan (ngx_http_shield_inspect_body), never on the URI/header scan.
+     * Fuzzing both dimensions independently -- rather than only ever
+     * scanning as if this were a URI/header -- exercises the fold itself:
+     * a category wrongly left out of (or wrongly added to) NO_BODY would
+     * otherwise never surface as a differential, since both engines below
+     * would just agree on the wrong answer. */
+    if (data[0] & 1) {
+        skip |= ngx_http_shield_no_body_mask();
+    }
+    data += 1;
+    size -= 1;
 
     if (size == 0) {
         return 0;
