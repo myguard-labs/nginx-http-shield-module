@@ -651,6 +651,23 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sensitive_file[] = {
     NGX_HTTP_SHIELD_SIG("/config/database.yml"),
     NGX_HTTP_SHIELD_SIG("/.env.production"),
     NGX_HTTP_SHIELD_SIG("/.env.local"),
+    NGX_HTTP_SHIELD_SIG("/.env.bak"),
+    NGX_HTTP_SHIELD_SIG("/config.php.bak"),
+    NGX_HTTP_SHIELD_SIG("/config.php.swp"),
+    NGX_HTTP_SHIELD_SIG("/config.php~"),
+    NGX_HTTP_SHIELD_SIG("/settings.py.bak"),
+    NGX_HTTP_SHIELD_SIG("/.idea/workspace.xml"),
+    NGX_HTTP_SHIELD_SIG("/.vscode/sftp.json"),
+    NGX_HTTP_SHIELD_SIG("/.circleci/config.yml"),
+    NGX_HTTP_SHIELD_SIG("/.travis.yml"),
+    NGX_HTTP_SHIELD_SIG("/.netrc"),
+    NGX_HTTP_SHIELD_SIG("/.pgpass"),
+    NGX_HTTP_SHIELD_SIG("/.my.cnf"),
+    NGX_HTTP_SHIELD_SIG("/id_rsa"),
+    NGX_HTTP_SHIELD_SIG("/id_ed25519"),
+    NGX_HTTP_SHIELD_SIG("/.ftpconfig"),
+    NGX_HTTP_SHIELD_SIG("/composer.json.bak"),
+    NGX_HTTP_SHIELD_SIG("/artisan.bak"),
 };
 
 /* ---- 24. Webshell probes ----------------------------------------------- */
@@ -674,6 +691,15 @@ static const ngx_http_shield_sig_t  ngx_http_shield_webshell[] = {
     NGX_HTTP_SHIELD_SIG("regeorg"),
     NGX_HTTP_SHIELD_SIG("gel4y"),
     NGX_HTTP_SHIELD_SIG("aspxspy"),
+    NGX_HTTP_SHIELD_SIG("wshell.php"),
+    NGX_HTTP_SHIELD_SIG("mini.php?"),
+    NGX_HTTP_SHIELD_SIG("ghost_eye"),
+    NGX_HTTP_SHIELD_SIG("bloodsec"),
+    NGX_HTTP_SHIELD_SIG("marijuana_shell"),
+    NGX_HTTP_SHIELD_SIG("kacak_shell"),
+    NGX_HTTP_SHIELD_SIG("wpyii2"),
+    NGX_HTTP_SHIELD_SIG("smevk"),
+    NGX_HTTP_SHIELD_SIG("xleet"),
 };
 
 /* ---- 25. Cloud metadata SSRF ------------------------------------------- */
