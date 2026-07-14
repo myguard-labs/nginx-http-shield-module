@@ -427,7 +427,13 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
     NGX_HTTP_SHIELD_SIG("com.mchange.v2.c3p0"),
     NGX_HTTP_SHIELD_SIG("<java.lang.processbuilder"), /* XStream CVE-2017-9805 */
     NGX_HTTP_SHIELD_SIG("<work:workcontext"),         /* WebLogic 2017-10271  */
-    NGX_HTTP_SHIELD_SIG("wls-wsat/coordinatorporttype"),
+    /* "wls-wsat/coordinatorporttype" is not a deserialization gadget, it is the
+     * WebLogic SOAP ENDPOINT PATH -- the same string exploit_path already
+     * carries as "/wls-wsat/". It was body-scanned here, so a security writeup
+     * that merely named the path in prose was 403'd as deserial. Removed: the
+     * path is matched in the request target by exploit_path, and the actual
+     * body payload (the <work:workContext> serialized object) is caught by the
+     * <work:workcontext signature above, which stays body-scanning. */
     /* Fastjson / Jackson autotype to a native class. */
     NGX_HTTP_SHIELD_SIG("\"@type\":\"com.sun."),
     NGX_HTTP_SHIELD_SIG("\"@type\":\"java.lang"),
@@ -866,9 +872,22 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SSTI, "ssti",
         ngx_http_shield_ssti,
         NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
+    /* exploit_path carries NO_BODY: every signature in it is a request PATH
+     * (an n-day scanner target like /wls-wsat/, /tmui/login.jsp/..;/, an Ivanti
+     * or MOVEit endpoint). A path is delivered in the request target, never in
+     * the body -- so scanning bodies for it buys no detection and costs a false
+     * positive on every security blog, changelog or CVE writeup that NAMES the
+     * path in prose (a text/... body reading "/wls-wsat/... is CVE-2017-10271"
+     * was 403'd). The body-delivered half of these attacks is the gadget the
+     * path steers to -- the deserialization stream, the OGNL/JNDI expression,
+     * the XML-RPC payload -- and those are caught by deserial, java_rce,
+     * template and their peers, which stay body-scanning. Same reasoning as the
+     * eight code-shaped categories exempted in the phase-3 body-position pass;
+     * exploit_path is the last target-only category that had been left in. */
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "exploit_path",
         ngx_http_shield_exploit_path,
-        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
+        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW
+        | NGX_HTTP_SHIELD_NO_BODY),
 };
 
 #define NGX_HTTP_SHIELD_NCATEGORIES                                           \
@@ -993,7 +1012,15 @@ static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
         ngx_http_shield_rule_grafana, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "ofbiz_authbypass",
         ngx_http_shield_rule_ofbiz, NGX_HTTP_SHIELD_MATCH_DECODED),
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "metabase_jdbc_rce",
+    /* Reported as deserial, NOT exploit_path: the Metabase attack is delivered
+     * in a POST BODY (an H2 JDBC connection string with an INIT script), and
+     * exploit_path now carries NO_BODY so a rule reported under it would be
+     * skipped on the body scan -- which is the only place this attack appears.
+     * deserial is the right home anyway: an H2 JDBC INIT-script RCE is a
+     * JDBC/deserialization-class gadget, and deserial stays body-scanning. The
+     * setup-validate path is still matched in the target by exploit_path; this
+     * rule adds the body-gadget half. */
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_DESERIAL, "metabase_jdbc_rce",
         ngx_http_shield_rule_metabase, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_SQLI, "sqli_time_based",
         ngx_http_shield_rule_sqli_sleep, NGX_HTTP_SHIELD_MATCH_DECODED),

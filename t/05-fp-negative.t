@@ -412,3 +412,16 @@ Content-Type: application/json
 --- more_headers
 Content-Type: application/json
 --- error_code: 405
+
+=== TEST 50: a CVE writeup body naming n-day exploit paths is not exploit_path
+# exploit_path is NO_BODY: its signatures are request PATHS, delivered in the
+# target, never the body. A security blog or changelog that names the path in
+# prose must not be blocked. Two well-known members in one benign body.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"post\":\"WebLogic /wls-wsat/CoordinatorPortType was CVE-2017-10271; the OFBiz /webtools/control/ProgramExport RCE was CVE-2023-49070.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
