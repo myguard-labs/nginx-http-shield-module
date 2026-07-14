@@ -110,3 +110,28 @@ GET /t?x=/catalog-portal/ui/oauth/verify+freemarker
 --- request
 GET /t?x=/catalog-portal/ui/oauth/verify
 --- error_code: 200
+
+=== TEST 13: SSRF wildcard-DNS rebinding -- nip.io AND dash-encoded metadata IP
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?url=http://169-254-169-254.nip.io/latest/meta-data/
+--- error_code: 403
+
+=== TEST 14: the ssrf_wildcard_dns rule reports ssrf_meta
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?url=http://169-254-169-254.nip.io/latest/meta-data/
+--- error_log
+category=ssrf_meta
+--- error_code: 403
+
+=== TEST 15: nip.io alone is a real developer tool, not blocked
+# nip.io resolves <any-ip>.nip.io to <any-ip> for local HTTPS testing -- a
+# routine dev/CI use case that must not be blocked on its own.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?callback=http://10.0.0.5.nip.io/webhook
+--- error_code: 200

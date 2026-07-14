@@ -1062,6 +1062,20 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_vmware_ssti[] = {
     NGX_HTTP_SHIELD_SIG("freemarker"),
 };
 
+/* SSRF via wildcard-DNS rebinding domains. "nip.io" is a real developer tool
+ * (resolves <any-ip>.nip.io to <any-ip>, used for local HTTPS testing) -- bare,
+ * it is ordinary traffic and does not belong in ssrf_meta on its own. The
+ * attack encodes the cloud metadata IP as the wildcard subdomain itself, dash-
+ * separated because dots aren't legal in a DNS label: a request to
+ * "169-254-169-254.nip.io" resolves straight to 169.254.169.254, bypassing any
+ * filter that only string-matches the dotted IP. Pairing the service domain
+ * with that dash-encoded form is attack-only: no legitimate nip.io use case
+ * spells out the metadata IP's octets in its hostname. */
+static const ngx_http_shield_sig_t  ngx_http_shield_rule_ssrf_wildcard_dns[] = {
+    NGX_HTTP_SHIELD_SIG(".nip.io"),
+    NGX_HTTP_SHIELD_SIG("169-254-169-254"),
+};
+
 /* No wp.getUsersBlogs rule. The obvious pairing -- wp.getUsersBlogs AND a
  * <methodCall> wrapper -- is worthless: <methodCall> is the XML-RPC envelope
  * EVERY client sends for EVERY method, so the rule would block the legitimate
@@ -1093,6 +1107,8 @@ static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
         ngx_http_shield_rule_jenkins_cli, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "vmware_wsone_ssti",
         ngx_http_shield_rule_vmware_ssti, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_SSRF_META, "ssrf_wildcard_dns",
+        ngx_http_shield_rule_ssrf_wildcard_dns, NGX_HTTP_SHIELD_MATCH_DECODED),
 };
 
 #define NGX_HTTP_SHIELD_NRULES                                                \
