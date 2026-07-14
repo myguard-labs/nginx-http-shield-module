@@ -70,7 +70,7 @@ static ngx_int_t ngx_http_shield_fail(ngx_http_request_t *r,
 
 static ngx_int_t ngx_http_shield_scan_input(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, u_char *data, size_t len,
-    const char *source, ngx_http_shield_hit_t *hit);
+    const char *source, uint64_t skip, ngx_http_shield_hit_t *hit);
 static ngx_int_t ngx_http_shield_ac_build(ngx_conf_t *cf,
     ngx_http_shield_ac_t *ac, ngx_uint_t match);
 static const ngx_http_shield_catdef_t *ngx_http_shield_ac_scan(
@@ -471,7 +471,8 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     /* Request target as sent by the client (path + query, still encoded). */
     if (r->unparsed_uri.len) {
         rc = ngx_http_shield_scan_input(r, slcf, r->unparsed_uri.data,
-                                        r->unparsed_uri.len, "uri", hit);
+                                        r->unparsed_uri.len, "uri",
+                                        slcf->skip, hit);
         if (rc != NGX_DECLINED) {
             return rc;
         }
@@ -480,7 +481,8 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     h = r->headers_in.user_agent;
     if (h != NULL) {
         rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                        "user-agent", hit);
+                                        "user-agent",
+                                        slcf->skip, hit);
         if (rc != NGX_DECLINED) {
             return rc;
         }
@@ -489,7 +491,8 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     h = r->headers_in.referer;
     if (h != NULL) {
         rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                        "referer", hit);
+                                        "referer",
+                                        slcf->skip, hit);
         if (rc != NGX_DECLINED) {
             return rc;
         }
@@ -498,7 +501,8 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     h = r->headers_in.content_type;
     if (h != NULL) {
         rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                        "content-type", hit);
+                                        "content-type",
+                                        slcf->skip, hit);
         if (rc != NGX_DECLINED) {
             return rc;
         }
@@ -652,7 +656,11 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
         return NGX_DECLINED;
     }
 
+    /* Fold the body-unsafe categories into the skip mask for this scan only.
+     * They still match at full strength in the request target and headers. */
     return ngx_http_shield_scan_input(r, slcf, body.data, body.len, "body",
+                                      slcf->skip
+                                          | ngx_http_shield_no_body_mask(),
                                       hit);
 }
 
@@ -934,7 +942,7 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
 static ngx_int_t
 ngx_http_shield_scan_input(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, u_char *data, size_t len,
-    const char *source, ngx_http_shield_hit_t *hit)
+    const char *source, uint64_t skip, ngx_http_shield_hit_t *hit)
 {
     size_t                           i, dlen;
     u_char                          *raw_lc, *dec, *dst, *src;
@@ -966,7 +974,7 @@ ngx_http_shield_scan_input(ngx_http_request_t *r,
     ngx_strlow(dec, dec, dlen);
 
     cat = ngx_http_shield_ac_scan(&ngx_http_shield_ac_raw, raw_lc, len,
-                                  slcf->skip);
+                                  skip);
     if (cat != NULL) {
         hit->category = cat->name;
         hit->source = source;
@@ -974,7 +982,7 @@ ngx_http_shield_scan_input(ngx_http_request_t *r,
     }
 
     cat = ngx_http_shield_ac_scan(&ngx_http_shield_ac_decoded, dec, dlen,
-                                  slcf->skip);
+                                  skip);
     if (cat != NULL) {
         hit->category = cat->name;
         hit->source = source;

@@ -90,8 +90,13 @@ GET /t?a=../../etc/passwd&b=union%20select%201
 --- error_code: 403
 
 === TEST 12: skipping every category that matches still passes the request
+# The payload matches three categories: sqli ("union select"), traversal (the
+# "../" gadget) and sensitive_file (the "/etc/passwd" target). The filename is
+# reported as sensitive_file rather than traversal -- traversal owns the GADGET,
+# sensitive_file owns the TARGET -- so an operator skipping the traversal
+# category alone no longer silently also skips the filename.
 --- config
-    location /t { shield block; shield_skip sqli traversal; empty_gif; }
+    location /t { shield block; shield_skip sqli traversal sensitive_file; empty_gif; }
 --- request
 GET /t?a=union%20select%201&b=../../etc/passwd
 --- error_code: 200
