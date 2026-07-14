@@ -974,12 +974,14 @@ typedef struct {
     ngx_uint_t                    match;  /* DECODED and/or RAW              */
 } ngx_http_shield_ruledef_t;
 
-/* Grafana CVE-2021-43798: plugin asset path plus a traversal gadget. The path
- * alone is how Grafana serves plugin assets on every page load. */
-static const ngx_http_shield_sig_t  ngx_http_shield_rule_grafana[] = {
-    NGX_HTTP_SHIELD_SIG("/public/plugins/"),
-    NGX_HTTP_SHIELD_SIG("../"),
-};
+/* No Grafana CVE-2021-43798 AND-rule ("/public/plugins/" + "../"). It is
+ * net-negative: the standalone traversal category already blocks any "../"
+ * anywhere in the request regardless of the plugin path, so requiring both
+ * terms adds ZERO additional detection over the standalone sig -- there is
+ * no request where the AND-rule fires but standalone traversal does not.
+ * It only adds a second, redundant code path that could itself drift into a
+ * false positive later. The real Grafana exploit stays covered by the
+ * standalone "../" sig alone (t/05 TEST 18b). */
 
 /* Apache OFBiz CVE-2023-51467 auth bypass: the bypass parameter is only an
  * attack when it is steering a request at the webtools control endpoint.
@@ -1038,8 +1040,6 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_vmware_ssti[] = {
     { (c), (nm), (arr), sizeof(arr) / sizeof((arr)[0]), (m) }
 
 static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_TRAVERSAL, "grafana_plugin_lfi",
-        ngx_http_shield_rule_grafana, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "ofbiz_authbypass",
         ngx_http_shield_rule_ofbiz, NGX_HTTP_SHIELD_MATCH_DECODED),
     /* Reported as deserial, NOT exploit_path: the Metabase attack is delivered
@@ -1117,9 +1117,7 @@ typedef char ngx_http_shield_cat_fits_in_mask[
  * today; the assert makes an overflow a compile error rather than a silently
  * mis-evaluated rule. */
 #define NGX_HTTP_SHIELD_NRULE_TERMS                                           \
-    (sizeof(ngx_http_shield_rule_grafana)                                     \
-       / sizeof(ngx_http_shield_rule_grafana[0])                              \
-     + sizeof(ngx_http_shield_rule_ofbiz)                                     \
+    (sizeof(ngx_http_shield_rule_ofbiz)                                       \
        / sizeof(ngx_http_shield_rule_ofbiz[0])                                \
      + sizeof(ngx_http_shield_rule_metabase)                                  \
        / sizeof(ngx_http_shield_rule_metabase[0])                             \

@@ -143,6 +143,13 @@ GET /t/actuator/health
 GET /t/public/plugins/grafana-piechart-panel/module.js
 --- error_code: 200
 
+=== TEST 18b: real Grafana traversal exploit still blocked via standalone traversal
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?f=/public/plugins/x/../../../etc/passwd
+--- error_code: 403
+
 === TEST 19: a legitimate Metabase setup call during install (no H2 gadget)
 --- config
     location /api/setup/validate { shield block; empty_gif; }
