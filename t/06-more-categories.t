@@ -381,3 +381,24 @@ category=traversal
 --- request
 GET /t?f=../../../../etc/passwd
 --- error_code: 403
+
+=== TEST 48: phase-4 exploit_path -- MOVEit moveitisapi.dll (CVE-2023-34362)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?x=/moveitisapi/moveitisapi.dll
+--- error_code: 403
+
+=== TEST 49: phase-4 exploit_path -- TeamCity auth-test (CVE-2023-42793)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/app/rest/debug/authenticationtest.jsp
+--- error_code: 403
+
+=== TEST 50: phase-4 exploit_path -- WebLogic async (CVE-2019-2725)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/_async/asyncresponseservice
+--- error_code: 403
