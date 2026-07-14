@@ -480,3 +480,26 @@ Content-Type: application/json
 --- more_headers
 Content-Type: application/json
 --- error_code: 403
+
+=== TEST 55: a security writeup body naming session-13 n-day paths is not exploit_path
+# Same NO_BODY guarantee (see TEST 50/51) for the paths added in the
+# session-13 CVE sweep: naming them in prose is ordinary security-writeup
+# content, not an attack.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"note\":\"ScreenConnect's /SetupWizard.aspx/ bypass and SharePoint's /_layouts/15/ToolPane.aspx ToolShell chain both made CISA KEV in 2024-2025.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 56: a matrix-param-style semicolon in a normal path is not exploit_path
+# ";.jsp" is the TeamCity 2024-27198 path-parameter trick specifically -- a
+# bare semicolon used as an ordinary matrix parameter separator (not
+# immediately followed by the literal ".jsp") must not fire.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/report;format=pdf HTTP/1.1
+--- error_code: 200
