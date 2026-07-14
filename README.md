@@ -192,13 +192,14 @@ its category fires:
 
 | Rule | Category | Fires only when the buffer has… |
 |---|---|---|
-| `grafana_plugin_lfi` | `traversal` | `/public/plugins/` **and** `../` |
 | `ofbiz_authbypass` | `exploit_path` | `requirepasswordchange=y` **and** `/webtools/control/` |
-| `metabase_jdbc_rce` | `exploit_path` | `/api/setup/validate` **and** `jdbc:h2:` |
+| `metabase_jdbc_rce` | `deserial` | `/api/setup/validate` **and** `jdbc:h2:` |
 | `sqli_time_based` | `sqli` | `sleep(` **and** `select ` |
+| `jenkins_cli_read` | `exploit_path` | (see `ngx_http_shield_rule_jenkins_cli`) |
+| `vmware_wsone_ssti` | `exploit_path` | `/catalog-portal/ui/oauth/verify` **and** `freemarker` |
 
 Rule terms are **not** signatures: a term never fires on its own, and none of
-the four left-hand tokens above will block a request by itself. That is checked
+the left-hand tokens above will block a request by itself. That is checked
 in both directions — `t/07-and-rules.t` proves the full set blocks, and
 `t/05-fp-negative.t` proves each term alone does not.
 
