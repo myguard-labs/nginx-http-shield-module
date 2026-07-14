@@ -425,6 +425,12 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
     NGX_HTTP_SHIELD_SIG("org.apache.commons.collections.functors"),
     NGX_HTTP_SHIELD_SIG("org.apache.commons.collections4.functors"),
     NGX_HTTP_SHIELD_SIG("com.mchange.v2.c3p0"),
+    /* More deserialization/scripting-engine gadget classes -- fully-qualified
+     * names that never appear in ordinary prose or code, only in a gadget
+     * chain payload. Sourced from CRS java-classes.data. */
+    NGX_HTTP_SHIELD_SIG("bsh.interpreter"),               /* BeanShell RCE    */
+    NGX_HTTP_SHIELD_SIG("groovy.lang.groovyshell"),
+    NGX_HTTP_SHIELD_SIG("javax.el.elprocessor"),
     NGX_HTTP_SHIELD_SIG("<java.lang.processbuilder"), /* XStream CVE-2017-9805 */
     NGX_HTTP_SHIELD_SIG("<work:workcontext"),         /* WebLogic 2017-10271  */
     /* "wls-wsat/coordinatorporttype" is not a deserialization gadget, it is the
