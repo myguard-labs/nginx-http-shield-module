@@ -315,4 +315,4 @@ USE_VALGRIND=1 tools/soak.sh .build/nginx-1.31.1/objs/nginx 120 4
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+BSD-2-Clause (same terms as nginx and Angie). See [LICENSE](LICENSE).

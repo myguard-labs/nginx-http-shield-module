@@ -1,6 +1,6 @@
 #!/bin/sh
-# Copyright (c) 2026 Eilander
-# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 Thijs Eilander
+# SPDX-License-Identifier: BSD-2-Clause
 #
 # fuzz/build.sh -- Build all libFuzzer targets for ngx_http_shield_module.
 #

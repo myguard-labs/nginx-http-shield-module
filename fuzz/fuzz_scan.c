@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2026 Eilander
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2026 Thijs Eilander
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * fuzz_scan.c -- libFuzzer target for the ngx_http_shield scan core.
  *
