@@ -184,6 +184,21 @@ def test_suppressor_persists_across_restart(tmp_path):
     assert sup2._count == 1
 
 
+def test_suppressor_record_without_allow_sets_day(tmp_path):
+    # record() called without a prior allow() must still stamp the UTC day,
+    # else state persists day=null and reload wipes count/window on day-roll.
+    state = str(tmp_path / "suppress.json")
+    sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
+    sup.record("8.8.8.8", now=1000.0)     # no allow() first
+    assert sup._day == "1970-01-01"       # now=1000.0 -> that UTC day, stamped
+
+    sup2 = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
+    # same day on reload -> count/window survive, not wiped
+    ok, why = sup2.allow("8.8.8.8", now=1000.0 + 100)
+    assert not ok and why == "deduped"
+    assert sup2._count == 1
+
+
 def test_suppressor_corrupt_state_ignored(tmp_path):
     state = tmp_path / "suppress.json"
     state.write_text("{ not valid json")
