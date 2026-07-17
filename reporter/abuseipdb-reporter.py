@@ -199,6 +199,7 @@ class Suppressor:
         return True, ""
 
     def record(self, ip: str, now: float) -> None:
+        self._roll_day(now)
         self._last[ip] = now
         self._count += 1
         self._prune(now)
