@@ -304,3 +304,14 @@ GET /t?page=php://filter/convert.base64-encode/resource=index
 --- request
 GET /t?id=1%20union%20select%20password%20from%20users
 --- error_code: 403
+
+=== TEST 40: xss still blocks in the request PATH (path-recovery pass, not headers)
+# The two-pass URI scan recovers BOTH query-ineligible categories in the path,
+# not just sensitive_file (TEST 35). Percent-encode the tag so it survives to
+# PRECONTENT rather than being rejected on the raw path; the decoded scan then
+# matches "<script>" in the path component, where XSS has attack meaning.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/%3Cscript%3Ealert(1)%3C/script%3E
+--- error_code: 403
