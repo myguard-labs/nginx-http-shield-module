@@ -177,7 +177,7 @@ parent.
 
 #### Reporting to AbuseIPDB
 
-`tools/abuseipdb-reporter.py` is a ready-to-run reporter for the file sink. It
+`reporter/abuseipdb-reporter.py` is a ready-to-run reporter for the file sink. It
 tails the JSON log (surviving logrotate via an inode/offset state file), skips
 private/loopback/reserved IPs, de-duplicates each IP for 15 minutes (matching
 AbuseIPDB's own per-IP limit), enforces a daily cap (default 1000, the free
@@ -191,14 +191,17 @@ API key comes from `ABUSEIPDB_API_KEY` in the environment — never the command
 line. A hardened `systemd` unit is provided:
 
 ```bash
-sudo cp tools/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
-sudo cp tools/shield-abuseipdb-reporter.service /etc/systemd/system/
+sudo cp reporter/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
+sudo cp reporter/shield-abuseipdb-reporter.service /etc/systemd/system/
 sudo install -m600 /dev/null /etc/shield-abuseipdb.env
 sudoedit /etc/shield-abuseipdb.env    # add: ABUSEIPDB_API_KEY=...  (editor, not echo)
 sudo systemctl enable --now shield-abuseipdb-reporter
 ```
 
-Use `--dry-run` to see exactly what would be sent without calling the API.
+Use `--dry-run` to see exactly what would be sent without calling the API. The
+reporter's suppression, backoff, PII-strip and offset-persistence logic are
+covered by `reporter/test_abuseipdb_reporter.py` (run `pytest reporter/`), which
+also runs as a CI gate.
 
 ### Rollout
 
