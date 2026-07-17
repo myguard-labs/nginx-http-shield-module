@@ -256,3 +256,16 @@ POST /t
 --- more_headers
 Content-Type: application/json ; charset=utf-8
 --- error_code: 403
+
+
+
+=== TEST 23: a decoy binary Content-Type before a text one still scans the body
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"filter":"1 union select password from users"}
+--- more_headers
+Content-Type: application/octet-stream
+Content-Type: application/json
+--- error_code: 403
