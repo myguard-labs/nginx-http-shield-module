@@ -4,7 +4,7 @@
 #
 #   tools/ci-build.sh [flavor] [version] [mode]
 #     flavor : nginx (default) | angie
-#     version: source version, e.g. 1.31.1
+#     version: source version, e.g. 1.31.3
 #     mode   : debug (default, dynamic .so) | asan (static, sanitizers)
 #              | module (dynamic .so only, nginx core NOT compiled)
 #
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 FLAVOR="${1:-nginx}"
-VERSION="${2:-1.31.1}"
+VERSION="${2:-1.31.3}"
 MODE="${3:-debug}"
 
 case "$MODE" in

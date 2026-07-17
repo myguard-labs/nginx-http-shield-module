@@ -19,8 +19,8 @@
 #   USE_HELGRIND=1 tools/soak.sh <nginx-binary> 600 8
 #
 # Build with ASAN for the ASAN path; plain debug for the valgrind path:
-#   CC=clang bash tools/ci-build.sh nginx 1.31.1 asan
-#   bash tools/ci-build.sh nginx 1.31.1 debug
+#   CC=clang bash tools/ci-build.sh nginx 1.31.3 asan
+#   bash tools/ci-build.sh nginx 1.31.3 debug
 
 set -euo pipefail
 

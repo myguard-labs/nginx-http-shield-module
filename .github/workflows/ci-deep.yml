@@ -34,7 +34,7 @@ name: CI Deep
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  NGINX_VERSION: "1.31.1"
+  NGINX_VERSION: "1.31.3"
   # Pinned so a scanner release cannot silently change the gate.
   SEMGREP_VERSION: "1.169.0"
 
@@ -66,10 +66,10 @@ jobs:
       matrix:
         include:
           - flavor: nginx
-            version: "1.31.1"
+            version: "1.31.3"
             label: mainline
           - flavor: nginx
-            version: "1.30.3"
+            version: "1.30.4"
             label: stable
           - flavor: angie
             version: "1.12.0"
