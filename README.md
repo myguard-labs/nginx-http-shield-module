@@ -130,7 +130,7 @@ http {
 | `shield_max_body` | http, server, location | `8k` | Bytes of body scanned. Larger bodies are passed through unscanned — uploads are never blocked for being big. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus `httpoxy`, `range_dos` and `ctrl_char`). |
-| `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a file, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
+| `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
 
 ### Hit log
 
@@ -159,6 +159,46 @@ API. That process owns the API key, rate-limiting, IP de-duplication and
 private-IP suppression — none of which belong on the request hot path. For
 AbuseIPDB, map each `cat` to a category ID (most → `21` Web App Attack; `sqli`
 also → `16` SQL Injection).
+
+#### Syslog transport
+
+Instead of a file, ship the same JSON records to a syslog server:
+
+```nginx
+shield_log syslog:server=10.0.0.1:514,tag=shield,nohostname;
+```
+
+The `syslog:` options are nginx's standard [`ngx_syslog`
+set](https://nginx.org/en/docs/syslog.html) (`server=`, `facility=`, `tag=`,
+`severity=`, `nohostname`). One datagram per hit (capped at 4096 bytes, no
+trailing newline — syslog frames it). File and syslog are mutually exclusive per
+directive; use `off` to disable, and a child `off` overrides an inherited
+parent.
+
+#### Reporting to AbuseIPDB
+
+`tools/abuseipdb-reporter.py` is a ready-to-run reporter for the file sink. It
+tails the JSON log (surviving logrotate via an inode/offset state file), skips
+private/loopback/reserved IPs, de-duplicates each IP for 15 minutes (matching
+AbuseIPDB's own per-IP limit), enforces a daily cap (default 1000, the free
+tier), maps the shield category to AbuseIPDB IDs, and POSTs to
+`/api/v2/report`. The public report comment carries only `METHOD /path` — the
+query string is stripped, since URLs routinely carry tokens/PII you must not
+forward to a third party. Suppression and daily-cap state are persisted, so a
+restart cannot reset them and overrun the quota; a 429 or network failure backs
+off (honouring `Retry-After`) and the unsent line is retried, not dropped. The
+API key comes from `ABUSEIPDB_API_KEY` in the environment — never the command
+line. A hardened `systemd` unit is provided:
+
+```bash
+sudo cp tools/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
+sudo cp tools/shield-abuseipdb-reporter.service /etc/systemd/system/
+sudo install -m600 /dev/null /etc/shield-abuseipdb.env
+sudoedit /etc/shield-abuseipdb.env    # add: ABUSEIPDB_API_KEY=...  (editor, not echo)
+sudo systemctl enable --now shield-abuseipdb-reporter
+```
+
+Use `--dry-run` to see exactly what would be sent without calling the API.
 
 ### Rollout
 

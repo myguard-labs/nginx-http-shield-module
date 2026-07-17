@@ -43,7 +43,8 @@ typedef struct {
     size_t       max_body;    /* bytes of body scanned                      */
     ngx_uint_t   status;      /* status returned in BLOCK mode              */
     uint64_t     skip;        /* bitmask of disabled categories             */
-    ngx_open_file_t *log;     /* JSON hit log; NULL = disabled              */
+    ngx_open_file_t *log;     /* JSON hit log file; NULL = disabled         */
+    ngx_syslog_peer_t *syslog_peer; /* JSON hit log to a syslog server; NULL off */
 } ngx_http_shield_loc_conf_t;
 
 
@@ -314,10 +315,12 @@ ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
  * Emit one JSON object per hit to shield_log, for an out-of-band reporter
  * (e.g. AbuseIPDB). The request line is the ONLY attacker-controlled field, so
  * it is JSON-string-escaped: '"' and '\' are backslash-escaped and every byte
- * below 0x20 becomes \uXXXX. That single pass both defeats log injection
- * (no raw CR/LF can reach the file) and keeps the line valid JSON. All other
- * fields are trusted C constants or numbers. Best-effort: a short write or a
- * closed fd is ignored -- logging must never change the request outcome.
+ * below 0x20 or >= 0x80 becomes \uXXXX. That single pass both defeats log
+ * injection (no raw CR/LF can reach the sink) and keeps the record valid JSON
+ * even when the request line is not valid UTF-8. All other fields are trusted C
+ * constants or numbers. The record goes to a file (newline-terminated) and/or a
+ * syslog server. Best-effort: a short write is ignored -- logging must never
+ * change the request outcome.
  */
 static void
 ngx_http_shield_write_log(ngx_http_request_t *r,
@@ -332,13 +335,25 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
     size_t       cap;
     u_char       c;
 
-    if (slcf->log == NULL) {
+    if (slcf->log == NULL && slcf->syslog_peer == NULL) {
         return;
     }
 
     block = (slcf->mode == NGX_HTTP_SHIELD_BLOCK);
     ts = (ngx_str_t *) &ngx_cached_http_log_iso8601;
     req = r->request_line;
+
+    /* Bound the request line BEFORE escaping so the finished record always fits
+     * a syslog datagram (4096) whole -- truncating the serialized JSON after the
+     * fact could split a \uXXXX escape and emit invalid JSON. Worst-case blowup
+     * is 6x (every byte -> \uXXXX); leave generous room for the syslog header
+     * and the fixed scaffolding. The escape loop's own `p < last - 6` guard then
+     * guarantees it never stops mid-escape. Bounding on an input byte boundary
+     * (not a UTF-8 char boundary) is safe: each source byte escapes independently.
+     */
+    if (req.len > 600) {
+        req.len = 600;
+    }
 
     /* Worst case: every request byte expands to a 6-char \uXXXX escape, plus
      * the fixed scaffolding, timestamp, IP, category, source and status. */
@@ -385,11 +400,38 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
 
     *p++ = '"';
     *p++ = '}';
-    *p++ = '\n';
 
     line.len = p - line.data;
 
-    (void) ngx_write_fd(slcf->log->fd, line.data, line.len);
+    /* File sink: append a newline terminator and write the record. */
+    if (slcf->log != NULL) {
+        *p = '\n';
+        (void) ngx_write_fd(slcf->log->fd, line.data, line.len + 1);
+    }
+
+    /* Syslog sink: prepend the RFC 3164 header into its own buffer, then the
+     * JSON body (no newline -- syslog frames datagrams itself). */
+    if (slcf->syslog_peer != NULL) {
+        u_char  *sb, *sp;
+        size_t   scap;
+
+        /* nginx caps a syslog datagram at NGX_SYSLOG_MAX_STR (4096), but that
+         * macro is private to ngx_syslog.c; mirror it here. */
+        scap = 4096;
+        sb = ngx_pnalloc(r->pool, scap);
+        if (sb == NULL) {
+            return;
+        }
+        sp = ngx_syslog_add_header(slcf->syslog_peer, sb);
+        /* The record is already bounded (req capped above) to fit the frame
+         * whole. If a pathologically long header ever left too little room,
+         * skip the send rather than truncate -- a partial record is invalid
+         * JSON, and dropping one datagram is the safer failure. */
+        if (line.len <= (size_t) (sb + scap - sp)) {
+            sp = ngx_cpymem(sp, line.data, line.len);
+            (void) ngx_syslog_send(slcf->syslog_peer, sb, sp - sb);
+        }
+    }
 }
 
 
@@ -1409,6 +1451,7 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     slcf->status = NGX_CONF_UNSET_UINT;
     slcf->skip = 0;
     slcf->log = NGX_CONF_UNSET_PTR;   /* NULL means explicit `off`, not unset */
+    slcf->syslog_peer = NGX_CONF_UNSET_PTR;
 
     return slcf;
 }
@@ -1438,9 +1481,11 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     }
 
     /* Inherit only when this location never mentioned shield_log. An explicit
-     * `shield_log off` sets NULL and must survive inheritance. */
+     * `shield_log off` sets NULL and must survive inheritance. Both sink fields
+     * move together (a single directive sets both). */
     if (conf->log == NGX_CONF_UNSET_PTR) {
         conf->log = (prev->log == NGX_CONF_UNSET_PTR) ? NULL : prev->log;
+        conf->syslog_peer = (prev->syslog_peer == NGX_CONF_UNSET_PTR) ? NULL : prev->syslog_peer;
     }
 
     return NGX_CONF_OK;
@@ -1600,24 +1645,33 @@ ngx_http_shield_init(ngx_conf_t *cf)
 
 
 /*
- * shield_log <file> | off -- open a hit log via ngx_conf_open_file so nginx
- * reopens it on SIGUSR1 (logrotate-safe). No "|command" form: shield runs in
+ * shield_log <file> | syslog:<opts> | off -- one JSON hit record per request,
+ * to a file (opened via ngx_conf_open_file so nginx reopens it on SIGUSR1,
+ * logrotate-safe) or to a syslog server (ngx_syslog, e.g.
+ * `syslog:server=10.0.0.1,tag=shield`). No "|command" form: shield runs in
  * PRECONTENT on every request in root-started workers, so piping attacker-
  * influenced bytes into a forked shell would reintroduce exactly the command-
- * injection/DoS class this module blocks. Ship to a file and report out of band.
+ * injection/DoS class this module blocks. Ship to a file/syslog and report out
+ * of band.
+ *
+ * UNSET_PTR means "never configured" (inherit); NULL means explicit `off`
+ * (disable, survives inheritance). `log` carries the unset/off sentinel for
+ * both sinks; a syslog config leaves `log` NULL and sets `syslog`.
  */
 static char *
 ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_shield_loc_conf_t  *slcf = conf;
     ngx_str_t                   *value = cf->args->elts;
+    ngx_syslog_peer_t           *peer;
 
     if (slcf->log != NGX_CONF_UNSET_PTR) {
         return "is duplicate";
     }
 
     if (value[1].len == 3 && ngx_strncmp(value[1].data, "off", 3) == 0) {
-        slcf->log = NULL;   /* explicitly disabled; survives inheritance */
+        slcf->log = NULL;      /* explicitly disabled; survives inheritance */
+        slcf->syslog_peer = NULL;
         return NGX_CONF_OK;
     }
 
@@ -1628,10 +1682,24 @@ ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    if (ngx_strncmp(value[1].data, "syslog:", 7) == 0) {
+        peer = ngx_pcalloc(cf->pool, sizeof(ngx_syslog_peer_t));
+        if (peer == NULL) {
+            return NGX_CONF_ERROR;
+        }
+        if (ngx_syslog_process_conf(cf, peer) != NGX_CONF_OK) {
+            return NGX_CONF_ERROR;
+        }
+        slcf->syslog_peer = peer;
+        slcf->log = NULL;      /* set, but no file sink */
+        return NGX_CONF_OK;
+    }
+
     slcf->log = ngx_conf_open_file(cf->cycle, &value[1]);
     if (slcf->log == NULL) {
         return NGX_CONF_ERROR;
     }
+    slcf->syslog_peer = NULL;
 
     return NGX_CONF_OK;
 }

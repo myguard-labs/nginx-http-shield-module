@@ -1,0 +1,69 @@
+# systemd unit for the shield -> AbuseIPDB reporter.
+#
+# Install:
+#   sudo cp tools/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
+#   sudo chmod 0755 /usr/local/bin/shield-abuseipdb-reporter
+#   sudo cp tools/shield-abuseipdb-reporter.service /etc/systemd/system/
+#   # Put ABUSEIPDB_API_KEY=... in a 0600 root-only EnvironmentFile. Use an
+#   # editor, NOT `echo ... | tee`: an echo puts the secret in your shell
+#   # history (and briefly in `ps`).
+#   sudo install -m600 /dev/null /etc/shield-abuseipdb.env
+#   sudoedit /etc/shield-abuseipdb.env     # add the line: ABUSEIPDB_API_KEY=...
+#   # Grant the DynamicUser read access to just the shield log via an ACL
+#   # (avoids the broad `adm` group, which can read every system log):
+#   sudo setfacl -m u:shield-reporter:r /var/log/nginx/shield.json   # see note below
+#   sudo systemctl daemon-reload && sudo systemctl enable --now shield-abuseipdb-reporter
+#
+# The key is NEVER on the command line (visible in `ps`) or in this unit --
+# only in the 0600 EnvironmentFile.
+#
+# NOTE on the ACL: DynamicUser allocates the UID at start, so a static
+# `setfacl u:shield-reporter` is not possible as-is. Two supported options:
+#   (a) drop DynamicUser, create a fixed `shield-reporter` system user, and ACL
+#       the log to it; or
+#   (b) keep DynamicUser and give the log file a dedicated group (e.g.
+#       `shield-log`) that both nginx and this unit's SupplementaryGroups share.
+# Pick one for your host; the unit below ships option (b)'s group hook commented
+# out and no `adm` membership.
+[Unit]
+Description=nginx-http-shield -> AbuseIPDB reporter
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/shield-abuseipdb.env
+ExecStart=/usr/local/bin/shield-abuseipdb-reporter \
+    /var/log/nginx/shield.json \
+    --state /var/lib/shield-reporter/offset.json \
+    --dedup-window 900 \
+    --daily-cap 1000
+Restart=on-failure
+RestartSec=10
+StateDirectory=shield-reporter
+
+# Hardening: this process only needs to read one log, keep a state file, and
+# make outbound HTTPS. Lock everything else down.
+DynamicUser=yes
+# No `adm` membership -- that would grant read of every system log. Give the
+# reporter access to ONLY the shield log via a dedicated group or file ACL (see
+# the install note in the header). Uncomment and set your log group here:
+#SupplementaryGroups=shield-log
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/var/log/nginx
+
+[Install]
+WantedBy=multi-user.target

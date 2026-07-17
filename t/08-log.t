@@ -169,3 +169,60 @@ does not support piping to a command
 # parent log opened at load (200) but the child hit wrote nothing -> empty body.
 --- response_body_like eval
 [qr//, qr/^$/]
+
+=== TEST 10: shield_log syslog: config loads and a hit is served
+# Delivery to a UDP syslog server is not asserted here (no mock listener); this
+# pins that `syslog:` parses, the module loads, and a hit still returns 403 --
+# i.e. the syslog send path runs without breaking the request.
+--- config
+    location /t {
+        shield block;
+        shield_log syslog:server=127.0.0.1:5514,tag=shield,nohostname;
+        empty_gif;
+    }
+--- request
+GET /t?id=1%20union%20select%20pw
+--- error_code: 403
+
+=== TEST 11: syslog and file are distinct sinks; file still works alongside
+# A file sink configured the normal way still writes when syslog is available
+# in the build (sanity that the dual-sink refactor didn't break the file path).
+--- config
+    location /t {
+        shield block;
+        shield_log $TEST_NGINX_SERVER_ROOT/logs/hit11.json;
+        empty_gif;
+    }
+    location /dump {
+        alias $TEST_NGINX_SERVER_ROOT/logs/hit11.json;
+        default_type text/plain;
+    }
+--- request eval
+["GET /t?id=1%20union%20select%20pw", "GET /dump"]
+--- error_code eval
+[403, 200]
+--- response_body_like eval
+[qr//, qr/"cat":"sqli".*"mode":"block".*"status":403/]
+
+=== TEST 12: an oversized request line is bounded and stays valid one-line JSON
+# The request line is capped (600 bytes) before escaping so the record always
+# fits a syslog datagram whole and can never be truncated mid-\uXXXX. Here a
+# ~4KB attack query must still yield exactly one JSON object ending in }\n, with
+# the `req` field present and closed -- i.e. the bound never split the record.
+--- config
+    location /t {
+        shield block;
+        shield_log $TEST_NGINX_SERVER_ROOT/logs/hit12.json;
+        empty_gif;
+    }
+    location /dump {
+        alias $TEST_NGINX_SERVER_ROOT/logs/hit12.json;
+        default_type text/plain;
+    }
+--- request eval
+["GET /t?id=1%20union%20select%20pw&pad=" . ("a" x 4000), "GET /dump"]
+--- error_code eval
+[403, 200]
+# one object, req field opened and the record closed with "}\n -- not cut off.
+--- response_body_like eval
+[qr//, qr/^\{.*"req":".*"\}\n\z/s]
