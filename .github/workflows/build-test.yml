@@ -105,6 +105,43 @@ jobs:
           build=".build/nginx-${NGINX_VERSION}/objs"
           test -f "$build/ngx_http_shield_module.so"
 
+      # `-t` alone only proves a single minimal directive parses. `-T` dumps the
+      # fully-merged config, which is what actually exercises directive
+      # inheritance across nested contexts -- the case a real multi-server/
+      # multi-location config hits that a one-location smoke test never would.
+      - name: Module directives survive a merged multi-context dump (-T)
+        run: |
+          set -euo pipefail
+          build="$PWD/.build/nginx-${NGINX_VERSION}"
+          tp="$RUNNER_TEMP/dumptest"
+          mkdir -p "$tp/logs"
+          cat > "$tp/nginx.conf" <<EOF
+          load_module $build/objs/ngx_http_shield_module.so;
+          events {}
+          http {
+              server {
+                  listen 18097;
+                  location /a { shield block; empty_gif; }
+                  location /b {
+                      shield detect;
+                      shield_status 404;
+                      location /b/inner { shield_body on; empty_gif; }
+                  }
+              }
+              server {
+                  listen 18096;
+                  location /c { shield off; empty_gif; }
+              }
+          }
+          EOF
+          out="$("$build/objs/nginx" -T -p "$tp" -c "$tp/nginx.conf")"
+          echo "$out"
+          for want in "location /a" "location /b/inner" "location /c"; do
+            echo "$out" | grep -qF "$want" \
+              || { echo "FAIL: -T dump missing '$want'" >&2; exit 1; }
+          done
+          echo "OK: directives survived merged multi-context dump"
+
       - name: Strict module compile
         run: |
           build=".build/nginx-${NGINX_VERSION}"

@@ -14,7 +14,17 @@ name: CI Deep
 # build host. See GitHub's guidance on self-hosted runners and public repos:
 # https://docs.github.com/en/actions/reference/security/secure-use
 #
-# Jobs: fuzz (long, scan target) · memcheck soak · helgrind soak · scanners.
+# Jobs: build-flavors · fuzz (long, scan target) · memcheck soak · helgrind
+# soak · scanners.
+#   * build-flavors builds nginx mainline, nginx stable and angie. nginx
+#     mainline and stable additionally run t/; angie is build-only and runs a
+#     module-load smoke test instead (stock Test::Nginx cannot drive it — see
+#     the job's own comment). The README claims angie support and
+#     tools/ci-build.sh has always accepted the flavor, but every other job pins
+#     ONE mainline version — nothing actually built angie or nginx stable until
+#     this job. It is here (monthly) rather than in the PR gate because it is
+#     three full server builds; a break in stable/angie is not worth blocking
+#     every PR on.
 #   * memcheck AND helgrind run via tools/soak.sh (USE_VALGRIND / USE_HELGRIND),
 #     which passes --suppressions=tools/valgrind.supp and --error-exitcode=99.
 #
@@ -47,6 +57,82 @@ permissions:
   contents: read
 
 jobs:
+  build-flavors:
+    name: Build & Test::Nginx (${{ matrix.label }} ${{ matrix.version }})
+    runs-on: [self-hosted, builder02, lxc]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: nginx
+            version: "1.31.1"
+            label: mainline
+          - flavor: nginx
+            version: "1.30.3"
+            label: stable
+          - flavor: angie
+            version: "1.12.0"
+            label: angie
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl libpcre2-dev zlib1g-dev \
+            cpanminus libio-socket-ssl-perl
+          sudo cpanm --notest --quiet Test::Nginx
+
+      - name: Build server and dynamic module
+        run: |
+          bash tools/ci-build.sh "${{ matrix.flavor }}" "${{ matrix.version }}"
+          build=".build/${{ matrix.flavor }}-${{ matrix.version }}/objs"
+          test -f "$build/ngx_http_shield_module.so"
+          # angie names its binary objs/angie; nginx names it objs/nginx.
+          test -f "$build/${{ matrix.flavor }}"
+
+      # angie is build-only, deliberately. Stock Test::Nginx::Socket probes the
+      # server with -V and requires "nginx version: .../<x>.<y>" (Util.pm:1365);
+      # angie reports "Angie version: Angie/1.12.0" and the harness bails out
+      # before the first test. Running t/ on angie therefore needs a harness
+      # shim, not a config tweak -- until someone writes it, asserting that the
+      # module COMPILES and LINKS against angie is the honest gate. That alone
+      # has value: it is what caught -Wshadow leaking into angie's core.
+      - name: Run t/
+        if: matrix.flavor == 'nginx'
+        env:
+          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/${{ matrix.flavor }}-${{ matrix.version }}/objs/nginx
+          TEST_NGINX_LOAD_MODULES: ${{ github.workspace }}/.build/${{ matrix.flavor }}-${{ matrix.version }}/objs/ngx_http_shield_module.so
+          # Must be 20, not the ~2s Test::Nginx::Socket default — see the
+          # identical setting in build-test.yml.
+          TEST_NGINX_TIMEOUT: "20"
+        run: prove t/
+
+      - name: Load the module (angie build-only smoke check)
+        if: matrix.flavor == 'angie'
+        run: |
+          set -euo pipefail
+          build="$PWD/.build/${{ matrix.flavor }}-${{ matrix.version }}"
+          tp="$RUNNER_TEMP/angie-smoke"
+          mkdir -p "$tp/logs"
+          cat > "$tp/nginx.conf" <<EOF
+          load_module $build/objs/ngx_http_shield_module.so;
+          events {}
+          http {
+              server {
+                  listen 18095;
+                  location / { shield block; empty_gif; }
+              }
+          }
+          EOF
+          "$build/objs/angie" -t -p "$tp" -c "$tp/nginx.conf"
+          echo "OK: module loads and directives parse under angie"
+
   fuzz:
     name: Fuzz (scan target, long)
     runs-on: [self-hosted, builder02, lxc]
