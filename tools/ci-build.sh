@@ -73,8 +73,18 @@ if [ ! -d "$ROOT/$DIR" ]; then
     tar -xzf "$ROOT/${DIR}.tar.gz" -C "$ROOT"
 fi
 
-# Strict flags: the module is hostile-input parser code, so warnings are errors.
-CC_OPT="-g -Wall -Wextra -Wshadow"
+# --with-cc-opt applies to UPSTREAM CORE as well as to our module, so it must
+# carry only flags that upstream compiles cleanly under. -Wshadow does not
+# qualify: angie 1.12.0's own ngx_http_client_module.c shadows a parameter, and
+# angie's configure adds -Werror, so a -Wshadow here fails the core build before
+# our code is ever reached. (nginx core happens to be -Wshadow-clean; that is
+# luck, not a contract.)
+#
+# The module is hostile-input parser code and still gets the strict treatment --
+# but scoped to its own translation unit by the "Strict module compile" step in
+# build-test.yml, which recompiles src/ with -Wshadow -Werror and friends. That
+# is the right boundary: our warnings are our problem, upstream's are not.
+CC_OPT="-g -Wall"
 LD_OPT=""
 ADD_MODULE="--add-dynamic-module=$MODULE_DIR"
 
