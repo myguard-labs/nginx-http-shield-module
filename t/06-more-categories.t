@@ -518,3 +518,13 @@ GET /t/.openclaw/config.json
 --- request
 GET /t/.qwen_code/settings.json
 --- error_code: 403
+
+=== TEST 69: traversal is full-strength in the request target (NO_BODY exemption is body-only)
+# traversal carries NO_BODY, which narrows WHERE it applies, never WHETHER it
+# matches. A real encoded traversal in the target still blocks; only bodies are
+# exempt (t/05 TEST 75 pins the benign relative path in a JSON body passing).
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request
+GET /t?f=..%2f..%2f..%2fetc%2fpasswd
+--- error_code: 403
