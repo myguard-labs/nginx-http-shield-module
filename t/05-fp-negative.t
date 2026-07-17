@@ -516,3 +516,70 @@ Content-Type: application/json
 --- request
 GET /t/report;format=pdf HTTP/1.1
 --- error_code: 200
+
+=== TEST 57: opaque short tokens in Authorization are not scanned as malware
+# The broad header pass intentionally enables only punctuation-rich Log4Shell
+# and Shellshock categories. Five-byte gadget/webshell tokens collide with
+# opaque credentials eventually and must remain disabled here.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Authorization: Bearer rO0ABp0wny
+--- error_code: 200
+
+=== TEST 58: new sensitive-path names in a documentation body remain allowed
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"doc\":\"Protect /.config/gcloud/, /config/master.key and /terraform.tfstate from accidental publication.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 59: expanded AI-agent config dirs remain allowed in a docs body
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"doc\":\"Ignore /.cline/, /.opencode/, /.openclaw/ and /.qwen_code/ in published projects.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 60: multipart Content-Type entropy is not a gadget or webshell
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+--- more_headers
+Content-Type: multipart/form-data; boundary=rO0ABp0wny
+--- error_code: 405
+
+=== TEST 61: second-pass sensitive targets remain allowed in documentation bodies
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"doc\":\"Protect /.cargo/credentials, /.google_authenticator, /proc/self/maps and /etc/ssh/sshd_config.\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 62: an ordinary localhost development URL is not infrastructure SSRF
+# The loopback additions require distinctive management ports/endpoints; a
+# local application callback or documentation link must remain usable.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?callback=http://localhost:3000/oauth/callback
+--- error_code: 200
+
+=== TEST 63: a normal bracketed API parameter is not a MongoDB operator
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?filter%5Bstatus%5D=active
+--- error_code: 200

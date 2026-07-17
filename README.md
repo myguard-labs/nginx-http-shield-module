@@ -28,16 +28,16 @@ Run a real WAF on top where you need one.
 
 ## What it blocks
 
-29 categories (≈400 signatures), all matched case-insensitively after
+29 categories (633 signatures), all matched case-insensitively after
 percent-decoding:
 
 | Category | Examples |
 |----------|----------|
-| `sqli` | `union select`, `' or 1=1`, `into outfile`, `information_schema`; `sleep(` **+** a `select` ([AND-rule](#and-rules)) |
-| `xss` | `<script`, `javascript:`, `onerror=`, `document.cookie` |
+| `sqli` | `union select` plus comment/control-whitespace evasions, `' or 1=1`, `into outfile`, database escape APIs such as `sp_oacreate` and `pg_read_file(`; `sleep(` **+** a `select` ([AND-rule](#and-rules)) |
+| `xss` | `<script`, `javascript:`, entity-encoded `javascript&#x3a;`, `data:text/html`, `onerror=`, `onpointerenter=` |
 | `traversal` | the traversal **gadget**: `../`, `..\`, `..;/`, `.%2e/` (CVE-2021-41773), `....//` |
 | `overlong` | overlong-UTF-8 `/`, `\`, `.` and NUL in every width (`%c0%af`, `%e0%80%af`, `%f0%80%80%af`, `%c1%9c`, `%c0%80`), IIS `%u002f` — illegal UTF-8 by definition, so attack-only |
-| `cmdi` | `;wget `, `$(curl`, `/bin/sh`, `chmod 777`, `/winnt/system32` |
+| `cmdi` | `;wget `, `&&curl `, `||wget `, `$(whoami`, `/bin/sh`, `powershell.exe -enc`, `/winnt/system32` |
 | `lfi` | `php://filter`, `data://`, `expect://`, `phar://` |
 | `crlf` | `%0d%0a`, response-splitting `\r\nSet-Cookie:` |
 | `nullbyte` | `%00`, `%u0000`, double- and triple-encoded `.` / `/` / `\` (`%252e`, `%25252f`, `%25%32%65`) |
@@ -56,15 +56,21 @@ percent-decoding:
 | `httpoxy` | a request-borne `Proxy:` header (CVE-2016-5385) |
 | `range_dos` | a `Range:` header with more than 10 ranges (CVE-2011-3192) |
 | `ctrl_char` | a C0 control byte in the decoded path (`%01`, `%1b`, …) — nginx itself rejects the *raw* form, so only the encoded one gets this far |
-| `sensitive_file` | `/.env`, `/.git/`, `wp-config.php.bak`, `/.aws/credentials`, and the traversal **targets** — `/etc/passwd`, `/proc/self/environ`, `win.ini` |
+| `sensitive_file` | `/.env`, `/.git/`, package/cloud/CLI credential stores, Terraform state, AI-agent config dirs, and traversal **targets** — `/etc/passwd`, `/proc/self/maps`, `/etc/ssh/sshd_config`, `win.ini` |
 | `webshell` | `c99.php`, `r57.php`, `wso.php`, `weevely`, `behinder`, `shell.php?cmd=` |
-| `ssrf_meta` | `169.254.169.254`, `100.100.100.200` (Alibaba), `192.0.0.192` (Oracle), `metadata.google.internal`, IMDSv2 `/latest/api/token`, `iam/security-credentials/`, decimal/hex IMDS IPs |
+| `ssrf_meta` | cloud metadata hosts/paths, IMDSv2 tokens/credentials, Unicode-dot/IP-number evasions, wildcard-DNS forms, and loopback Docker/etcd/Lambda control endpoints |
 | `nosql` | MongoDB operator injection `[$ne]`, `[$where]`, `{"$where":`, `$func:` |
 | `ssti` | template-probe forms `{{7*7}}`, `${7*7}`, `{{''.__class__`, `<%= 7*7`, `#set($` |
 | `exploit_path` | fixed n-day paths: `/wls-wsat/`, `/remote/fgt_lang`…`sslvpn_websession`, `/actuator/gateway/routes`, `/_ignition/execute-solution`, `/api/jsonws/invoke`, F5 `/tmui/login.jsp/..;/` (CVE-2020-5902), vCenter `uploadova` (CVE-2021-21972), Citrix `/vpn/../vpns/` (CVE-2019-19781), OFBiz `/webtools/control/xmlrpc`, Ivanti `user-backup-code/..`, GPON/HNAP/Zyxel probes |
 
-What is inspected: the request line and query string, the `User-Agent`,
-`Referer` and `Content-Type` headers, and — when enabled — the request body.
+What is inspected: the request line and query string; `User-Agent` and
+`Referer` with the full ruleset; `Content-Type` for header-borne exploits such
+as Struts OGNL; URI-bearing `Destination`, `X-Original-URL` and `X-Rewrite-URL`
+with the full ruleset; injection-shaped cookie values; and every other
+request-header value for Log4Shell and Shellshock. Opaque header values
+deliberately do not run short gadget/webshell tokens that would eventually
+collide with random credentials or multipart boundary entropy. When enabled,
+text-shaped request bodies are inspected too.
 
 What is **not** done: scanner-name blocking (User-Agent strings like `sqlmap`
 are trivially spoofed, so they are not matched — but payloads carried *inside*
@@ -140,11 +146,17 @@ percent-decoded (once), `+`→space, lowercased copy — and runs every enabled
 category's patterns over them in a **single Aho-Corasick pass per buffer**. Three
 categories (`httpoxy`, `range_dos`, `ctrl_char`) are structural checks rather than
 literal matches. There is no regex and no per-request allocation beyond the two
-scratch buffers, so the cost is a few microseconds on typical request sizes.
+scratch buffers per inspected value, so the cost is a few microseconds on
+typical request sizes.
 
 Body inspection reads the buffered request body (up to `shield_max_body`) and
 scans it the same way, then resumes phase processing — the same mechanism the
 stock `ngx_http_mirror_module` uses.
+
+Scannable media types include form and multipart data, `text/*`, JSON and XML,
+structured `application/*+json` / `application/*+xml` types, GraphQL, NDJSON,
+JSON text sequences, and YAML. Binary and unknown application media types are
+left alone.
 
 ### Not every category is scanned in the body
 
@@ -158,15 +170,15 @@ shell script in an editor, a snippet in a docs API. The same is true of
 post *about* Log4Shell, and of `<?php system(` in a code-review tool.
 
 So each category declares whether its tokens are attack-only in *any* position,
-or only in a request target. Eight are request-target-and-header only:
+or only in a request target. Nine are request-target-and-header only:
 
-`cmdi` · `xss` · `template` · `lfi` · `php_rce` · `java_rce` · `java_eval` · `sensitive_file`
+`cmdi` · `xss` · `template` · `lfi` · `php_rce` · `java_rce` · `java_eval` · `sensitive_file` · `exploit_path`
 
 Every other category is scanned in the body too, and that is where the body scan
 earns its keep — SQL injection and path traversal in a form POST, the Java
-deserialization gadget classes, SSI injection, webshell names, the
-encoding-evasion categories, and the product-specific exploit paths. None of
-those have a benign reading in a body either.
+deserialization gadget classes, SSI injection, webshell names, and the
+encoding-evasion categories. None of those have a benign reading in a body
+either.
 
 This narrows *where* a category applies, never *whether* it matches: a
 body-exempt category still blocks at full strength in the request target and in
@@ -197,6 +209,7 @@ its category fires:
 | `sqli_time_based` | `sqli` | `sleep(` **and** `select ` |
 | `jenkins_cli_read` | `exploit_path` | (see `ngx_http_shield_rule_jenkins_cli`) |
 | `vmware_wsone_ssti` | `exploit_path` | `/catalog-portal/ui/oauth/verify` **and** `freemarker` |
+| `ssrf_wildcard_dns` | `ssrf_meta` | `.nip.io` **and** `169-254-169-254` |
 
 Rule terms are **not** signatures: a term never fires on its own, and none of
 the left-hand tokens above will block a request by itself. That is checked
@@ -254,8 +267,9 @@ worker serves nobody else. Two properties keep that safe:
 
 Set `shield_body off` on endpoints that take large uploads.
 
-The automaton costs ~3.4 MB, built once at configuration load and shared
-read-only by every worker. There is no per-request allocation for matching.
+The two automatons cost ~5.2 MiB, built once at configuration load and shared
+read-only by every worker. Matching state itself needs no per-request
+allocation; normalization uses the two bounded scratch buffers described above.
 
 ## Adding a signature
 

@@ -117,6 +117,18 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sqli[] = {
     NGX_HTTP_SHIELD_SIG("union select"),
     NGX_HTTP_SHIELD_SIG("union all select"),
     NGX_HTTP_SHIELD_SIG("union distinct select"),
+    /* Whitespace/comment evasions survive the one-pass decoder as their real
+     * separator byte. Spell out the attack-only UNION/boolean combinations;
+     * do not normalize all whitespace and accidentally join benign tokens. */
+    NGX_HTTP_SHIELD_SIG("union/**/select"),
+    NGX_HTTP_SHIELD_SIG("union\tselect"),
+    NGX_HTTP_SHIELD_SIG("union\nselect"),
+    NGX_HTTP_SHIELD_SIG("union\rselect"),
+    NGX_HTTP_SHIELD_SIG("union\vselect"),
+    NGX_HTTP_SHIELD_SIG("union\fselect"),
+    NGX_HTTP_SHIELD_SIG("or/**/1=1"),
+    NGX_HTTP_SHIELD_SIG("and/**/sleep("),
+    NGX_HTTP_SHIELD_SIG("select/**/sleep("),
     NGX_HTTP_SHIELD_SIG("' or 1=1"),
     NGX_HTTP_SHIELD_SIG("\" or 1=1"),
     NGX_HTTP_SHIELD_SIG("or '1'='1"),
@@ -158,6 +170,23 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sqli[] = {
     NGX_HTTP_SHIELD_SIG("; drop table"),
     NGX_HTTP_SHIELD_SIG("; drop database"),
     NGX_HTTP_SHIELD_SIG("xp_cmdshell"),
+    /* Database-to-OS/file primitives. These vendor APIs are not ordinary
+     * search terms or identifiers in application input; they are the escape
+     * hatches used after a SQL injection has reached an executable context. */
+    NGX_HTTP_SHIELD_SIG("sp_oacreate"),
+    NGX_HTTP_SHIELD_SIG("sp_oamethod"),
+    NGX_HTTP_SHIELD_SIG("openrowset("),
+    NGX_HTTP_SHIELD_SIG("opendatasource("),
+    NGX_HTTP_SHIELD_SIG("pg_read_file("),
+    NGX_HTTP_SHIELD_SIG("pg_read_binary_file("),
+    NGX_HTTP_SHIELD_SIG("pg_write_file("),
+    NGX_HTTP_SHIELD_SIG("lo_import("),
+    NGX_HTTP_SHIELD_SIG("lo_export("),
+    NGX_HTTP_SHIELD_SIG("dbms_java.runjava"),
+    NGX_HTTP_SHIELD_SIG("dbms_scheduler.create_job"),
+    NGX_HTTP_SHIELD_SIG("utl_file."),
+    NGX_HTTP_SHIELD_SIG("utl_tcp."),
+    NGX_HTTP_SHIELD_SIG("ctxsys.drithsx.sn"),
     NGX_HTTP_SHIELD_SIG("utl_inaddr"),
     NGX_HTTP_SHIELD_SIG("utl_http.request"),
     NGX_HTTP_SHIELD_SIG("json_arrayagg("),
@@ -177,8 +206,18 @@ static const ngx_http_shield_sig_t  ngx_http_shield_xss[] = {
     NGX_HTTP_SHIELD_SIG("onmouseover="),
     NGX_HTTP_SHIELD_SIG("onfocus="),
     NGX_HTTP_SHIELD_SIG("ontoggle="),
+    NGX_HTTP_SHIELD_SIG("onbeforetoggle="),
     NGX_HTTP_SHIELD_SIG("onanimationstart="),
     NGX_HTTP_SHIELD_SIG("onpointerover="),
+    NGX_HTTP_SHIELD_SIG("onmouseenter="),
+    NGX_HTTP_SHIELD_SIG("onwheel="),
+    NGX_HTTP_SHIELD_SIG("onbegin="),
+    NGX_HTTP_SHIELD_SIG("onstart="),
+    NGX_HTTP_SHIELD_SIG("onauxclick="),
+    NGX_HTTP_SHIELD_SIG("onpointerenter="),
+    NGX_HTTP_SHIELD_SIG("onbeforeinput="),
+    NGX_HTTP_SHIELD_SIG("onpageshow="),
+    NGX_HTTP_SHIELD_SIG("onhashchange="),
     NGX_HTTP_SHIELD_SIG("document.cookie"),
     NGX_HTTP_SHIELD_SIG("document.location"),
     NGX_HTTP_SHIELD_SIG("window.location"),
@@ -191,6 +230,11 @@ static const ngx_http_shield_sig_t  ngx_http_shield_xss[] = {
     NGX_HTTP_SHIELD_SIG("<object data="),
     NGX_HTTP_SHIELD_SIG("<embed src="),
     NGX_HTTP_SHIELD_SIG("<base href="),
+    NGX_HTTP_SHIELD_SIG("<math href="),
+    NGX_HTTP_SHIELD_SIG("xlink:href="),
+    NGX_HTTP_SHIELD_SIG("data:text/html"),
+    NGX_HTTP_SHIELD_SIG("<video onerror"),
+    NGX_HTTP_SHIELD_SIG("<audio onerror"),
     NGX_HTTP_SHIELD_SIG("formaction="),
     NGX_HTTP_SHIELD_SIG("srcdoc="),
     NGX_HTTP_SHIELD_SIG("expression("),          /* legacy IE CSS expression */
@@ -199,6 +243,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_xss[] = {
     NGX_HTTP_SHIELD_SIG("alert(document."),
     NGX_HTTP_SHIELD_SIG("<script>alert"),
     NGX_HTTP_SHIELD_SIG("javascript&colon;"),
+    NGX_HTTP_SHIELD_SIG("javascript&#58;"),
+    NGX_HTTP_SHIELD_SIG("javascript&#x3a;"),
 };
 
 /* ---- 3. Path traversal ------------------------------------------------- */
@@ -277,22 +323,36 @@ static const ngx_http_shield_sig_t  ngx_http_shield_overlong[] = {
 static const ngx_http_shield_sig_t  ngx_http_shield_cmdi[] = {
     NGX_HTTP_SHIELD_SIG(";wget "),
     NGX_HTTP_SHIELD_SIG(";curl "),
+    NGX_HTTP_SHIELD_SIG("&&wget "),
+    NGX_HTTP_SHIELD_SIG("&&curl "),
+    NGX_HTTP_SHIELD_SIG("||wget "),
+    NGX_HTTP_SHIELD_SIG("||curl "),
     NGX_HTTP_SHIELD_SIG("|wget "),
     NGX_HTTP_SHIELD_SIG("|curl "),
+    NGX_HTTP_SHIELD_SIG("|sh "),
+    NGX_HTTP_SHIELD_SIG("|bash "),
     NGX_HTTP_SHIELD_SIG("&&cat "),
     NGX_HTTP_SHIELD_SIG(";cat "),
     NGX_HTTP_SHIELD_SIG(";id;"),
     NGX_HTTP_SHIELD_SIG(";id "),
     NGX_HTTP_SHIELD_SIG(";uname"),
+    NGX_HTTP_SHIELD_SIG(";whoami"),
+    NGX_HTTP_SHIELD_SIG(";sh "),
+    NGX_HTTP_SHIELD_SIG(";busybox "),
+    NGX_HTTP_SHIELD_SIG("|busybox "),
     NGX_HTTP_SHIELD_SIG("$(id)"),
     NGX_HTTP_SHIELD_SIG("$(curl"),
     NGX_HTTP_SHIELD_SIG("$(wget"),
+    NGX_HTTP_SHIELD_SIG("$(cat "),
+    NGX_HTTP_SHIELD_SIG("$(whoami"),
+    NGX_HTTP_SHIELD_SIG("$(uname"),
     NGX_HTTP_SHIELD_SIG("`wget"),
     NGX_HTTP_SHIELD_SIG("`curl"),
     NGX_HTTP_SHIELD_SIG("`id`"),
     NGX_HTTP_SHIELD_SIG("/bin/sh"),
     NGX_HTTP_SHIELD_SIG("/bin/bash"),
     NGX_HTTP_SHIELD_SIG("bash -i"),
+    NGX_HTTP_SHIELD_SIG("sh -c "),
     NGX_HTTP_SHIELD_SIG("/dev/tcp/"),
     NGX_HTTP_SHIELD_SIG("${ifs}"),
     NGX_HTTP_SHIELD_SIG("$ifs$"),
@@ -304,9 +364,12 @@ static const ngx_http_shield_sig_t  ngx_http_shield_cmdi[] = {
     NGX_HTTP_SHIELD_SIG("chmod 777"),
     NGX_HTTP_SHIELD_SIG("chmod +x"),
     NGX_HTTP_SHIELD_SIG("cmd.exe?/c"),
+    NGX_HTTP_SHIELD_SIG("cmd.exe /c"),
     NGX_HTTP_SHIELD_SIG("/c powershell"),
     NGX_HTTP_SHIELD_SIG("powershell -e"),
     NGX_HTTP_SHIELD_SIG("powershell -enc"),
+    NGX_HTTP_SHIELD_SIG("powershell.exe -enc"),
+    NGX_HTTP_SHIELD_SIG("base64 -d"),
     NGX_HTTP_SHIELD_SIG("certutil -urlcache"),
     NGX_HTTP_SHIELD_SIG("certutil.exe -urlcache"),
     NGX_HTTP_SHIELD_SIG("/winnt/system32"),   /* Code Red / Nimda era       */
@@ -623,6 +686,22 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sensitive_file[] = {
     NGX_HTTP_SHIELD_SIG("/proc/self/environ"),
     NGX_HTTP_SHIELD_SIG("/proc/self/cmdline"),
     NGX_HTTP_SHIELD_SIG("/proc/self/fd/"),
+    NGX_HTTP_SHIELD_SIG("/proc/self/maps"),
+    NGX_HTTP_SHIELD_SIG("/proc/self/status"),
+    NGX_HTTP_SHIELD_SIG("/proc/self/mountinfo"),
+    NGX_HTTP_SHIELD_SIG("/proc/net/tcp"),
+    NGX_HTTP_SHIELD_SIG("/etc/machine-id"),
+    NGX_HTTP_SHIELD_SIG("/etc/hostname"),
+    NGX_HTTP_SHIELD_SIG("/etc/resolv.conf"),
+    NGX_HTTP_SHIELD_SIG("/etc/sudoers"),
+    NGX_HTTP_SHIELD_SIG("/etc/environment"),
+    NGX_HTTP_SHIELD_SIG("/etc/crontab"),
+    NGX_HTTP_SHIELD_SIG("/etc/ssh/sshd_config"),
+    NGX_HTTP_SHIELD_SIG("/etc/nginx/nginx.conf"),
+    NGX_HTTP_SHIELD_SIG("/etc/letsencrypt/"),
+    NGX_HTTP_SHIELD_SIG("/var/log/auth.log"),
+    NGX_HTTP_SHIELD_SIG("/var/log/secure"),
+    NGX_HTTP_SHIELD_SIG("/var/lib/docker/containers/"),
     NGX_HTTP_SHIELD_SIG("win.ini"),
     NGX_HTTP_SHIELD_SIG("boot.ini"),
     NGX_HTTP_SHIELD_SIG("\\windows\\system32"),
@@ -643,6 +722,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sensitive_file[] = {
     NGX_HTTP_SHIELD_SIG("/.ssh/id_dsa"),
     NGX_HTTP_SHIELD_SIG("/.ssh/authorized_keys"),
     NGX_HTTP_SHIELD_SIG("/.ds_store"),
+    NGX_HTTP_SHIELD_SIG("/.htaccess"),
+    NGX_HTTP_SHIELD_SIG("/.htdigest"),
     NGX_HTTP_SHIELD_SIG("/.htpasswd"),
     NGX_HTTP_SHIELD_SIG("/.bash_history"),
     NGX_HTTP_SHIELD_SIG("/.mysql_history"),
@@ -672,18 +753,71 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sensitive_file[] = {
     NGX_HTTP_SHIELD_SIG("/id_rsa"),
     NGX_HTTP_SHIELD_SIG("/id_ed25519"),
     NGX_HTTP_SHIELD_SIG("/.ftpconfig"),
+    NGX_HTTP_SHIELD_SIG("/.google_authenticator"),
+    NGX_HTTP_SHIELD_SIG("/.s3cfg"),
+    NGX_HTTP_SHIELD_SIG("/.boto"),
+    NGX_HTTP_SHIELD_SIG("/.credentials"),
+    NGX_HTTP_SHIELD_SIG("/.deployment-secrets.txt"),
+    NGX_HTTP_SHIELD_SIG("/.cargo/credentials"),
+    NGX_HTTP_SHIELD_SIG("/.config/pip/pip.conf"),
+    NGX_HTTP_SHIELD_SIG("/.config/composer/auth.json"),
+    NGX_HTTP_SHIELD_SIG("/.composer/auth.json"),
+    NGX_HTTP_SHIELD_SIG("/.gsutil/"),
+    NGX_HTTP_SHIELD_SIG("/.minikube/"),
+    NGX_HTTP_SHIELD_SIG("/.password-store/"),
+    NGX_HTTP_SHIELD_SIG("/.secrets"),
     NGX_HTTP_SHIELD_SIG("/composer.json.bak"),
     NGX_HTTP_SHIELD_SIG("/artisan.bak"),
+    /* Credential/config stores whose directory or fixed filename should never
+     * be web-addressable. These are target-only (the category is NO_BODY), so
+     * documentation can still name them. Sourced from CRS restricted-files
+     * and lfi-os-files, narrowed to high-confidence secret-bearing paths. */
+    NGX_HTTP_SHIELD_SIG("/.aws/"),
+    NGX_HTTP_SHIELD_SIG("/.azure/"),
+    NGX_HTTP_SHIELD_SIG("/.docker/"),
+    NGX_HTTP_SHIELD_SIG("/.gnupg/"),
+    NGX_HTTP_SHIELD_SIG("/.kube/"),
+    NGX_HTTP_SHIELD_SIG("/.ssh/"),
+    NGX_HTTP_SHIELD_SIG("/.config/gcloud/"),
+    NGX_HTTP_SHIELD_SIG("/.config/gh/"),
+    NGX_HTTP_SHIELD_SIG("/.gem/credentials"),
+    NGX_HTTP_SHIELD_SIG("/.pypirc"),
+    NGX_HTTP_SHIELD_SIG("/.rediscli_history"),
+    NGX_HTTP_SHIELD_SIG("/.psql_history"),
+    NGX_HTTP_SHIELD_SIG("/.python_history"),
+    NGX_HTTP_SHIELD_SIG("/terraform.tfstate"),
+    NGX_HTTP_SHIELD_SIG("/config/master.key"),
+    NGX_HTTP_SHIELD_SIG("/app/etc/env.php"),
+    NGX_HTTP_SHIELD_SIG("/storage/logs/laravel.log"),
     /* AI coding-agent config/credential directories -- attackers now probe for
      * these the same way they probe .git/.aws/.ssh. Sourced from CRS
      * ai-critical-artifacts.data. NO_BODY like the rest of this table: these
      * are dotfile directory names that tutorials and READMEs name in prose. */
     NGX_HTTP_SHIELD_SIG("/.claude/"),
     NGX_HTTP_SHIELD_SIG("/.cursor/"),
+    NGX_HTTP_SHIELD_SIG("/.continue/"),
     NGX_HTTP_SHIELD_SIG("/.aider/"),
+    NGX_HTTP_SHIELD_SIG("/.roo/"),
+    NGX_HTTP_SHIELD_SIG("/.zed/"),
+    NGX_HTTP_SHIELD_SIG("/.cline/"),
+    NGX_HTTP_SHIELD_SIG("/.kiro/"),
+    NGX_HTTP_SHIELD_SIG("/.windsurf/"),
+    NGX_HTTP_SHIELD_SIG("/.rovodev/"),
     NGX_HTTP_SHIELD_SIG("/.codex/"),
+    NGX_HTTP_SHIELD_SIG("/.opencode/"),
+    NGX_HTTP_SHIELD_SIG("/.a0proj/"),
+    NGX_HTTP_SHIELD_SIG("/.plandex/"),
+    NGX_HTTP_SHIELD_SIG("/.fabric/"),
     NGX_HTTP_SHIELD_SIG("/.n8n/"),
+    NGX_HTTP_SHIELD_SIG("/.junie/"),
     NGX_HTTP_SHIELD_SIG("/.gemini/"),
+    NGX_HTTP_SHIELD_SIG("/.openclaw/"),
+    NGX_HTTP_SHIELD_SIG("/.clawdbot/"),
+    NGX_HTTP_SHIELD_SIG("/.trustclaw/"),
+    NGX_HTTP_SHIELD_SIG("/.zeroclaw/"),
+    NGX_HTTP_SHIELD_SIG("/.warp/"),
+    NGX_HTTP_SHIELD_SIG("/.qwen_code/"),
+    NGX_HTTP_SHIELD_SIG("/.crush/"),
     NGX_HTTP_SHIELD_SIG("/.terraform/"),
     NGX_HTTP_SHIELD_SIG("/.dockerenv"),
 };
@@ -735,10 +869,38 @@ static const ngx_http_shield_sig_t  ngx_http_shield_ssrf_meta[] = {
     NGX_HTTP_SHIELD_SIG("/opc/v1/instance"),      /* Oracle IMDS             */
     NGX_HTTP_SHIELD_SIG("2852039166"),            /* decimal 169.254.169.254 */
     NGX_HTTP_SHIELD_SIG("0xa9fea9fe"),            /* hex 169.254.169.254     */
+    NGX_HTTP_SHIELD_SIG("025177524776"),          /* octal 169.254.169.254   */
+    NGX_HTTP_SHIELD_SIG("0251.0376.0251.0376"),   /* dotted octal           */
+    NGX_HTTP_SHIELD_SIG("0251.254.169.254"),      /* mixed octal/decimal     */
+    NGX_HTTP_SHIELD_SIG("0xa9.0xfe.0xa9.0xfe"),   /* dotted hex             */
+    NGX_HTTP_SHIELD_SIG("[::ffff:a9fe:a9fe]"),    /* IPv4-mapped IPv6       */
+    NGX_HTTP_SHIELD_SIG("[0:0:0:0:0:ffff:a9fe:a9fe]"),
+    NGX_HTTP_SHIELD_SIG("[0:0:0:0:0:ffff:169.254.169.254]"),
+    /* WHATWG/browser URL parsers accept ideographic and halfwidth stops as
+     * IPv4 separators. Backends that canonicalise them reach IMDS even though
+     * a byte-oriented dotted-quad check never sees an ASCII period. */
+    NGX_HTTP_SHIELD_SIG("169。254。169。254"),
+    NGX_HTTP_SHIELD_SIG("169｡254｡169｡254"),
+    NGX_HTTP_SHIELD_SIG("instance-data/latest/"), /* legacy AWS hostname    */
+    NGX_HTTP_SHIELD_SIG("169.254.170.2/v2"),      /* AWS ECS task metadata  */
+    NGX_HTTP_SHIELD_SIG("metadata.packet.net/userdata"),
+    NGX_HTTP_SHIELD_SIG("/2009-04-04/meta-data/"), /* OpenStack/HP Helion    */
+    NGX_HTTP_SHIELD_SIG("rancher-metadata/"),
     NGX_HTTP_SHIELD_SIG("/latest/api/token"),     /* AWS IMDSv2 token endpoint */
     NGX_HTTP_SHIELD_SIG("/latest/meta-data/iam/security-credentials/"),
     NGX_HTTP_SHIELD_SIG("metadata-flavor: google"), /* GCP IMDS header form   */
     NGX_HTTP_SHIELD_SIG("metadata-flavor:google"),
+    /* Fixed loopback management services: unlike a bare localhost URL, these
+     * ports/endpoints are infrastructure control planes, not normal links. */
+    NGX_HTTP_SHIELD_SIG("127.0.0.1:2375"),       /* unauthenticated Docker */
+    NGX_HTTP_SHIELD_SIG("2130706433:2375"),      /* decimal loopback       */
+    NGX_HTTP_SHIELD_SIG("0x7f000001:2375"),      /* hex loopback           */
+    NGX_HTTP_SHIELD_SIG("0177.0.0.1:2375"),      /* dotted-octal loopback  */
+    NGX_HTTP_SHIELD_SIG("017700000001:2375"),    /* integer-octal loopback */
+    NGX_HTTP_SHIELD_SIG("[::1]:2375"),           /* IPv6 loopback          */
+    NGX_HTTP_SHIELD_SIG("[0:0:0:0:0:ffff:127.0.0.1]:2375"),
+    NGX_HTTP_SHIELD_SIG("127.0.0.1:2379"),       /* etcd                   */
+    NGX_HTTP_SHIELD_SIG("localhost:9001/2018-06-01/runtime/"), /* Lambda API */
 };
 
 /* ---- 26. NoSQL injection ----------------------------------------------- */
@@ -1182,7 +1344,7 @@ typedef char ngx_http_shield_cat_fits_in_mask[
 
 /* Rule terms are numbered across ngx_http_shield_rules[] in declaration order
  * (rule 0's terms first, then rule 1's, ...). The id is a bit position in the
- * per-state rule mask, so the total number of terms must fit in a uint64. Ten
+ * per-state rule mask, so the total number of terms must fit in a uint64. Twelve
  * today; the assert makes an overflow a compile error rather than a silently
  * mis-evaluated rule. */
 #define NGX_HTTP_SHIELD_NRULE_TERMS                                           \
@@ -1195,7 +1357,9 @@ typedef char ngx_http_shield_cat_fits_in_mask[
      + sizeof(ngx_http_shield_rule_jenkins_cli)                               \
        / sizeof(ngx_http_shield_rule_jenkins_cli[0])                          \
      + sizeof(ngx_http_shield_rule_vmware_ssti)                               \
-       / sizeof(ngx_http_shield_rule_vmware_ssti[0]))
+       / sizeof(ngx_http_shield_rule_vmware_ssti[0])                          \
+     + sizeof(ngx_http_shield_rule_ssrf_wildcard_dns)                         \
+       / sizeof(ngx_http_shield_rule_ssrf_wildcard_dns[0]))
 
 typedef char ngx_http_shield_rule_terms_fit_in_mask[
     (NGX_HTTP_SHIELD_NRULE_TERMS <= 64) ? 1 : -1];

