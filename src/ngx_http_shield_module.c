@@ -874,22 +874,8 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
 /* ---- body inspection --------------------------------------------------- */
 
 static ngx_int_t
-ngx_http_shield_scannable_body(ngx_http_request_t *r)
+ngx_http_shield_content_type_value_scannable(ngx_str_t v)
 {
-    ngx_table_elt_t  *ct;
-    ngx_str_t         v;
-
-    if (r->headers_in.content_length_n <= 0 && !r->headers_in.chunked) {
-        return 0;
-    }
-
-    ct = r->headers_in.content_type;
-    if (ct == NULL) {
-        return 0;
-    }
-
-    v = ct->value;
-
     /* Only text-shaped bodies can carry the payloads we look for. Binary
      * uploads (images, archives, octet-stream) are never scanned. */
     if (ngx_http_shield_content_type_is(
@@ -943,6 +929,29 @@ ngx_http_shield_scannable_body(ngx_http_request_t *r)
                                             sizeof("application/x-yaml") - 1))
     {
         return 1;
+    }
+
+    return 0;
+}
+
+
+static ngx_int_t
+ngx_http_shield_scannable_body(ngx_http_request_t *r)
+{
+    ngx_table_elt_t  *ct;
+
+    if (r->headers_in.content_length_n <= 0 && !r->headers_in.chunked) {
+        return 0;
+    }
+
+    /* Walk the whole Content-Type header chain (nginx links duplicates via
+     * ->next). A request-smuggling attempt may send a benign first value
+     * (octet-stream) followed by a text one; scan if ANY instance is
+     * text-shaped so the body is never left unscanned by a decoy header. */
+    for (ct = r->headers_in.content_type; ct != NULL; ct = ct->next) {
+        if (ngx_http_shield_content_type_value_scannable(ct->value)) {
+            return 1;
+        }
     }
 
     return 0;
@@ -1025,6 +1034,15 @@ ngx_http_shield_collect_body(ngx_http_request_t *r, size_t max, ngx_str_t *out)
 
     if (r->request_body == NULL || r->request_body->bufs == NULL || max == 0) {
         return NGX_OK;
+    }
+
+    /* Size the scan buffer to the known body length, not always the cap: a
+     * 1-byte body must not reserve the whole shield_max_body. Chunked bodies
+     * report content_length_n < 0 (length unknown) -> fall back to the cap. */
+    if (r->headers_in.content_length_n > 0
+        && (off_t) max > r->headers_in.content_length_n)
+    {
+        max = (size_t) r->headers_in.content_length_n;
     }
 
     p = ngx_pnalloc(r->pool, max);
