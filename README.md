@@ -142,7 +142,7 @@ http {
 
 ### Repeat-offender banning
 
-A single shield hit blocks one request. `shield_ban` escalates a **persistent**
+In block mode, a single shield hit blocks that request. `shield_ban` escalates a **persistent**
 attacker to a hard ban: after `count` hits inside a sliding `window`, the client
 IP is refused for `bantime` — with the configured `shield_status`, **before any
 signature scanning**, so a known-bad IP costs only a shared-memory lookup.

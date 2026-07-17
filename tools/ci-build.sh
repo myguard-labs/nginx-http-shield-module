@@ -29,7 +29,7 @@ MODE="${3:-debug}"
 case "$MODE" in
     debug|asan|module|coverage) ;;
     *)
-        echo "unsupported mode: $MODE (want: debug|asan|module)" >&2
+        echo "unsupported mode: $MODE (want: debug|asan|module|coverage)" >&2
         exit 2
         ;;
 esac

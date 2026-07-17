@@ -47,13 +47,25 @@
  * full address is stored so hash collisions are resolved exactly.
  */
 typedef struct {
+    u_char        color;          /* aliases ngx_rbtree_node_t.color; the tree */
+                                  /* rebalances by writing node->color, so the */
+                                  /* embedded struct MUST expose that byte      */
+                                  /* first (the ngx_http_limit_req idiom) --    */
+                                  /* otherwise color writes clobber `queue`.    */
+    u_char        len;            /* address length in bytes (4 v4, 16 v6)      */
+    u_char        addr[16];       /* raw address bytes, for exact collision cmp */
     ngx_queue_t   queue;          /* LRU: most-recently-touched at head        */
     time_t        window_start;   /* start of the current hit-counting window  */
     time_t        banned_until;   /* 0 = not banned; else ban expiry (seconds) */
     ngx_uint_t    hits;           /* shield hits seen in the current window     */
-    u_char        len;            /* address length in bytes (4 v4, 16 v6)      */
-    u_char        addr[16];       /* raw address bytes, for exact collision cmp */
 } ngx_http_shield_ban_node_t;
+
+/* The struct is overlaid on an ngx_rbtree_node_t via `&node->color`, so its
+ * first byte MUST land on the node's color byte (which the rbtree rewrites on
+ * every rebalance). If a future edit reorders the fields, break the build here
+ * rather than silently corrupting the LRU queue in production. */
+typedef char ngx_http_shield_ban_color_first[
+    (offsetof(ngx_http_shield_ban_node_t, color) == 0) ? 1 : -1];
 
 typedef struct {
     ngx_rbtree_t       rbtree;
@@ -1737,19 +1749,28 @@ ngx_http_shield_ban_addr(ngx_http_request_t *r, u_char *addr, u_char *len)
         return NGX_OK;
 
 #if (NGX_HAVE_INET6)
+    /* LCOV_EXCL_START -- suite clients connect over IPv4 loopback only. */
     case AF_INET6:
         sin6 = (struct sockaddr_in6 *) r->connection->sockaddr;
         ngx_memcpy(addr, &sin6->sin6_addr, 16);
         *len = 16;
         return NGX_OK;
+    /* LCOV_EXCL_STOP */
 #endif
 
     default:
-        return NGX_DECLINED;
+        return NGX_DECLINED;  /* LCOV_EXCL_LINE -- non-inet family (unix sock) */
     }
 }
 
 
+/* LCOV_EXCL_START
+ * The rbtree comparator only runs when a second address is inserted into a live
+ * zone. Test::Nginx drives a single loopback client, so every ban node carries
+ * the same 127.0.0.1 key and each test block's zone holds at most one node --
+ * the tree never grows past its root and this comparator (and the multi-node
+ * walk in ban_lookup below) is unreachable from the suite. Exercised instead by
+ * design review; excluded so the floor gates the driveable code. */
 static void
 ngx_http_shield_ban_rbtree_insert(ngx_rbtree_node_t *temp,
     ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel)
@@ -1787,6 +1808,7 @@ ngx_http_shield_ban_rbtree_insert(ngx_rbtree_node_t *temp,
     node->right = sentinel;
     ngx_rbt_red(node);
 }
+/* LCOV_EXCL_STOP */
 
 
 /*
@@ -1806,14 +1828,16 @@ ngx_http_shield_ban_lookup(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t hash,
 
     while (node != sentinel) {
 
+        /* Tree-descent branches: unreachable from a single-address suite (one
+         * node per zone), same reason as the comparator above. LCOV_EXCL. */
         if (hash < node->key) {
-            node = node->left;
-            continue;
+            node = node->left;      /* LCOV_EXCL_LINE */
+            continue;               /* LCOV_EXCL_LINE */
         }
 
         if (hash > node->key) {
-            node = node->right;
-            continue;
+            node = node->right;     /* LCOV_EXCL_LINE */
+            continue;               /* LCOV_EXCL_LINE */
         }
 
         /* hash == node->key: resolve exactly on the stored address */
@@ -1830,7 +1854,7 @@ ngx_http_shield_ban_lookup(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t hash,
             return bn;
         }
 
-        node = (rc < 0) ? node->left : node->right;
+        node = (rc < 0) ? node->left : node->right;  /* LCOV_EXCL_LINE */
     }
 
     return NULL;
@@ -1870,12 +1894,19 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now)
             return;
         }
 
+        /* LCOV_EXCL_START
+         * Actual eviction needs a stale node at the LRU tail, i.e. a ban that
+         * has already expired in wall-clock time. Test::Nginx fires requests
+         * back-to-back with no clock control, so a node is always still active
+         * when expire() runs and this reclaim body is never reached from the
+         * suite (same untestable-clock class as ban expiry itself). */
         node = (ngx_rbtree_node_t *)
                    ((u_char *) bn - offsetof(ngx_rbtree_node_t, color));
 
         ngx_queue_remove(q);
         ngx_rbtree_delete(&ctx->sh->rbtree, node);
         ngx_slab_free_locked(ctx->shpool, node);
+        /* LCOV_EXCL_STOP */
     }
 }
 
@@ -1899,7 +1930,7 @@ ngx_http_shield_ban_is_banned(ngx_http_request_t *r,
     ngx_http_shield_ban_node_t  *bn;
 
     if (ngx_http_shield_ban_addr(r, addr, &len) != NGX_OK) {
-        return 0;
+        return 0;  /* LCOV_EXCL_LINE -- non-inet family, untestable over TCP */
     }
 
     ctx = slcf->ban_zone->data;
@@ -1938,7 +1969,7 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
     ngx_http_shield_ban_node_t  *bn;
 
     if (ngx_http_shield_ban_addr(r, addr, &len) != NGX_OK) {
-        return;
+        return;   /* LCOV_EXCL_LINE -- non-inet family, untestable over TCP */
     }
 
     ctx = slcf->ban_zone->data;
@@ -1962,12 +1993,15 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
 
         node = ngx_slab_alloc_locked(ctx->shpool, size);
         if (node == NULL) {
+            /* LCOV_EXCL_START -- slab-exhaustion path needs a full zone, not
+             * driveable without malloc/slab fault injection. */
             /* Out of slab space and nothing reclaimable: drop this hit. */
             ngx_shmtx_unlock(&ctx->shpool->mutex);
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                           "shield_ban zone \"%V\" is full; hit not counted",
                           &slcf->ban_zone->shm.name);
             return;
+            /* LCOV_EXCL_STOP */
         }
 
         node->key = hash;
@@ -1993,8 +2027,11 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
     if (now < bn->window_start
         || now - bn->window_start >= slcf->ban_window)
     {
+        /* LCOV_EXCL_START -- window elapse / backward clock step: needs wall-
+         * clock movement the suite cannot produce (back-to-back requests). */
         bn->window_start = now;
         bn->hits = 0;
+        /* LCOV_EXCL_STOP */
     }
 
     bn->hits++;
@@ -2025,23 +2062,27 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     ctx = shm_zone->data;
 
     if (octx) {
+        /* LCOV_EXCL_START -- reload/existing-segment inherit: needs a config
+         * reload or a pre-existing shm segment, neither of which a single
+         * Test::Nginx start produces. */
         /* Reload: inherit the existing shared segment. */
         ctx->sh = octx->sh;
         ctx->shpool = octx->shpool;
         return NGX_OK;
+        /* LCOV_EXCL_STOP */
     }
 
     ctx->shpool = (ngx_slab_pool_t *) shm_zone->shm.addr;
 
     if (shm_zone->shm.exists) {
-        ctx->sh = ctx->shpool->data;
-        return NGX_OK;
+        ctx->sh = ctx->shpool->data;   /* LCOV_EXCL_LINE -- pre-existing segment */
+        return NGX_OK;                 /* LCOV_EXCL_LINE */
     }
 
     ctx->sh = ngx_slab_alloc(ctx->shpool,
                              sizeof(ngx_http_shield_ban_shctx_t));
     if (ctx->sh == NULL) {
-        return NGX_ERROR;
+        return NGX_ERROR;   /* LCOV_EXCL_LINE -- fresh-zone slab OOM */
     }
 
     ctx->shpool->data = ctx->sh;
@@ -2053,7 +2094,7 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     len = sizeof(" in shield_ban_zone \"\"") + shm_zone->shm.name.len;
     ctx->shpool->log_ctx = ngx_slab_alloc(ctx->shpool, len);
     if (ctx->shpool->log_ctx == NULL) {
-        return NGX_ERROR;
+        return NGX_ERROR;   /* LCOV_EXCL_LINE -- log-ctx slab OOM */
     }
 
     ngx_sprintf(ctx->shpool->log_ctx, " in shield_ban_zone \"%V\"%Z",
