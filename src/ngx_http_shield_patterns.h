@@ -1066,10 +1066,29 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
         ngx_http_shield_xss, NGX_HTTP_SHIELD_MATCH_DECODED
         | NGX_HTTP_SHIELD_NO_BODY | NGX_HTTP_SHIELD_NO_QUERY),
     /* traversal also matches RAW: several signatures are encoded forms
-     * (..%2f, ..%5c, .%%32%65) whose whole point is the still-encoded bytes. */
+     * (..%2f, ..%5c, .%%32%65) whose whole point is the still-encoded bytes.
+     *
+     * traversal carries NO_BODY. Its signatures are pure gadgets ("../", "..\\"
+     * and their encoded variants) with no sensitive-filename targets left (those
+     * moved to sensitive_file in the phase-3 pass). The "no legitimate client
+     * sends this" property holds in the request TARGET: nginx collapses "../" in
+     * the PATH component during normalization (so a real path-traversal probe
+     * only reaches PRECONTENT if it is ENCODED -- "..%2f" -- which no client emits
+     * by accident), while a literal or encoded "../" in a QUERY value is passed
+     * through unnormalized and stays scanned -- an argument like ?f=../../etc/passwd
+     * is an attack, not content (t/06 TEST 11/69 pin both survive-and-block). In a
+     * request BODY the same bytes are ordinary relative-path CONTENT: JSON asset
+     * maps ({"path":"../logo.png"}),
+     * JS/CSS imports, Markdown links, config files. Scanning bodies for "../"
+     * buys no real detection -- path traversal is delivered in the target, not a
+     * body field -- and costs a false positive on any request that stores a
+     * relative path. Same reasoning as the code-shaped categories and
+     * exploit_path; traversal has no body-delivered AND-rule (none of the five
+     * rules report under it), so the metabase constraint does not apply. */
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_TRAVERSAL, "traversal",
         ngx_http_shield_traversal,
-        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
+        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW
+        | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_OVERLONG, "overlong",
         ngx_http_shield_overlong, NGX_HTTP_SHIELD_MATCH_RAW),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_CMDI, "cmdi",

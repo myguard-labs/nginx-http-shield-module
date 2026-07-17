@@ -713,3 +713,20 @@ Content-Type: application/json
 --- more_headers
 Content-Type: application/xml
 --- error_code: 405
+
+=== TEST 75: a relative path in a JSON body value is not a traversal attack
+# traversal is NO_BODY: its signatures are gadgets ("../", "..\\", encoded
+# forms) whose "no legitimate client sends this" property holds in the request
+# TARGET, where nginx normalizes real path traversal away and only an encoded
+# "../" survives. In a body, "../" is ordinary relative-path CONTENT: JSON asset
+# maps, JS/CSS imports, Markdown links, config files. A body carrying "../" in a
+# string value must not be blocked. Real traversal is delivered in the target
+# (t/06 TEST 11, encoded ..%2f in the query, still blocks).
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"path\":\"../shared/logo.png\",\"css\":\"../../assets/site.css\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
