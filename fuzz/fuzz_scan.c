@@ -272,6 +272,14 @@ ac_build_fuzz(ac_t *ac, ngx_uint_t match)
         }
     }
 
+    term = 0;
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        term += ngx_http_shield_rules[i].nterms;
+    }
+    if (term > 64) {
+        abort();
+    }
+
     if (cap > 65535) {
         abort();
     }

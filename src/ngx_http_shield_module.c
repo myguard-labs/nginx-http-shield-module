@@ -11,8 +11,9 @@
  *
  * Signatures live in ngx_http_shield_patterns.h. The engine here normalizes
  * each input (percent-decode once, lowercase, '+' -> space) and matches every
- * signature against it in a single Aho-Corasick pass, plus two structural
- * checks (httpoxy Proxy header, Apache-Killer Range). Scan cost is O(bytes)
+ * signature against it in a single Aho-Corasick pass, plus three structural
+ * checks (httpoxy Proxy header, Apache-Killer Range, encoded C0 controls).
+ * Scan cost is O(bytes)
  * and independent of the size of the signature set.
  *
  * Runs in the PRECONTENT phase so that, when body inspection is enabled, it
@@ -76,6 +77,12 @@ static ngx_int_t ngx_http_shield_ac_build(ngx_conf_t *cf,
 static const ngx_http_shield_catdef_t *ngx_http_shield_ac_scan(
     const ngx_http_shield_ac_t *ac, u_char *data, size_t len, uint64_t skip);
 static ngx_int_t ngx_http_shield_scannable_body(ngx_http_request_t *r);
+static ngx_int_t ngx_http_shield_header_name_is(ngx_table_elt_t *h,
+    const char *name, size_t len);
+static ngx_int_t ngx_http_shield_content_type_is(ngx_str_t *v,
+    const char *type, size_t len);
+static ngx_int_t ngx_http_shield_content_type_suffix(ngx_str_t *v,
+    const char *suffix, size_t len);
 
 static void *ngx_http_shield_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent,
@@ -450,7 +457,11 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
 {
     ngx_int_t         rc;
-    ngx_table_elt_t  *h;
+    ngx_uint_t        i;
+    uint64_t          allowed, generic_allowed, header_skip;
+    const char       *source;
+    ngx_list_part_t  *part;
+    ngx_table_elt_t  *header;
 
     /* Every scan is three-valued: NGX_OK (hit), NGX_DECLINED (clean),
      * NGX_ERROR (the buffer could not be scanned). NGX_ERROR must never be
@@ -478,31 +489,96 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
         }
     }
 
-    h = r->headers_in.user_agent;
-    if (h != NULL) {
-        rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                        "user-agent",
-                                        slcf->skip, hit);
-        if (rc != NGX_DECLINED) {
-            return rc;
-        }
-    }
+    /* Log4Shell and Shellshock are valuable in EVERY request-header value:
+     * applications and middleware routinely copy arbitrary headers into logs
+     * or CGI environment variables. Their signatures are punctuation-rich,
+     * so scanning opaque Authorization/API-key values for these two categories
+     * does not create the random short-token collisions that a full-table scan
+     * would ("ro0ab", "p0wny", and similar five-byte signatures are real
+     * examples). URI-bearing headers get the full table; Cookie gets the
+     * injection-shaped categories, but not opaque-token categories. */
+    generic_allowed = ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_TEMPLATE)
+                      | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_SHELLSHOCK);
 
-    h = r->headers_in.referer;
-    if (h != NULL) {
-        rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                        "referer",
-                                        slcf->skip, hit);
-        if (rc != NGX_DECLINED) {
-            return rc;
-        }
-    }
+    part = &r->headers_in.headers.part;
+    header = part->elts;
 
-    h = r->headers_in.content_type;
-    if (h != NULL) {
-        rc = ngx_http_shield_scan_input(r, slcf, h->value.data, h->value.len,
-                                        "content-type",
-                                        slcf->skip, hit);
+    for (i = 0; /* void */; i++) {
+
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            header = part->elts;
+            i = 0;
+        }
+
+        if (header[i].hash == 0 || header[i].value.len == 0) {
+            continue;
+        }
+
+        source = "header";
+        allowed = generic_allowed;
+        header_skip = slcf->skip | ~allowed;
+
+        /* Preserve the existing named scans and their stable log labels. */
+        if (&header[i] == r->headers_in.user_agent) {
+            source = "user-agent";
+            header_skip = slcf->skip;
+
+        } else if (&header[i] == r->headers_in.referer) {
+            source = "referer";
+            header_skip = slcf->skip;
+
+        } else if (&header[i] == r->headers_in.content_type) {
+            source = "content-type";
+            /* Multipart boundaries are opaque random strings. Keep the
+             * header-borne exploit categories (especially Struts OGNL) but do
+             * not run five-byte gadget/webshell names over boundary entropy. */
+            allowed |= ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_JAVA_RCE)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_CRLF)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_NULLBYTE)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_OVERLONG);
+            header_skip = slcf->skip | ~allowed;
+
+        /* Reverse proxies commonly put the effective request target in one of
+         * these headers. Treat it exactly like the request target, which also
+         * makes WebDAV Destination traversal visible at PRECONTENT. */
+        } else if (ngx_http_shield_header_name_is(&header[i], "Destination",
+                                                   sizeof("Destination") - 1)
+                   || ngx_http_shield_header_name_is(&header[i],
+                                                      "X-Original-URL",
+                                                      sizeof("X-Original-URL")
+                                                          - 1)
+                   || ngx_http_shield_header_name_is(&header[i],
+                                                      "X-Rewrite-URL",
+                                                      sizeof("X-Rewrite-URL")
+                                                          - 1))
+        {
+            header_skip = slcf->skip;
+
+        } else if (ngx_http_shield_header_name_is(&header[i], "Cookie",
+                                                   sizeof("Cookie") - 1))
+        {
+            allowed |= ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_SQLI)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_XSS)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_CMDI)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_LFI_RFI)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_CRLF)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_NULLBYTE)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_OVERLONG)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_PHP_RCE)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_JAVA_RCE)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_JAVA_EVAL)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_NOSQL)
+                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_SSTI);
+            header_skip = slcf->skip | ~allowed;
+        }
+
+        rc = ngx_http_shield_scan_input(r, slcf, header[i].value.data,
+                                        header[i].value.len, source,
+                                        header_skip, hit);
         if (rc != NGX_DECLINED) {
             return rc;
         }
@@ -533,25 +609,21 @@ ngx_http_shield_scannable_body(ngx_http_request_t *r)
 
     /* Only text-shaped bodies can carry the payloads we look for. Binary
      * uploads (images, archives, octet-stream) are never scanned. */
-    if (v.len >= sizeof("application/x-www-form-urlencoded") - 1
-        && ngx_strncasecmp(v.data,
-                           (u_char *) "application/x-www-form-urlencoded",
-                           sizeof("application/x-www-form-urlencoded") - 1)
-           == 0)
+    if (ngx_http_shield_content_type_is(
+            &v, "application/x-www-form-urlencoded",
+            sizeof("application/x-www-form-urlencoded") - 1))
     {
         return 1;
     }
 
-    if (v.len >= sizeof("multipart/form-data") - 1
-        && ngx_strncasecmp(v.data, (u_char *) "multipart/form-data",
-                           sizeof("multipart/form-data") - 1) == 0)
+    if (ngx_http_shield_content_type_is(&v, "multipart/form-data",
+                                        sizeof("multipart/form-data") - 1))
     {
         return 1;
     }
 
-    if (v.len >= sizeof("application/json") - 1
-        && ngx_strncasecmp(v.data, (u_char *) "application/json",
-                           sizeof("application/json") - 1) == 0)
+    if (ngx_http_shield_content_type_is(&v, "application/json",
+                                        sizeof("application/json") - 1))
     {
         return 1;
     }
@@ -563,14 +635,84 @@ ngx_http_shield_scannable_body(ngx_http_request_t *r)
         return 1;
     }
 
-    if (v.len >= sizeof("application/xml") - 1
-        && ngx_strncasecmp(v.data, (u_char *) "application/xml",
-                           sizeof("application/xml") - 1) == 0)
+    if (ngx_http_shield_content_type_is(&v, "application/xml",
+                                        sizeof("application/xml") - 1))
+    {
+        return 1;
+    }
+
+    /* Structured syntax suffixes cover vendor APIs and SOAP without treating
+     * every application media type as text. The remaining exact types are
+     * common textual request formats that carry the same injection payloads. */
+    if (ngx_http_shield_content_type_suffix(&v, "+json",
+                                            sizeof("+json") - 1)
+        || ngx_http_shield_content_type_suffix(&v, "+xml",
+                                                sizeof("+xml") - 1)
+        || ngx_http_shield_content_type_is(&v, "application/graphql",
+                                            sizeof("application/graphql") - 1)
+        || ngx_http_shield_content_type_is(&v, "application/x-ndjson",
+                                            sizeof("application/x-ndjson") - 1)
+        || ngx_http_shield_content_type_is(&v, "application/json-seq",
+                                            sizeof("application/json-seq") - 1)
+        || ngx_http_shield_content_type_is(&v, "application/yaml",
+                                            sizeof("application/yaml") - 1)
+        || ngx_http_shield_content_type_is(&v, "application/x-yaml",
+                                            sizeof("application/x-yaml") - 1))
     {
         return 1;
     }
 
     return 0;
+}
+
+
+static ngx_int_t
+ngx_http_shield_header_name_is(ngx_table_elt_t *h, const char *name,
+    size_t len)
+{
+    return h->key.len == len
+           && ngx_strncasecmp(h->key.data, (u_char *) name, len) == 0;
+}
+
+
+static ngx_int_t
+ngx_http_shield_content_type_is(ngx_str_t *v, const char *type, size_t len)
+{
+    if (v->len < len
+        || ngx_strncasecmp(v->data, (u_char *) type, len) != 0)
+    {
+        return 0;
+    }
+
+    return v->len == len || v->data[len] == ';' || v->data[len] == ' '
+           || v->data[len] == '\t';
+}
+
+
+static ngx_int_t
+ngx_http_shield_content_type_suffix(ngx_str_t *v, const char *suffix,
+    size_t len)
+{
+    size_t  end;
+
+    if (v->len < sizeof("application/") - 1 + len
+        || ngx_strncasecmp(v->data, (u_char *) "application/",
+                           sizeof("application/") - 1) != 0)
+    {
+        return 0;
+    }
+
+    for (end = 0; end < v->len && v->data[end] != ';'; end++) {
+        /* void */
+    }
+
+    while (end > 0 && (v->data[end - 1] == ' ' || v->data[end - 1] == '\t')) {
+        end--;
+    }
+
+    return end >= len
+           && ngx_strncasecmp(v->data + end - len, (u_char *) suffix, len)
+              == 0;
 }
 
 
@@ -734,6 +876,19 @@ ngx_http_shield_ac_build(ngx_conf_t *cf, ngx_http_shield_ac_t *ac,
         for (j = 0; j < ngx_http_shield_rules[i].nterms; j++) {
             cap += ngx_http_shield_rules[i].terms[j].len;
         }
+    }
+
+    /* The compile-time count is a useful early failure, but it is assembled
+     * from sizeof() terms and can be left stale when a rule is appended. Keep
+     * the shift itself safe independently of that bookkeeping. */
+    term = 0;
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        term += ngx_http_shield_rules[i].nterms;
+    }
+    if (term > 64) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "shield: rule set has %ui terms, max 64", term);
+        return NGX_ERROR;
     }
 
     if (cap > NGX_HTTP_SHIELD_AC_MAX_STATES) {

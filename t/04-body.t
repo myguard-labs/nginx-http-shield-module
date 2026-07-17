@@ -147,3 +147,61 @@ Content-Type: application/x-www-form-urlencoded
 --- more_headers
 Content-Type: application/x-www-form-urlencoded
 --- error_code: 403
+
+=== TEST 14: vendor JSON media type is scanned
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"filter":"1 union select password from users"}
+--- more_headers
+Content-Type: application/vnd.api+json; charset=utf-8
+--- error_code: 403
+
+=== TEST 15: SOAP structured XML media type is scanned
+--- config
+    location /t { shield block; empty_gif; }
+--- request eval
+"POST /t\n<!ENTITY x SYSTEM \"file:///etc/passwd\">"
+--- more_headers
+Content-Type: application/soap+xml; charset=utf-8
+--- error_code: 403
+
+=== TEST 16: GraphQL media type is scanned
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+query { user(id: "1 union select password from users") { name } }
+--- more_headers
+Content-Type: application/graphql
+--- error_code: 403
+
+=== TEST 17: newline-delimited JSON media type is scanned
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"$where":"return true"}
+--- more_headers
+Content-Type: application/x-ndjson
+--- error_code: 403
+
+=== TEST 18: YAML media type is scanned
+--- config
+    location /t { shield block; empty_gif; }
+--- request eval
+"POST /t\n--- !ruby/object:Gem::Requirement"
+--- more_headers
+Content-Type: application/yaml
+--- error_code: 403
+
+=== TEST 19: JSON text-sequence media type remains scanned
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"filter":"1 union select password from users"}
+--- more_headers
+Content-Type: application/json-seq
+--- error_code: 403

@@ -472,3 +472,38 @@ GET /t/.cursor/mcp.json
 --- request
 GET /t/.terraform/terraform.tfstate
 --- error_code: 403
+
+=== TEST 64: expanded AI artifacts -- Continue config
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/.continue/config.yaml
+--- error_code: 403
+
+=== TEST 65: expanded AI artifacts -- Cline MCP config
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/.cline/mcp_settings.json
+--- error_code: 403
+
+=== TEST 66: expanded AI artifacts -- OpenCode config
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/.opencode/config.json
+--- error_code: 403
+
+=== TEST 67: expanded AI artifacts -- OpenClaw config
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/.openclaw/config.json
+--- error_code: 403
+
+=== TEST 68: expanded AI artifacts -- Qwen Code config
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/.qwen_code/settings.json
+--- error_code: 403
