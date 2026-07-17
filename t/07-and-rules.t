@@ -97,11 +97,15 @@ GET /t/cli?remoting=true
 GET /t/cli
 --- error_code: 200
 
-=== TEST 11: VMware Workspace ONE SSTI -- catalog-portal verify AND freemarker (CVE-2022-22954)
+=== TEST 11: VMware Workspace ONE SSTI -- catalog-portal verify AND a FreeMarker interpolation (CVE-2022-22954)
+# The real exploit drives the verify route with a FreeMarker interpolation in
+# deviceUdid. The rule's gadget term is the interpolation opener "${", not the
+# bare word "freemarker" -- the product name is prose that appears in docs and
+# support traffic (t/05 TEST 69), the opener has no benign reading.
 --- config
     location /t { shield block; empty_gif; }
 --- request
-GET /t?x=/catalog-portal/ui/oauth/verify+freemarker
+GET /t?x=/catalog-portal/ui/oauth/verify%3FdeviceUdid%3D%24%7B%22freemarker.template.utility.Execute%22%3Fnew()(%22id%22)%7D
 --- error_code: 403
 
 === TEST 12: the catalog-portal verify endpoint alone is a real route, not blocked

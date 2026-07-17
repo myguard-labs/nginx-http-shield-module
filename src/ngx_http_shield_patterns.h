@@ -1214,32 +1214,51 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_metabase[] = {
     NGX_HTTP_SHIELD_SIG("jdbc:h2:"),
 };
 
-/* Time-based SQL injection via a bare "sleep(". "sleep(" alone is ordinary
- * text in SQL tutorials, documentation and search queries -- it was removed as
- * a standalone signature for exactly that reason. Paired with a SQL gadget it
- * has no benign reading. */
-static const ngx_http_shield_sig_t  ngx_http_shield_rule_sqli_sleep[] = {
-    NGX_HTTP_SHIELD_SIG("sleep("),
-    NGX_HTTP_SHIELD_SIG("select "),
-};
+/* No "sqli_time_based" AND-rule ("sleep(" + "select "). Both terms are ordinary
+ * English that co-occur in perfectly normal traffic -- a product search naming
+ * a plan next to a timer parameter, an SQL tutorial search, two unrelated
+ * cookies on one Cookie line -- and the rule fired on all of them (t/05 TESTS
+ * 64-67 pin those shapes). It also added no detection: every real time-based
+ * SQLi carries the call in quote or operator context, which the standalone sqli
+ * table above already matches: "' and sleep(", ") or sleep(", ";sleep(",
+ * "select sleep(", the inline-comment evasion forms, plus pg_sleep(,
+ * benchmark( and "waitfor delay".
+ * There is no request where this rule fired but a standalone sig did not, so it
+ * was pure FP surface -- the same reasoning that removed grafana_plugin_lfi.
+ *
+ * Proximity (requiring the terms within N bytes) does NOT rescue it: benign
+ * gaps measured 16-24 bytes and real attack gaps 7-20+, so the ranges overlap
+ * and no threshold separates them. Low-specificity terms cannot be fixed by
+ * distance; they have to not be a rule. */
 
 /* Jenkins CVE-2024-23897: arbitrary file read through the CLI. "/cli" is a
  * real, routinely-hit Jenkins endpoint, so it is not a signature on its own.
  * The exploit specifically drives the remoting-protocol download channel --
  * "remoting=true" -- which the web UI never sends (the browser CLI uses the
- * websocket transport). The pair is attack-only. */
+ * websocket transport).
+ *
+ * The endpoint term is "/cli?" with the query delimiter, not a bare "/cli":
+ * the exploit always drives the endpoint with parameters, while "/cli" alone
+ * is a prefix of ordinary paths ("/cli/help", "/client/...") that then only
+ * needed an unrelated "remoting=true" anywhere in the buffer to be blocked
+ * (t/05 TEST 68). */
 static const ngx_http_shield_sig_t  ngx_http_shield_rule_jenkins_cli[] = {
-    NGX_HTTP_SHIELD_SIG("/cli"),
+    NGX_HTTP_SHIELD_SIG("/cli?"),
     NGX_HTTP_SHIELD_SIG("remoting=true"),
 };
 
 /* VMware Workspace ONE Access CVE-2022-22954: server-side template injection.
  * The catalog-portal verify endpoint is a legitimate product route; the attack
- * is that route carrying a FreeMarker payload. Pairing the two keeps the whole
- * product working while blocking the injection. */
+ * is that route carrying a FreeMarker payload.
+ *
+ * The gadget term is the FreeMarker interpolation opener "${", not the word
+ * "freemarker": the exploit's payload is an interpolation expression, whereas
+ * the bare product name is ordinary prose that can appear anywhere in a buffer
+ * that also names the route -- documentation, a support ticket, an analytics
+ * parameter (t/05 TEST 69). "${" has no benign reading in a request. */
 static const ngx_http_shield_sig_t  ngx_http_shield_rule_vmware_ssti[] = {
     NGX_HTTP_SHIELD_SIG("/catalog-portal/ui/oauth/verify"),
-    NGX_HTTP_SHIELD_SIG("freemarker"),
+    NGX_HTTP_SHIELD_SIG("${"),
 };
 
 /* SSRF via wildcard-DNS rebinding domains. "nip.io" is a real developer tool
@@ -1281,8 +1300,6 @@ static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
      * rule adds the body-gadget half. */
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_DESERIAL, "metabase_jdbc_rce",
         ngx_http_shield_rule_metabase, NGX_HTTP_SHIELD_MATCH_DECODED),
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_SQLI, "sqli_time_based",
-        ngx_http_shield_rule_sqli_sleep, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "jenkins_cli_read",
         ngx_http_shield_rule_jenkins_cli, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "vmware_wsone_ssti",
@@ -1344,7 +1361,7 @@ typedef char ngx_http_shield_cat_fits_in_mask[
 
 /* Rule terms are numbered across ngx_http_shield_rules[] in declaration order
  * (rule 0's terms first, then rule 1's, ...). The id is a bit position in the
- * per-state rule mask, so the total number of terms must fit in a uint64. Twelve
+ * per-state rule mask, so the total number of terms must fit in a uint64. Ten
  * today; the assert makes an overflow a compile error rather than a silently
  * mis-evaluated rule. */
 #define NGX_HTTP_SHIELD_NRULE_TERMS                                           \
@@ -1352,8 +1369,6 @@ typedef char ngx_http_shield_cat_fits_in_mask[
        / sizeof(ngx_http_shield_rule_ofbiz[0])                                \
      + sizeof(ngx_http_shield_rule_metabase)                                  \
        / sizeof(ngx_http_shield_rule_metabase[0])                             \
-     + sizeof(ngx_http_shield_rule_sqli_sleep)                                \
-       / sizeof(ngx_http_shield_rule_sqli_sleep[0])                           \
      + sizeof(ngx_http_shield_rule_jenkins_cli)                               \
        / sizeof(ngx_http_shield_rule_jenkins_cli[0])                          \
      + sizeof(ngx_http_shield_rule_vmware_ssti)                               \

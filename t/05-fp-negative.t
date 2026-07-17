@@ -583,3 +583,67 @@ GET /t?callback=http://localhost:3000/oauth/callback
 --- request
 GET /t?filter%5Bstatus%5D=active
 --- error_code: 200
+
+=== TEST 64: benign co-occurrence of "select " and "sleep(" is not an attack
+# These two tokens were once paired as the sqli_time_based AND-rule. Both are
+# ordinary words -- a product search naming a plan next to a timer parameter
+# carries each for unrelated reasons -- and the rule had no benign reading only
+# if you assumed the terms were one expression, which co-occurrence does not
+# establish. The rule was removed: every real time-based SQLi carries the call
+# in quote or operator context, which the standalone sqli table already matches,
+# so it added FP surface and no detection. t/07 pins that the real attacks still
+# block.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?search=select+all+products&timer=sleep(30)
+--- error_code: 200
+
+=== TEST 65: an SQL docs search naming both terms in prose is allowed
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=how+to+select+rows+and+use+sleep(1)+in+tests
+--- error_code: 200
+
+=== TEST 66: unrelated cookies each supplying one AND-rule term are allowed
+# One Cookie header line is a single scan buffer, so two independent cookies
+# can supply a rule's two terms between them. Neither cookie is an attack.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Cookie: prefs=sort=select all; ui_state=autosleep(0)
+--- error_code: 200
+
+=== TEST 67: a bot User-Agent naming both terms in prose is allowed
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+User-Agent: MyBot/1.0 (select the fastest route; sleep(5) between retries)
+--- error_code: 200
+
+=== TEST 68: a docs link and an unrelated remoting parameter are not Jenkins CLI abuse
+# jenkins_cli_read pairs the CLI endpoint with "remoting=true". A page linking
+# to CLI docs while carrying an unrelated remoting flag is not CVE-2024-23897.
+# The endpoint term is "/cli?" precisely so that "/cli/help" -- and any other
+# path merely prefixed by /cli -- is not the endpoint.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?doc=/cli/help&opt=remoting=true
+--- error_code: 200
+
+=== TEST 69: a catalog route and a freemarker mention are not SSTI
+# vmware_wsone_ssti pairs the catalog-portal verify route with a FreeMarker
+# interpolation. A page naming the route and separately naming the template
+# engine is not CVE-2022-22954 -- the exploit puts an interpolation IN the
+# route's parameter, so the gadget term is "${" and not the product's name.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?page=/catalog-portal/ui/oauth/verify&engine=freemarker
+--- error_code: 200
