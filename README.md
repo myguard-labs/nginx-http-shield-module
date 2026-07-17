@@ -94,7 +94,7 @@ load_module modules/ngx_http_shield_module.so;
 Or use the helper for a throwaway build:
 
 ```sh
-tools/ci-build.sh nginx 1.31.1        # dynamic .so under .build/
+tools/ci-build.sh nginx 1.31.3        # dynamic .so under .build/
 ```
 
 ## Configuration
@@ -282,9 +282,9 @@ a table, and one row in `ngx_http_shield_categories[]`; no engine change.
 ## Testing
 
 ```sh
-tools/ci-build.sh nginx 1.31.1
-export TEST_NGINX_BINARY="$PWD/.build/nginx-1.31.1/objs/nginx"
-export TEST_NGINX_LOAD_MODULES="$PWD/.build/nginx-1.31.1/objs/ngx_http_shield_module.so"
+tools/ci-build.sh nginx 1.31.3
+export TEST_NGINX_BINARY="$PWD/.build/nginx-1.31.3/objs/nginx"
+export TEST_NGINX_LOAD_MODULES="$PWD/.build/nginx-1.31.3/objs/ngx_http_shield_module.so"
 export TEST_NGINX_TIMEOUT=20
 prove t/
 ```
@@ -305,7 +305,7 @@ This is hostile-input parser code, so every change runs through a layered gate:
 Fuzz the scan core locally:
 
 ```sh
-tools/ci-build.sh nginx 1.31.1          # populate .build/ (fuzz needs headers)
+tools/ci-build.sh nginx 1.31.3          # populate .build/ (fuzz needs headers)
 CC=clang bash fuzz/build.sh
 fuzz/fuzz_scan -max_total_time=60 -dict=fuzz/fuzz.dict fuzz/corpus/fuzz_scan
 ```
@@ -313,8 +313,8 @@ fuzz/fuzz_scan -max_total_time=60 -dict=fuzz/fuzz.dict fuzz/corpus/fuzz_scan
 Soak under Valgrind locally:
 
 ```sh
-tools/ci-build.sh nginx 1.31.1 debug
-USE_VALGRIND=1 tools/soak.sh .build/nginx-1.31.1/objs/nginx 120 4
+tools/ci-build.sh nginx 1.31.3 debug
+USE_VALGRIND=1 tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
 ```
 
 ## See also

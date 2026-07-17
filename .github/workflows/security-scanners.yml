@@ -12,7 +12,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Keep in sync with build-test.yml. Pinned, not scraped: the digest for this
   # version is recorded in tools/sources.sha256 and verified before extraction.
-  NGINX_VERSION: "1.31.1"
+  NGINX_VERSION: "1.31.3"
   # Pinned so a scanner release cannot silently change the gate.
   SEMGREP_VERSION: "1.169.0"
 

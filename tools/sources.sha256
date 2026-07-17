@@ -9,6 +9,6 @@
 # tarball's .asc, checked with the upstream signing key) before being recorded.
 #
 # Format: <sha256>  <tarball basename>
-9fcaaeb8f22544b09a19a761f3412c4112215422401634bebdd1296a403cc4bc  nginx-1.31.1.tar.gz
-e5823dc6f45610993def93ebf6cfce68264af4958c77e874b7d20f3709001b8f  nginx-1.30.3.tar.gz
+a7657c50811c2d92d9895395e8b873ef60398142c4db21eb647811c38f6dd525  nginx-1.31.3.tar.gz
+4261dc90e9e47c1c4041276e9aaa3d48ebe2e664f728e14fa95ae6c67d57a08b  nginx-1.30.4.tar.gz
 cd7867d200b22a80165b93696c30a1ac3a28c1162544b7f43c71232b19814ef6  angie-1.12.0.tar.gz
