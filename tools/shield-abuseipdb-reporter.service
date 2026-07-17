@@ -1,0 +1,52 @@
+# systemd unit for the shield -> AbuseIPDB reporter.
+#
+# Install:
+#   sudo cp tools/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
+#   sudo chmod 0755 /usr/local/bin/shield-abuseipdb-reporter
+#   sudo cp tools/shield-abuseipdb-reporter.service /etc/systemd/system/
+#   # put ABUSEIPDB_API_KEY=... in an EnvironmentFile (chmod 600, root-only):
+#   sudo install -m600 /dev/null /etc/shield-abuseipdb.env
+#   echo 'ABUSEIPDB_API_KEY=xxxx' | sudo tee /etc/shield-abuseipdb.env
+#   sudo systemctl daemon-reload && sudo systemctl enable --now shield-abuseipdb-reporter
+#
+# The key is NEVER on the command line (visible in `ps`) or in this unit --
+# only in the 0600 EnvironmentFile.
+[Unit]
+Description=nginx-http-shield -> AbuseIPDB reporter
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/shield-abuseipdb.env
+ExecStart=/usr/local/bin/shield-abuseipdb-reporter \
+    /var/log/nginx/shield.json \
+    --state /var/lib/shield-reporter/offset.json \
+    --dedup-window 900 \
+    --daily-cap 1000
+Restart=on-failure
+RestartSec=10
+StateDirectory=shield-reporter
+
+# Hardening: this process only needs to read one log, keep a state file, and
+# make outbound HTTPS. Lock everything else down.
+DynamicUser=yes
+SupplementaryGroups=adm
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/var/log/nginx
+
+[Install]
+WantedBy=multi-user.target
