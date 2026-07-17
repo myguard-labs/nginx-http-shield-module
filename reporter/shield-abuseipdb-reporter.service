@@ -1,9 +1,9 @@
 # systemd unit for the shield -> AbuseIPDB reporter.
 #
 # Install:
-#   sudo cp tools/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
+#   sudo cp reporter/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
 #   sudo chmod 0755 /usr/local/bin/shield-abuseipdb-reporter
-#   sudo cp tools/shield-abuseipdb-reporter.service /etc/systemd/system/
+#   sudo cp reporter/shield-abuseipdb-reporter.service /etc/systemd/system/
 #   # Put ABUSEIPDB_API_KEY=... in a 0600 root-only EnvironmentFile. Use an
 #   # editor, NOT `echo ... | tee`: an echo puts the secret in your shell
 #   # history (and briefly in `ps`).

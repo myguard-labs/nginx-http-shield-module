@@ -18,6 +18,10 @@ fuzz/timeout-*
 # these accumulate by the hundred on every run and must never be committed.
 fuzz/corpus/fuzz_scan/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]
 
+# Python bytecode (pytest imports the reporter module)
+__pycache__/
+*.pyc
+
 # Editor / OS
 *.o
 *.so
