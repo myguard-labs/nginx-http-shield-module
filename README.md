@@ -169,8 +169,12 @@ http {
   reaches the threshold is still handled on its own merits.
 - **`window` and `bantime`** take nginx time units (`s`, `m`, `h`, `d`).
 - Put `shield_ban_zone` in the `http{}` block once; reference it by name from as
-  many locations as you like. Each location can use a different `count`/`window`/
-  `bantime` against the same or a different zone.
+  many locations as you like. **One policy per zone:** a zone holds a single
+  `hits`/`window`/`banned_until` state per client IP, so all locations sharing a
+  zone must use the same `count`/`window`/`bantime` — mixing different policies
+  against one zone cross-applies whichever location handled the request and
+  corrupts the count. Locations that need different policies must each reference
+  their own zone.
 
 ### Hit log
 
