@@ -54,6 +54,13 @@ jobs:
         run: |
           set -euo pipefail
           cd fuzz
+          echo "=== regression replay (-runs=0 over committed regressions) ==="
+          set +e
+          ./fuzz_scan -runs=0 regressions
+          rrc=$?
+          set -e
+          [ $rrc -eq 0 ] || { echo "❌ regression replay crash (exit $rrc)"; exit 1; }
+          echo "✓ regression replay: no crashes"
           echo "=== fuzz_scan (120s) ==="
           set +e
           ./fuzz_scan \
@@ -61,7 +68,7 @@ jobs:
             -dict=fuzz.dict \
             -print_final_stats=1 \
             -artifact_prefix="crash-fuzz_scan-" \
-            corpus/fuzz_scan
+            corpus/fuzz_scan regressions
           rc=$?
           set -e
           [ $rc -eq 0 ] || { echo "❌ fuzz_scan crash (exit $rc)"; exit 1; }
