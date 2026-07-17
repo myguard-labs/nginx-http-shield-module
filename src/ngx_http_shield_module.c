@@ -44,7 +44,7 @@ typedef struct {
     ngx_uint_t   status;      /* status returned in BLOCK mode              */
     uint64_t     skip;        /* bitmask of disabled categories             */
     ngx_open_file_t *log;     /* JSON hit log file; NULL = disabled         */
-    ngx_syslog_peer_t *syslog; /* JSON hit log via syslog; NULL = disabled  */
+    ngx_syslog_peer_t *syslog_peer; /* JSON hit log to a syslog server; NULL off */
 } ngx_http_shield_loc_conf_t;
 
 
@@ -335,7 +335,7 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
     size_t       cap;
     u_char       c;
 
-    if (slcf->log == NULL && slcf->syslog == NULL) {
+    if (slcf->log == NULL && slcf->syslog_peer == NULL) {
         return;
     }
 
@@ -399,7 +399,7 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
 
     /* Syslog sink: prepend the RFC 3164 header into its own buffer, then the
      * JSON body (no newline -- syslog frames datagrams itself). */
-    if (slcf->syslog != NULL) {
+    if (slcf->syslog_peer != NULL) {
         u_char  *sb, *sp;
         size_t   scap;
 
@@ -410,12 +410,12 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
         if (sb == NULL) {
             return;
         }
-        sp = ngx_syslog_add_header(slcf->syslog, sb);
+        sp = ngx_syslog_add_header(slcf->syslog_peer, sb);
         if (line.len > (size_t) (sb + scap - sp)) {
             line.len = sb + scap - sp;   /* truncate to the syslog frame */
         }
         sp = ngx_cpymem(sp, line.data, line.len);
-        (void) ngx_syslog_send(slcf->syslog, sb, sp - sb);
+        (void) ngx_syslog_send(slcf->syslog_peer, sb, sp - sb);
     }
 }
 
@@ -1436,7 +1436,7 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     slcf->status = NGX_CONF_UNSET_UINT;
     slcf->skip = 0;
     slcf->log = NGX_CONF_UNSET_PTR;   /* NULL means explicit `off`, not unset */
-    slcf->syslog = NGX_CONF_UNSET_PTR;
+    slcf->syslog_peer = NGX_CONF_UNSET_PTR;
 
     return slcf;
 }
@@ -1470,7 +1470,7 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
      * move together (a single directive sets both). */
     if (conf->log == NGX_CONF_UNSET_PTR) {
         conf->log = (prev->log == NGX_CONF_UNSET_PTR) ? NULL : prev->log;
-        conf->syslog = (prev->syslog == NGX_CONF_UNSET_PTR) ? NULL : prev->syslog;
+        conf->syslog_peer = (prev->syslog_peer == NGX_CONF_UNSET_PTR) ? NULL : prev->syslog_peer;
     }
 
     return NGX_CONF_OK;
@@ -1656,7 +1656,7 @@ ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     if (value[1].len == 3 && ngx_strncmp(value[1].data, "off", 3) == 0) {
         slcf->log = NULL;      /* explicitly disabled; survives inheritance */
-        slcf->syslog = NULL;
+        slcf->syslog_peer = NULL;
         return NGX_CONF_OK;
     }
 
@@ -1675,7 +1675,7 @@ ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         if (ngx_syslog_process_conf(cf, peer) != NGX_CONF_OK) {
             return NGX_CONF_ERROR;
         }
-        slcf->syslog = peer;
+        slcf->syslog_peer = peer;
         slcf->log = NULL;      /* set, but no file sink */
         return NGX_CONF_OK;
     }
@@ -1684,7 +1684,7 @@ ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     if (slcf->log == NULL) {
         return NGX_CONF_ERROR;
     }
-    slcf->syslog = NULL;
+    slcf->syslog_peer = NULL;
 
     return NGX_CONF_OK;
 }
