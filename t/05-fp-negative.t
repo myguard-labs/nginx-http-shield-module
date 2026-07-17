@@ -683,3 +683,19 @@ GET /t?q=%3Cscript%3E
 --- request
 GET /t?q=/etc/passwd
 --- error_code: 200
+
+=== TEST 73: a benign in-memory H2 JDBC DSN at the Metabase setup endpoint is not RCE
+# metabase_jdbc_rce is CVE-2023-38646: the attack runs an INIT script in the H2
+# connection string ("INIT=CREATE ALIAS ... AS ...") at connect. A bare
+# "jdbc:h2:mem:test" DSN -- exactly what a legitimate first-run install or a
+# health probe sends, and what appears in docs -- carries no INIT gadget and
+# must not block. The rule requires the INIT clause as its third term precisely
+# so this shape passes.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"url\":\"/api/setup/validate\",\"conn\":\"jdbc:h2:mem:test\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
