@@ -37,7 +37,7 @@ percent-decoding:
 | `xss` | `<script`, `javascript:`, entity-encoded `javascript&#x3a;`, `data:text/html`, `onerror=`, `onpointerenter=` |
 | `traversal` | the traversal **gadget**: `../`, `..\`, `..;/`, `.%2e/` (CVE-2021-41773), `....//` |
 | `overlong` | overlong-UTF-8 `/`, `\`, `.` and NUL in every width (`%c0%af`, `%e0%80%af`, `%f0%80%80%af`, `%c1%9c`, `%c0%80`), IIS `%u002f` — illegal UTF-8 by definition, so attack-only |
-| `cmdi` | `;wget `, `&&curl `, `||wget `, `$(whoami`, `/bin/sh`, `powershell.exe -enc`, `/winnt/system32` |
+| `cmdi` | `;wget`, `&&curl`, `\|\|wget`, `$(whoami`, `/bin/sh`, `powershell.exe -enc`, `/winnt/system32` |
 | `lfi` | `php://filter`, `data://`, `expect://`, `phar://` |
 | `crlf` | `%0d%0a`, response-splitting `\r\nSet-Cookie:` |
 | `nullbyte` | `%00`, `%u0000`, double- and triple-encoded `.` / `/` / `\` (`%252e`, `%25252f`, `%25%32%65`) |
