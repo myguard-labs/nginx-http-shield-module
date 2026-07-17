@@ -16,12 +16,15 @@ name: CI Deep
 #
 # Jobs: build-flavors · fuzz (long, scan target) · memcheck soak · helgrind
 # soak · scanners.
-#   * build-flavors builds nginx mainline, nginx stable and angie, and runs t/
-#     against each. The README claims angie support and tools/ci-build.sh has
-#     always accepted the flavor, but every other job pins ONE mainline version
-#     — nothing actually built angie or nginx stable until this job. It is here
-#     (monthly) rather than in the PR gate because it is three full server
-#     builds; a break in stable/angie is not worth blocking every PR on.
+#   * build-flavors builds nginx mainline, nginx stable and angie. nginx
+#     mainline and stable additionally run t/; angie is build-only and runs a
+#     module-load smoke test instead (stock Test::Nginx cannot drive it — see
+#     the job's own comment). The README claims angie support and
+#     tools/ci-build.sh has always accepted the flavor, but every other job pins
+#     ONE mainline version — nothing actually built angie or nginx stable until
+#     this job. It is here (monthly) rather than in the PR gate because it is
+#     three full server builds; a break in stable/angie is not worth blocking
+#     every PR on.
 #   * memcheck AND helgrind run via tools/soak.sh (USE_VALGRIND / USE_HELGRIND),
 #     which passes --suppressions=tools/valgrind.supp and --error-exitcode=99.
 #
