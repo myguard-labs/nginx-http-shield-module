@@ -675,17 +675,28 @@ ngx_http_shield_header_name_is(ngx_table_elt_t *h, const char *name,
 }
 
 
+/* True when the value's media type is exactly `type`. Per RFC 9110 the type
+ * token ends at the value's end or at the ";" that starts the parameters,
+ * with optional whitespace between. Trailing junk after the token but before
+ * either terminator ("application/json garbage") is not this media type: the
+ * whitespace is only allowed to precede a real terminator, so it is skipped
+ * and then the terminator is required. */
 static ngx_int_t
 ngx_http_shield_content_type_is(ngx_str_t *v, const char *type, size_t len)
 {
+    size_t  i;
+
     if (v->len < len
         || ngx_strncasecmp(v->data, (u_char *) type, len) != 0)
     {
         return 0;
     }
 
-    return v->len == len || v->data[len] == ';' || v->data[len] == ' '
-           || v->data[len] == '\t';
+    for (i = len; i < v->len && (v->data[i] == ' ' || v->data[i] == '\t'); i++) {
+        /* void */
+    }
+
+    return i == v->len || v->data[i] == ';';
 }
 
 

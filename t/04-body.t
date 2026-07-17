@@ -205,3 +205,40 @@ POST /t
 --- more_headers
 Content-Type: application/json-seq
 --- error_code: 403
+
+=== TEST 20: a media type with trailing garbage is not that media type
+# RFC 9110: the type token ends at the value's end or at the ";" starting the
+# parameters. "application/json garbage" is neither -- the whitespace only
+# precedes a terminator, it does not end the token -- so this is not JSON and
+# the body is not scanned. Fail-closed either way (a loose match would scan
+# MORE, not less), but a malformed Content-Type must not cost a body scan.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"filter":"1 union select password from users"}
+--- more_headers
+Content-Type: application/json garbage
+--- error_code: 405
+
+=== TEST 21: a media type followed only by whitespace is still that media type
+# The whitespace is optional OWS before the end of the value; the token is
+# still exactly application/json, so the body is scanned.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"filter":"1 union select password from users"}
+--- more_headers
+Content-Type: application/json  
+--- error_code: 403
+
+=== TEST 22: a media type followed by OWS and parameters is still that media type
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"filter":"1 union select password from users"}
+--- more_headers
+Content-Type: application/json ; charset=utf-8
+--- error_code: 403
