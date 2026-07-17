@@ -373,7 +373,10 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
             *p++ = '\\'; *p++ = 'r';
         } else if (c == '\t') {
             *p++ = '\\'; *p++ = 't';
-        } else if (c < 0x20) {
+        } else if (c < 0x20 || c >= 0x80) {
+            /* Control bytes and any non-ASCII byte become \uXXXX: the request
+             * line is not guaranteed valid UTF-8, and a raw high byte would
+             * otherwise emit malformed JSON. */
             p = ngx_slprintf(p, last, "\\u%04xd", (ngx_uint_t) c);
         } else {
             *p++ = c;
@@ -1405,7 +1408,7 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     slcf->max_body = NGX_CONF_UNSET_SIZE;
     slcf->status = NGX_CONF_UNSET_UINT;
     slcf->skip = 0;
-    slcf->log = NULL;
+    slcf->log = NGX_CONF_UNSET_PTR;   /* NULL means explicit `off`, not unset */
 
     return slcf;
 }
@@ -1434,8 +1437,10 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->skip = prev->skip;
     }
 
-    if (conf->log == NULL) {
-        conf->log = prev->log;
+    /* Inherit only when this location never mentioned shield_log. An explicit
+     * `shield_log off` sets NULL and must survive inheritance. */
+    if (conf->log == NGX_CONF_UNSET_PTR) {
+        conf->log = (prev->log == NGX_CONF_UNSET_PTR) ? NULL : prev->log;
     }
 
     return NGX_CONF_OK;
@@ -1607,12 +1612,12 @@ ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_http_shield_loc_conf_t  *slcf = conf;
     ngx_str_t                   *value = cf->args->elts;
 
-    if (slcf->log != NULL) {
+    if (slcf->log != NGX_CONF_UNSET_PTR) {
         return "is duplicate";
     }
 
     if (value[1].len == 3 && ngx_strncmp(value[1].data, "off", 3) == 0) {
-        slcf->log = NULL;
+        slcf->log = NULL;   /* explicitly disabled; survives inheritance */
         return NGX_CONF_OK;
     }
 

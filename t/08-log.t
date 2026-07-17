@@ -125,3 +125,47 @@ GET /t?id=1%20union%20select%20pw
 --- must_die
 --- error_log
 does not support piping to a command
+
+=== TEST 8: a raw high byte in the request line is \uXXXX-escaped (valid JSON)
+# 0xC0 is invalid UTF-8; it must be escaped, not copied verbatim, or the record
+# is malformed JSON. Sent raw in the request target via a %-less literal byte.
+--- config
+    location /t {
+        shield block;
+        shield_log $TEST_NGINX_SERVER_ROOT/logs/hit8.json;
+        empty_gif;
+    }
+    location /dump {
+        alias $TEST_NGINX_SERVER_ROOT/logs/hit8.json;
+        default_type text/plain;
+    }
+--- raw_request eval
+["GET /t?id=1%20union%20select%20pw&z=\xc0\xff HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+ "GET /dump HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"]
+--- error_code eval
+[403, 200]
+# high bytes appear as À / ÿ, never as raw bytes; one JSON object.
+--- response_body_like eval
+[qr//, qr/^\{.*\\u00c0\\u00ff.*\}\n\z/s]
+
+=== TEST 9: child `shield_log off` overrides an inherited parent log
+# Parent server logs; child location turns it off. No record must be written
+# for a hit in the child, and the child's own log file must stay empty/absent.
+--- config
+    shield_log $TEST_NGINX_SERVER_ROOT/logs/parent9.json;
+    location /t {
+        shield block;
+        shield_log off;
+        empty_gif;
+    }
+    location /dumpparent {
+        alias $TEST_NGINX_SERVER_ROOT/logs/parent9.json;
+        default_type text/plain;
+    }
+--- request eval
+["GET /t?id=1%20union%20select%20pw", "GET /dumpparent"]
+--- error_code eval
+[403, 200]
+# parent log opened at load (200) but the child hit wrote nothing -> empty body.
+--- response_body_like eval
+[qr//, qr/^$/]
