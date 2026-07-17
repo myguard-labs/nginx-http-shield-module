@@ -532,12 +532,19 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
     NGX_HTTP_SHIELD_SIG("\"@type\":\"org.apache"),
     NGX_HTTP_SHIELD_SIG("\"@type\":\"ch.qos.logback"),
     NGX_HTTP_SHIELD_SIG("\"@type\":\"com.alibaba"),
-    NGX_HTTP_SHIELD_SIG("<!entity"),
-    /* Deliberately NOT "<!doctype": legitimate HTML/XML bodies carry it.
-     * XXE is caught by the entity declaration + an external system reference. */
+    /* XXE is an entity declaration paired with an EXTERNAL reference, and the
+     * external reference is the whole attack. A bare "<!ENTITY" (like
+     * "<!DOCTYPE") is an ordinary XML construct -- an internal entity
+     * "<!ENTITY company \"Acme\">" is used by SOAP templates, XHTML, config and
+     * docs -- so it is deliberately NOT a signature: it 403'd every benign XML
+     * body that declared an internal entity (t/05 TEST 74). What no benign body
+     * carries is a SYSTEM reference to a file: or http: URI; those signatures
+     * below match real external-entity and out-of-band (parameter-entity + remote
+     * DTD) XXE independent of the "<!ENTITY" token (t/04 TESTS 15/15b). */
     NGX_HTTP_SHIELD_SIG("system \"file:"),
     NGX_HTTP_SHIELD_SIG("system 'file:"),
     NGX_HTTP_SHIELD_SIG("system \"http:"),
+    NGX_HTTP_SHIELD_SIG("system 'http:"),
 };
 
 /* ---- 11. Shellshock ---------------------------------------------------- */

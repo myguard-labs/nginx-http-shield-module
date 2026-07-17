@@ -699,3 +699,17 @@ GET /t?q=/etc/passwd
 --- more_headers
 Content-Type: application/json
 --- error_code: 405
+
+=== TEST 74: a benign internal XML entity declaration is not XXE
+# XXE is an entity declaration paired with an EXTERNAL reference (SYSTEM/PUBLIC
+# with a file:/http: URI) -- caught by the "system \"file:" / "system \"http:"
+# signatures. A purely internal entity ("<!ENTITY company \"Acme\">", no SYSTEM)
+# is an ordinary XML construct: SOAP templates, XHTML, config files, docs. Bare
+# "<!ENTITY" is not a signature on its own.
+--- config
+    location /t { shield block; empty_gif; }
+--- request eval
+"POST /t\n<?xml version=\"1.0\"?><!DOCTYPE note [<!ENTITY company \"Acme Corp\">]><note>&company;</note>"
+--- more_headers
+Content-Type: application/xml
+--- error_code: 405
