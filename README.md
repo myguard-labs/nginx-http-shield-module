@@ -206,15 +206,24 @@ its category fires:
 |---|---|---|
 | `ofbiz_authbypass` | `exploit_path` | `requirepasswordchange=y` **and** `/webtools/control/` |
 | `metabase_jdbc_rce` | `deserial` | `/api/setup/validate` **and** `jdbc:h2:` |
-| `sqli_time_based` | `sqli` | `sleep(` **and** `select ` |
-| `jenkins_cli_read` | `exploit_path` | (see `ngx_http_shield_rule_jenkins_cli`) |
-| `vmware_wsone_ssti` | `exploit_path` | `/catalog-portal/ui/oauth/verify` **and** `freemarker` |
+| `jenkins_cli_read` | `exploit_path` | `/cli?` **and** `remoting=true` |
+| `vmware_wsone_ssti` | `exploit_path` | `/catalog-portal/ui/oauth/verify` **and** `${` |
 | `ssrf_wildcard_dns` | `ssrf_meta` | `.nip.io` **and** `169-254-169-254` |
 
 Rule terms are **not** signatures: a term never fires on its own, and none of
 the left-hand tokens above will block a request by itself. That is checked
 in both directions — `t/07-and-rules.t` proves the full set blocks, and
 `t/05-fp-negative.t` proves each term alone does not.
+
+**Every term must be specific enough that co-occurrence *is* the attack.** The
+engine checks that a rule's terms appear in the same buffer, not that they form
+one expression, so two low-specificity terms will match traffic that merely
+mentions both — which is why the rule set has no `sleep(` + `select ` pairing
+(both are ordinary English; the standalone `sqli` table catches the real
+attack in quote context instead) and why the Jenkins and VMware rules use
+`/cli?` and `${` rather than `/cli` and `freemarker`. Distance does not rescue a
+vague term: benign mentions and real payloads sit at overlapping byte gaps.
+`t/05-fp-negative.t` TESTS 64-69 pin the benign co-occurrence shapes.
 
 The terms are matched by the same single automaton pass, so a rule costs no
 extra scan time: the pass just records which terms it saw and evaluates the sets
