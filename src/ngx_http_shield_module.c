@@ -43,6 +43,7 @@ typedef struct {
     size_t       max_body;    /* bytes of body scanned                      */
     ngx_uint_t   status;      /* status returned in BLOCK mode              */
     uint64_t     skip;        /* bitmask of disabled categories             */
+    ngx_open_file_t *log;     /* JSON hit log; NULL = disabled              */
 } ngx_http_shield_loc_conf_t;
 
 
@@ -93,6 +94,10 @@ static char *ngx_http_shield_status(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_shield_skip(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char *ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static void ngx_http_shield_write_log(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit);
 static ngx_int_t ngx_http_shield_init(ngx_conf_t *cf);
 
 
@@ -129,6 +134,13 @@ static ngx_command_t  ngx_http_shield_commands[] = {
     { ngx_string("shield_skip"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_http_shield_skip,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("shield_log"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_http_shield_log,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -285,6 +297,7 @@ ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
                       "category=%s source=%s status=%ui",
                       &r->connection->addr_text, hit->category, hit->source,
                       slcf->status);
+        ngx_http_shield_write_log(r, slcf, hit);
         return (ngx_int_t) slcf->status;
     }
 
@@ -292,7 +305,88 @@ ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
                   "shield: detected attack from %V, category=%s source=%s "
                   "(detect mode, not blocked)",
                   &r->connection->addr_text, hit->category, hit->source);
+    ngx_http_shield_write_log(r, slcf, hit);
     return NGX_DECLINED;
+}
+
+
+/*
+ * Emit one JSON object per hit to shield_log, for an out-of-band reporter
+ * (e.g. AbuseIPDB). The request line is the ONLY attacker-controlled field, so
+ * it is JSON-string-escaped: '"' and '\' are backslash-escaped and every byte
+ * below 0x20 becomes \uXXXX. That single pass both defeats log injection
+ * (no raw CR/LF can reach the file) and keeps the line valid JSON. All other
+ * fields are trusted C constants or numbers. Best-effort: a short write or a
+ * closed fd is ignored -- logging must never change the request outcome.
+ */
+static void
+ngx_http_shield_write_log(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
+{
+    u_char      *p, *last;
+    ngx_str_t    line;
+    ngx_str_t    req;
+    ngx_str_t   *ts;
+    ngx_uint_t   i;
+    ngx_uint_t   block;
+    size_t       cap;
+    u_char       c;
+
+    if (slcf->log == NULL) {
+        return;
+    }
+
+    block = (slcf->mode == NGX_HTTP_SHIELD_BLOCK);
+    ts = (ngx_str_t *) &ngx_cached_http_log_iso8601;
+    req = r->request_line;
+
+    /* Worst case: every request byte expands to a 6-char \uXXXX escape, plus
+     * the fixed scaffolding, timestamp, IP, category, source and status. */
+    cap = ts->len + r->connection->addr_text.len
+        + ngx_strlen(hit->category) + ngx_strlen(hit->source)
+        + req.len * 6 + 160;
+
+    line.data = ngx_pnalloc(r->pool, cap);
+    if (line.data == NULL) {
+        return;
+    }
+
+    p = line.data;
+    last = line.data + cap;
+
+    p = ngx_slprintf(p, last,
+        "{\"ts\":\"%V\",\"ip\":\"%V\",\"cat\":\"%s\",\"src\":\"%s\","
+        "\"mode\":\"%s\",\"status\":%ui,\"req\":\"",
+        ts, &r->connection->addr_text, hit->category, hit->source,
+        block ? "block" : "detect",
+        block ? slcf->status : (ngx_uint_t) 0);
+
+    for (i = 0; i < req.len && p < last - 6; i++) {
+        c = req.data[i];
+
+        if (c == '"' || c == '\\') {
+            *p++ = '\\';
+            *p++ = c;
+        } else if (c == '\n') {
+            *p++ = '\\'; *p++ = 'n';
+        } else if (c == '\r') {
+            *p++ = '\\'; *p++ = 'r';
+        } else if (c == '\t') {
+            *p++ = '\\'; *p++ = 't';
+        } else if (c < 0x20) {
+            p = ngx_slprintf(p, last, "\\u%04xd", (ngx_uint_t) c);
+        } else {
+            *p++ = c;
+        }
+    }
+
+    *p++ = '"';
+    *p++ = '}';
+    *p++ = '\n';
+
+    line.len = p - line.data;
+
+    (void) ngx_write_fd(slcf->log->fd, line.data, line.len);
 }
 
 
@@ -1311,6 +1405,7 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     slcf->max_body = NGX_CONF_UNSET_SIZE;
     slcf->status = NGX_CONF_UNSET_UINT;
     slcf->skip = 0;
+    slcf->log = NULL;
 
     return slcf;
 }
@@ -1337,6 +1432,10 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     /* skip: inherit the parent mask only when this location set none. */
     if (conf->skip == 0) {
         conf->skip = prev->skip;
+    }
+
+    if (conf->log == NULL) {
+        conf->log = prev->log;
     }
 
     return NGX_CONF_OK;
@@ -1492,4 +1591,42 @@ ngx_http_shield_init(ngx_conf_t *cf)
     *h = ngx_http_shield_handler;
 
     return NGX_OK;
+}
+
+
+/*
+ * shield_log <file> | off -- open a hit log via ngx_conf_open_file so nginx
+ * reopens it on SIGUSR1 (logrotate-safe). No "|command" form: shield runs in
+ * PRECONTENT on every request in root-started workers, so piping attacker-
+ * influenced bytes into a forked shell would reintroduce exactly the command-
+ * injection/DoS class this module blocks. Ship to a file and report out of band.
+ */
+static char *
+ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_shield_loc_conf_t  *slcf = conf;
+    ngx_str_t                   *value = cf->args->elts;
+
+    if (slcf->log != NULL) {
+        return "is duplicate";
+    }
+
+    if (value[1].len == 3 && ngx_strncmp(value[1].data, "off", 3) == 0) {
+        slcf->log = NULL;
+        return NGX_CONF_OK;
+    }
+
+    if (value[1].data[0] == '|') {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "shield_log does not support piping to a command; "
+                           "log to a file and report out of band");
+        return NGX_CONF_ERROR;
+    }
+
+    slcf->log = ngx_conf_open_file(cf->cycle, &value[1]);
+    if (slcf->log == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
 }

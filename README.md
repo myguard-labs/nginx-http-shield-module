@@ -110,6 +110,7 @@ http {
             shield_body on;        # inspect request body (default on)
             shield_max_body 8k;    # bytes of body scanned (default 8k)
             shield_status 403;      # 403 | 404 | 419 | 429 | 444 (default 403)
+            shield_log /var/log/nginx/shield.json;  # JSON hit log (off by default)
         }
 
         location /legacy-app/ {
@@ -129,6 +130,35 @@ http {
 | `shield_max_body` | http, server, location | `8k` | Bytes of body scanned. Larger bodies are passed through unscanned — uploads are never blocked for being big. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus `httpoxy`, `range_dos` and `ctrl_char`). |
+| `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a file, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
+
+### Hit log
+
+`shield_log /var/log/nginx/shield.json;` writes one JSON object per line for
+every hit, in both `block` and `detect` mode:
+
+```json
+{"ts":"2026-07-17T14:22:05+02:00","ip":"203.0.113.7","cat":"sqli","src":"uri","mode":"block","status":403,"req":"GET /?id=1 union select pw HTTP/1.1"}
+```
+
+Fields: `ts` (ISO-8601 with timezone — AbuseIPDB's `timestamp`), `ip` (the peer;
+map `X-Forwarded-For` in the reporter if behind a trusted proxy), `cat` shield
+category, `src` where it matched (`uri`/`user-agent`/`body`/…), `mode`, `status`
+(0 in detect mode), and `req` the request line. `req` is the only
+attacker-controlled field: it is JSON-string-escaped (`"`, `\`, and every byte
+below `0x20` become `\uXXXX`), so a hostile request line can neither inject a
+second record nor break the JSON. The file is reopened on `SIGUSR1`
+(logrotate-safe).
+
+**No `| command` form.** shield runs in `PRECONTENT` on every request inside
+root-started workers; piping attacker-influenced bytes into a forked shell would
+reintroduce exactly the command-injection and fork-storm/DoS class this module
+exists to block — so `shield_log "| ..."` is rejected at config load. Log to a
+file and let a **separate, unprivileged** process tail it and call the reporting
+API. That process owns the API key, rate-limiting, IP de-duplication and
+private-IP suppression — none of which belong on the request hot path. For
+AbuseIPDB, map each `cat` to a category ID (most → `21` Web App Attack; `sqli`
+also → `16` SQL Injection).
 
 ### Rollout
 
