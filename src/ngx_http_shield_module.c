@@ -2037,7 +2037,18 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
     bn->hits++;
 
     if (bn->hits >= slcf->ban_count) {
-        bn->banned_until = now + slcf->ban_time;
+        /* Clamp `now + ban_time` so a 32-bit time_t build with a large
+         * ban_time cannot overflow into a negative (already-expired) or
+         * undefined value. On overflow, ban effectively forever (max time_t).
+         * time_t is signed; derive its max without <limits.h>. */
+        time_t  time_t_max = (time_t) (((uint64_t) 1
+                                        << (sizeof(time_t) * 8 - 1)) - 1);
+
+        if (slcf->ban_time > time_t_max - now) {
+            bn->banned_until = time_t_max;
+        } else {
+            bn->banned_until = now + slcf->ban_time;
+        }
         /* Reset the counter so the ban is re-armed cleanly if it is ever
          * extended after expiry, rather than tripping again on the next hit. */
         bn->hits = 0;
