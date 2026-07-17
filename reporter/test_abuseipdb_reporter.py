@@ -254,6 +254,15 @@ def test_reporter_backoff_grows_and_resets():
     assert r.in_cooldown(now=0.0) == mod.Reporter.BACKOFF_BASE
 
 
+def test_reporter_backoff_no_overflow_on_huge_streak():
+    # A very long fail streak must not raise OverflowError computing 2**exp;
+    # the exponent is capped and the delay stays clamped at BACKOFF_MAX.
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    r._fail_streak = 100000
+    r._note_failure(now=0.0, retry_after=None)
+    assert r.in_cooldown(now=0.0) == mod.Reporter.BACKOFF_MAX
+
+
 def test_reporter_retry_after_honoured():
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     r._note_failure(now=100.0, retry_after=42.0)

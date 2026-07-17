@@ -238,8 +238,13 @@ class Reporter:
         if retry_after is not None:
             delay = retry_after
         else:
+            # Cap the exponent: without this an unbounded fail streak computes a
+            # huge int in 2**(streak-1) and eventually raises OverflowError in
+            # the float multiply. BACKOFF_MAX already caps the delay, so any
+            # exponent past the saturation point is wasted work.
+            exp = min(self._fail_streak - 1, 32)
             delay = min(self.BACKOFF_MAX,
-                        self.BACKOFF_BASE * (2 ** (self._fail_streak - 1)))
+                        self.BACKOFF_BASE * (2 ** exp))
         self.cooldown_until = now + delay
 
     def report(self, ip: str, cats: list[int], comment: str, ts: str,
