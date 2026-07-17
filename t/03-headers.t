@@ -216,3 +216,137 @@ POST /t
 --- more_headers
 Content-Type: multipart/form-data; boundary=rO0ABp0wny
 --- error_code: 405
+
+=== TEST 23: generic header class -- shellshock MUST fire (in generic_allowed)
+# Start of the per-header-class category matrix (TEST 23-34).
+#
+# header_skip = slcf->skip | ~allowed in ngx_http_shield_inspect_prebody()
+# gives each header class its own category allow-list. The differential
+# fuzzer cannot reach this: it fuzzes the mask bits directly, so a category
+# wrongly added to (or missing from) a class's `allowed` constant is not
+# expressible as an oracle divergence. These tests PIN the allow-list
+# constants at src/ngx_http_shield_module.c:500-576 by asserting, per class,
+# one category that MUST fire and one that must NOT.
+#
+# webshell ("b374k") is the MUST-NOT probe for generic/content-type/cookie:
+# it is a short, punctuation-free token not in any of their allow-lists, so
+# a wrongly-widened mask would light it up. It IS in the full ruleset, so it
+# doubles as the MUST-fire probe for URI-bearing / UA / Referer headers.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+X-Custom-Debug: () { :;}; /bin/bash -c id
+--- error_log
+category=shellshock source=header
+--- error_code: 403
+
+=== TEST 24: generic header class -- webshell token MUST NOT fire (not in generic_allowed)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+X-Custom-Debug: b374k
+--- error_code: 200
+
+=== TEST 25: content-type class -- java_rce MUST fire (added on top of generic)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Content-Type: %{(#nike='multipart/form-data')}
+--- error_log
+category=java_rce source=content-type
+--- error_code: 403
+
+=== TEST 26: content-type class -- webshell token MUST NOT fire (not added for content-type)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Content-Type: b374k/form-data
+--- error_code: 200
+
+=== TEST 27: content-type class -- traversal MUST NOT fire (not in content-type allow-list)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Content-Type: multipart/form-data; boundary=../../etc/passwd
+--- error_code: 200
+
+=== TEST 28: cookie class -- sqli MUST fire (one of the 12 injection-shaped categories)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Cookie: session=ok; q=union select password from users
+--- error_log
+category=sqli source=header
+--- error_code: 403
+
+=== TEST 29: cookie class -- webshell token MUST NOT fire (not one of the 12 cookie categories)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Cookie: session=b374k
+--- error_code: 200
+
+=== TEST 30: cookie class -- traversal MUST NOT fire (not in the cookie allow-list)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Cookie: session=../../etc/passwd
+--- error_code: 200
+
+=== TEST 31: URI-bearing header (X-Rewrite-URL) gets the full ruleset -- webshell fires
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+X-Rewrite-URL: /uploads/b374k
+--- error_log
+category=webshell source=header
+--- error_code: 403
+
+=== TEST 32: URI-bearing header (X-Rewrite-URL) full ruleset -- traversal also fires
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+X-Rewrite-URL: /a/../../etc/passwd
+--- error_code: 403
+
+=== TEST 33: User-Agent gets the full ruleset -- webshell token fires (not just generic)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+User-Agent: b374k
+--- error_log
+category=webshell source=user-agent
+--- error_code: 403
+
+=== TEST 34: Referer gets the full ruleset -- webshell token fires (not just generic)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Referer: http://example.com/b374k
+--- error_log
+category=webshell source=referer
+--- error_code: 403
