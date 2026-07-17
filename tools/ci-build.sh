@@ -7,6 +7,7 @@
 #     version: source version, e.g. 1.31.3
 #     mode   : debug (default, dynamic .so) | asan (static, sanitizers)
 #              | module (dynamic .so only, nginx core NOT compiled)
+#              | coverage (static, gcov-instrumented module TU)
 #
 # The built tree lives under ./.build. On success the paths of interest are:
 #   .build/<dir>/objs/nginx                         (server binary)
@@ -26,7 +27,7 @@ VERSION="${2:-1.31.3}"
 MODE="${3:-debug}"
 
 case "$MODE" in
-    debug|asan|module) ;;
+    debug|asan|module|coverage) ;;
     *)
         echo "unsupported mode: $MODE (want: debug|asan|module)" >&2
         exit 2
@@ -101,6 +102,17 @@ if [ "$MODE" = "asan" ]; then
     ADD_MODULE="--add-module=$MODULE_DIR"
 fi
 
+if [ "$MODE" = "coverage" ]; then
+    # gcov instrumentation. --coverage == -fprofile-arcs -ftest-coverage; it is
+    # applied core-wide (configure has no per-module cc-opt hook), but the CI job
+    # harvests gcov only for our translation unit, so upstream .gcda is ignored.
+    # Static link (--add-module) so the instrumented module runs inside the very
+    # server binary the tests drive, and .gcda lands next to objs/.
+    CC_OPT="-g -O0 --coverage -Wall"
+    LD_OPT="--coverage"
+    ADD_MODULE="--add-module=$MODULE_DIR"
+fi
+
 cd "$ROOT/$DIR"
 
 ./configure \
@@ -110,7 +122,7 @@ cd "$ROOT/$DIR"
     "$ADD_MODULE"
 
 case "$MODE" in
-    asan)
+    asan|coverage)
         make -j"$(nproc)"
         echo "built: $ROOT/$DIR/objs/nginx"
         ;;

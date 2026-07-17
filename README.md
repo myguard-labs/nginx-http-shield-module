@@ -104,6 +104,9 @@ http {
     # Turn on globally in detect mode first, watch the logs, then switch to block.
     shield detect;
 
+    # Optional: a shared-memory zone for the repeat-offender ban list.
+    shield_ban_zone shield:10m;
+
     server {
         location / {
             shield block;          # off | detect | block
@@ -111,6 +114,9 @@ http {
             shield_max_body 8k;    # bytes of body scanned (default 8k)
             shield_status 403;      # 403 | 404 | 419 | 429 | 444 (default 403)
             shield_log /var/log/nginx/shield.json;  # JSON hit log (off by default)
+
+            # Ban an IP for 1h once it trips 5 signatures within 1 minute.
+            shield_ban zone=shield count=5 window=1m bantime=1h;
         }
 
         location /legacy-app/ {
@@ -131,6 +137,40 @@ http {
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus `httpoxy`, `range_dos` and `ctrl_char`). |
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
+| `shield_ban_zone` | http | — | Define a shared-memory zone `name:size` (e.g. `shield:10m`) for the ban list. See [Repeat-offender banning](#repeat-offender-banning). |
+| `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a sliding `window`. |
+
+### Repeat-offender banning
+
+A single shield hit blocks one request. `shield_ban` escalates a **persistent**
+attacker to a hard ban: after `count` hits inside a sliding `window`, the client
+IP is refused for `bantime` — with the configured `shield_status`, **before any
+signature scanning**, so a known-bad IP costs only a shared-memory lookup.
+
+```nginx
+http {
+    shield_ban_zone shield:10m;          # one zone, shared by all workers
+    server {
+        location / {
+            shield block;
+            shield_ban zone=shield count=5 window=1m bantime=1h;
+        }
+    }
+}
+```
+
+- **What counts as a hit:** any shield signature trip, in **both** `block` and
+  `detect` mode — so a detect-only deployment can still ban repeat attackers
+  while it stays in observation mode for everyone else.
+- **Keyed on the client IP** (IPv4 or IPv6), stored in the shm zone, shared
+  across all worker processes. A `10m` zone holds on the order of 10⁵ addresses;
+  the least-recently-seen entries are evicted when it fills.
+- **The ban takes effect on the attacker's _next_ request** — the hit that
+  reaches the threshold is still handled on its own merits.
+- **`window` and `bantime`** take nginx time units (`s`, `m`, `h`, `d`).
+- Put `shield_ban_zone` in the `http{}` block once; reference it by name from as
+  many locations as you like. Each location can use a different `count`/`window`/
+  `bantime` against the same or a different zone.
 
 ### Hit log
 

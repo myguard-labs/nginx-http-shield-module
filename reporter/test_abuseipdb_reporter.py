@@ -428,3 +428,209 @@ class _FakeBody:
 
     def close(self):
         pass
+
+
+# --------------------------------------------------------------------------- #
+# _handle_stop
+# --------------------------------------------------------------------------- #
+def test_handle_stop_sets_flag():
+    mod._stop = False
+    try:
+        mod._handle_stop(15, None)
+        assert mod._stop is True
+    finally:
+        mod._stop = False
+
+
+# --------------------------------------------------------------------------- #
+# follow()  -- the tail loop. Driven for a bounded number of iterations by a
+# fake time.sleep that flips _stop, so the `while not _stop` loop terminates.
+# No real sleeping, no network.
+# --------------------------------------------------------------------------- #
+def _mk_args(tmp_path, **over):
+    import argparse
+    a = argparse.Namespace(
+        logfile=str(tmp_path / "shield.log"),
+        state=str(tmp_path / "offset.json"),
+        poll=0.01,
+        dedup_window=900,
+        daily_cap=1000,
+        timeout=1.0,
+        dry_run=True,
+    )
+    for k, v in over.items():
+        setattr(a, k, v)
+    return a
+
+
+def _stopping_sleep(monkeypatch, after=1):
+    """Patch mod.time.sleep so the follow() loop runs `after` iterations then stops."""
+    calls = {"n": 0}
+
+    def fake_sleep(_):
+        calls["n"] += 1
+        if calls["n"] >= after:
+            mod._stop = True
+
+    monkeypatch.setattr(mod.time, "sleep", fake_sleep)
+    return calls
+
+
+def _run_follow(args, monkeypatch):
+    mod._stop = False
+    logs = []
+    rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
+    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+    try:
+        mod.follow(args, rep, sup, logs.append)
+    finally:
+        mod._stop = False
+    return logs
+
+
+def test_follow_missing_logfile_waits_then_stops(tmp_path, monkeypatch):
+    # logfile does not exist -> FileNotFoundError branch sleeps; we stop it.
+    args = _mk_args(tmp_path)
+    _stopping_sleep(monkeypatch, after=1)
+    logs = _run_follow(args, monkeypatch)
+    assert any("stopped" in m for m in logs)
+
+
+def test_follow_processes_a_line(tmp_path, monkeypatch):
+    args = _mk_args(tmp_path)
+    entry = {"ts": "2026-07-17T00:00:00Z", "ip": "8.8.8.8",
+             "cat": "sqli", "src": "uri",
+             "req": "GET /x HTTP/1.1", "mode": "block", "status": 403}
+    Path(args.logfile).write_text(json.dumps(entry) + "\n")
+    # one readline processes the line, next readline hits EOF -> sleep -> stop
+    _stopping_sleep(monkeypatch, after=1)
+    logs = _run_follow(args, monkeypatch)
+    assert any("reported 8.8.8.8" in m or "dry-run" in m for m in logs)
+    # offset advanced past the consumed line and was persisted
+    off, _ = mod.load_offset(args.state, args.logfile)
+    assert off > 0
+
+
+def test_follow_rewinds_on_failed_send(tmp_path, monkeypatch):
+    args = _mk_args(tmp_path, dry_run=False)
+    entry = {"ts": "2026-07-17T00:00:00Z", "ip": "8.8.8.8",
+             "cat": "sqli", "src": "uri",
+             "req": "GET /x HTTP/1.1", "mode": "block", "status": 403}
+    Path(args.logfile).write_text(json.dumps(entry) + "\n")
+    mod._stop = False
+    logs = []
+    rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    # force report() to fail -> process_line returns False -> follow rewinds
+    monkeypatch.setattr(rep, "report",
+                        lambda *a, **k: (False, "boom"))
+    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+    _stopping_sleep(monkeypatch, after=1)
+    try:
+        mod.follow(args, rep, sup, logs.append)
+    finally:
+        mod._stop = False
+    # line was NOT consumed: offset stays at 0 (rewound)
+    off, _ = mod.load_offset(args.state, args.logfile)
+    assert off == 0
+
+
+def test_follow_respects_cooldown(tmp_path, monkeypatch):
+    args = _mk_args(tmp_path, dry_run=True)
+    Path(args.logfile).write_text("")   # empty, but open succeeds
+    mod._stop = False
+    logs = []
+    rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
+    # pretend we're in a cooldown so the in_cooldown>0 branch is taken
+    monkeypatch.setattr(rep, "in_cooldown", lambda now: 5.0)
+    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+    _stopping_sleep(monkeypatch, after=1)
+    try:
+        mod.follow(args, rep, sup, logs.append)
+    finally:
+        mod._stop = False
+    assert any("opened" in m for m in logs)
+
+
+# --------------------------------------------------------------------------- #
+# main()
+# --------------------------------------------------------------------------- #
+def test_main_requires_api_key_when_not_dry_run(tmp_path, monkeypatch):
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    rc = mod.main([str(tmp_path / "shield.log"),
+                   "--state", str(tmp_path / "st" / "offset.json")])
+    assert rc == 2
+
+
+def test_main_dry_run_runs_and_returns_zero(tmp_path, monkeypatch):
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    logfile = tmp_path / "shield.log"
+    logfile.write_text("")
+    _stopping_sleep(monkeypatch, after=1)
+    mod._stop = False
+    try:
+        rc = mod.main([str(logfile),
+                       "--state", str(tmp_path / "st" / "offset.json"),
+                       "--dry-run", "--poll", "0.01"])
+    finally:
+        mod._stop = False
+    assert rc == 0
+
+
+def test_suppressor_save_swallows_oserror(tmp_path, monkeypatch):
+    # _save must never raise: a broken state path is logged-nowhere, not fatal.
+    sup = mod.Suppressor(900, 1000, str(tmp_path / "sup.json"))
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mod, "open", boom, raising=False)
+    monkeypatch.setattr(os, "replace", boom)
+    sup.record("8.8.8.8", now=0.0)   # triggers _save internally, must not raise
+
+
+def test_follow_resumes_from_saved_offset(tmp_path, monkeypatch):
+    args = _mk_args(tmp_path)
+    logfile = Path(args.logfile)
+    logfile.write_text("line-one-already-consumed\n")
+    inode = os.stat(logfile).st_ino
+    # persist an offset at EOF for THIS inode -> follow() takes the resume branch
+    mod.save_offset(args.state, args.logfile, logfile.stat().st_size, inode)
+    _stopping_sleep(monkeypatch, after=1)
+    logs = _run_follow(args, monkeypatch)
+    assert any(f"at offset={logfile.stat().st_size}" in m for m in logs)
+
+
+def test_follow_detects_rotation(tmp_path, monkeypatch):
+    args = _mk_args(tmp_path)
+    logfile = Path(args.logfile)
+    logfile.write_text("")   # empty: open ok, first readline is EOF
+
+    mod._stop = False
+    logs = []
+    rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
+    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+
+    real_stat = os.stat
+    calls = {"n": 0}
+
+    def fake_stat(p, *a, **k):
+        st = real_stat(p, *a, **k)
+        # On the EOF rotation check, report a different inode to force reopen.
+        if str(p) == args.logfile:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                class S:
+                    st_ino = st.st_ino + 12345
+                    st_size = st.st_size
+                    st_mode = st.st_mode
+                return S()
+        return st
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    _stopping_sleep(monkeypatch, after=1)
+    try:
+        mod.follow(args, rep, sup, logs.append)
+    finally:
+        mod._stop = False
+        monkeypatch.setattr(os, "stat", real_stat)
+    assert any("rotation/truncation detected" in m for m in logs)

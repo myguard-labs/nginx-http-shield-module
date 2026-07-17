@@ -234,10 +234,62 @@ jobs:
       - name: Install pytest
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-pytest
+          sudo apt-get install -y python3-pytest python3-pytest-cov
 
       # The AbuseIPDB reporter (reporter/abuseipdb-reporter.py) runs out of band
       # from nginx; these tests exercise its suppression, backoff, PII-strip and
       # offset-persistence logic with no network (dry-run / monkeypatched).
-      - name: Run reporter unit tests
-        run: python3 -m pytest -q reporter/test_abuseipdb_reporter.py
+      # --cov-fail-under gates the coverage so a future edit that drops a tested
+      # path (or adds an untested one) fails the PR rather than silently rotting.
+      - name: Run reporter unit tests with coverage
+        run: |
+          python3 -m pytest -q reporter/test_abuseipdb_reporter.py \
+            --cov=. --cov-report=term-missing --cov-fail-under=95
+
+  coverage:
+    name: C line coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl libpcre2-dev zlib1g-dev lcov \
+            cpanminus libio-socket-ssl-perl
+          sudo cpanm --notest --quiet Test::Nginx
+
+      # gcov-instrumented static build so the module TU is measured while the
+      # Test::Nginx suite drives every attack/config path through the very
+      # server binary that carries the counters.
+      - name: Build with coverage instrumentation
+        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" coverage
+
+      - name: Run t/ (populates .gcda counters)
+        env:
+          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
+          TEST_NGINX_TIMEOUT: "30"
+        run: prove t/
+
+      # Harvest coverage for our translation unit only; upstream nginx .gcda is
+      # captured (core is instrumented too) but discarded by the --extract filter.
+      - name: Collect and gate module coverage
+        run: |
+          build=.build/nginx-${NGINX_VERSION}
+          lcov --capture --directory "$build/objs/addon/src" \
+            --output-file cov.info --rc geninfo_unexecuted_blocks=1
+          lcov --extract cov.info '*ngx_http_shield*' --output-file cov-mod.info
+          lcov --list cov-mod.info
+          # Fail the job if module line coverage falls below the floor. The
+          # remaining uncovered lines are OOM/alloc-failure returns that cannot
+          # be driven without malloc fault injection.
+          rate=$(lcov --summary cov-mod.info 2>&1 \
+                 | sed -n 's/.*lines\.*: \([0-9.]*\)%.*/\1/p')
+          echo "module line coverage: ${rate}%"
+          awk -v r="$rate" 'BEGIN { exit (r+0 >= 90) ? 0 : 1 }' \
+            || { echo "coverage ${rate}% below floor 90%"; exit 1; }
