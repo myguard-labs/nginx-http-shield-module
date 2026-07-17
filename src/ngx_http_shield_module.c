@@ -479,13 +479,57 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
         return NGX_OK;
     }
 
-    /* Request target as sent by the client (path + query, still encoded). */
+    /* Request target as sent by the client (path + query, still encoded).
+     *
+     * Path and query mean different things: the path is a resource locator, the
+     * query is an arbitrary user-controlled VALUE (a search term, a URL echoed
+     * back). A few categories -- xss, sensitive_file (ngx_http_shield_no_query_mask())
+     * -- have no benign reading in a path but are ordinary content as a query
+     * value, so they must not fire on the query.
+     *
+     * Done as TWO passes over the same buffer rather than by splitting it, so
+     * that AND-rules keep working: a rule like jenkins_cli_read pairs the term
+     * "/cli?" (which straddles the path/query boundary) with "remoting=true"
+     * (a query param). Splitting the buffer on '?' would put those two terms in
+     * different scans and the rule could never fire. AND-rule terms live in a
+     * separate id space (rout[]) that the category skip mask does not touch, so:
+     *
+     *  1. scan the WHOLE target with the query categories masked out -- every
+     *     standalone category except xss/sensitive_file, plus ALL AND-rules
+     *     (whose terms may span the boundary), match here;
+     *  2. scan the PATH component only, at full strength, to recover xss and
+     *     sensitive_file where they DO have attack meaning (in the path).
+     *
+     * xss/sensitive_file in the query are masked out of pass 1 and outside the
+     * buffer of pass 2, so they are deliberately not detected there. */
     if (r->unparsed_uri.len) {
-        rc = ngx_http_shield_scan_input(r, slcf, r->unparsed_uri.data,
-                                        r->unparsed_uri.len, "uri",
-                                        slcf->skip, hit);
+        u_char  *q;
+        size_t   path_len;
+
+        rc = ngx_http_shield_scan_input(
+                 r, slcf, r->unparsed_uri.data, r->unparsed_uri.len, "uri",
+                 slcf->skip | ngx_http_shield_no_query_mask(), hit);
         if (rc != NGX_DECLINED) {
             return rc;
+        }
+
+        q = ngx_strlchr(r->unparsed_uri.data,
+                        r->unparsed_uri.data + r->unparsed_uri.len, '?');
+        path_len = (q == NULL) ? r->unparsed_uri.len
+                               : (size_t) (q - r->unparsed_uri.data);
+
+        /* Recover the query-ineligible categories in the path only. Skip the
+         * second pass entirely when they are not part of the effective mask
+         * (shield_skip already drops them, or there is no path). */
+        if (path_len
+            && (~slcf->skip & ngx_http_shield_no_query_mask()) != 0)
+        {
+            rc = ngx_http_shield_scan_input(
+                     r, slcf, r->unparsed_uri.data, path_len, "uri",
+                     slcf->skip | ~ngx_http_shield_no_query_mask(), hit);
+            if (rc != NGX_DECLINED) {
+                return rc;
+            }
         }
     }
 

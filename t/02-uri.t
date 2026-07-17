@@ -16,10 +16,16 @@ GET /t?id=1%20union%20select%20password%20from%20users
 --- error_code: 403
 
 === TEST 2: xss
+# xss is query-ineligible (NO_QUERY -- see t/05 TEST 71): "<script>" as a raw
+# query VALUE is reflected-search traffic the module deliberately does not block.
+# xss still fires at full strength in a header; probe it via Referer so this
+# stays a real xss positive.
 --- config
     location /t { shield block; empty_gif; }
 --- request
-GET /t?q=%3Cscript%3Ealert(1)%3C/script%3E
+GET /t
+--- more_headers
+Referer: http://x/?q=%3Cscript%3Ealert(1)%3C/script%3E
 --- error_code: 403
 
 === TEST 3: path traversal
@@ -149,10 +155,13 @@ GET /t?id=1%20union/**/select%20password%20from%20users
 --- error_code: 403
 
 === TEST 21: XSS data URI
+# xss is query-ineligible; probe the header position where it still blocks.
 --- config
     location /t { shield block; empty_gif; }
 --- request
-GET /t?next=data:text/html;base64,PHNjcmlwdD4=
+GET /t
+--- more_headers
+Referer: http://x/?next=data:text/html;base64,PHNjcmlwdD4=
 --- error_code: 403
 
 === TEST 22: command injection with an AND separator
@@ -198,10 +207,13 @@ GET /t?id=1;EXEC%20sp_OACreate%20'WScript.Shell'
 --- error_code: 403
 
 === TEST 28: XSS entity-encoded javascript protocol
+# xss is query-ineligible; probe the header position where it still blocks.
 --- config
     location /t { shield block; empty_gif; }
 --- request
-GET /t?next=javascript%26%23x3a%3Balert(1)
+GET /t
+--- more_headers
+Referer: http://x/?next=javascript%26%23x3a%3Balert(1)
 --- error_code: 403
 
 === TEST 29: command injection with an OR separator
@@ -244,4 +256,62 @@ GET /t/etc/sudoers
     location /t { shield block; empty_gif; }
 --- request
 GET /t/.config/composer/auth.json
+--- error_code: 403
+
+=== TEST 35: sensitive_file still blocks in the request PATH (NO_QUERY is path-safe)
+# The NO_QUERY narrowing applies ONLY to the query component. A sensitive-file
+# name in the PATH is a file actually being requested and must still 403 -- if
+# the split accidentally masked the path this goes 200.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/etc/passwd
+--- error_code: 403
+
+=== TEST 36: xss still blocks in a header value (NO_QUERY does not touch headers)
+# xss is query-ineligible but the request PATH and headers still carry the full
+# table. A Referer echoing a script tag must still 403 -- the narrowing is
+# scoped to the query component of the target, nothing else.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Referer: http://x/<script>alert(1)</script>
+--- error_code: 403
+
+=== TEST 37: traversal still blocks in a query VALUE (only xss/sensitive_file are NO_QUERY)
+# The narrowing is deliberately minimal: traversal has a real query-delivered
+# attack (?file=../../), so it stays query-eligible and must still 403.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?file=../../../../etc/shadow
+--- error_code: 403
+
+=== TEST 38: lfi still blocks in a query VALUE
+# lfi ?f=http://... is a real query-delivered attack and stays eligible.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?page=php://filter/convert.base64-encode/resource=index
+--- error_code: 403
+
+=== TEST 39: sqli still blocks in a query VALUE
+# sqli is query-eligible; a real UNION SELECT in the query must still 403.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?id=1%20union%20select%20password%20from%20users
+--- error_code: 403
+
+=== TEST 40: xss still blocks in the request PATH (path-recovery pass, not headers)
+# The two-pass URI scan recovers BOTH query-ineligible categories in the path,
+# not just sensitive_file (TEST 35). Percent-encode the tag so it survives to
+# PRECONTENT rather than being rejected on the raw path; the decoded scan then
+# matches "<script>" in the path component, where XSS has attack meaning.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/%3Cscript%3Ealert(1)%3C/script%3E
 --- error_code: 403
