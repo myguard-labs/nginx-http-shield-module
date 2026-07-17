@@ -647,3 +647,16 @@ GET /t?doc=/cli/help&opt=remoting=true
 --- request
 GET /t?page=/catalog-portal/ui/oauth/verify&engine=freemarker
 --- error_code: 200
+
+=== TEST 70: a JSON-like media type that is not JSON does not get body-scanned
+# The media-type gate matches the type token EXACTLY: "application/jsonfoo" is
+# its own (unregistered) type, not application/json with a suffix. A prefix
+# match here would scan bodies of types the module was never asked to inspect.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+{"filter":"1 union select password from users"}
+--- more_headers
+Content-Type: application/jsonfoo
+--- error_code: 405
