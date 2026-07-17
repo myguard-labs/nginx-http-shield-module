@@ -660,3 +660,26 @@ POST /t
 --- more_headers
 Content-Type: application/jsonfoo
 --- error_code: 405
+
+=== TEST 71: a script tag reflected in a query value is not an attack this module blocks
+# xss is query-ineligible (NO_QUERY): "<script>" as a raw query VALUE is
+# ordinary reflected-search traffic (a site search box echoing the term), not a
+# stored/delivered payload. The module deliberately does not block query-value
+# XSS -- that is a WAF's job and the source of a large false-positive class.
+# xss still fires at full strength in headers and the request PATH.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=%3Cscript%3E
+--- error_code: 200
+
+=== TEST 72: a sensitive-file NAME in a query value is not path disclosure
+# sensitive_file is query-ineligible (NO_QUERY): "/etc/passwd" typed into a docs
+# or code search box is a search TERM, not a path being served. The attack shape
+# (a file actually being read) arrives in the request PATH or via lfi, both of
+# which still block.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=/etc/passwd
+--- error_code: 200

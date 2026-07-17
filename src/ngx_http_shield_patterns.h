@@ -77,6 +77,29 @@ typedef struct {
  */
 #define NGX_HTTP_SHIELD_NO_BODY        0x4
 
+/*
+ * NGX_HTTP_SHIELD_NO_QUERY: scan the request PATH and the scanned headers with
+ * this category, but NOT the query string.
+ *
+ * The request target is one buffer -- path, "?", then query -- and the query is
+ * an arbitrary user-controlled VALUE (a search term, a docs lookup, a URL echoed
+ * back). Path-shaped and code-shaped tokens have no benign reading in a path
+ * component ("/etc/passwd" as a path is a file being served; "<script>" in a
+ * path is nonsense) but are ordinary content as a query value ("?q=/etc/passwd"
+ * is a code-search box, "?q=<script>" is a site search echoing the term).
+ *
+ * This is the query analogue of NGX_HTTP_SHIELD_NO_BODY, one level finer than
+ * per-category-body: the meaning of a token depends on WHERE in the target it
+ * sits. Only categories whose attack delivery does NOT legitimately arrive as a
+ * query value carry it -- xss (reflected query XSS is a WAF's job and the single
+ * largest false-positive class this module deliberately declines) and
+ * sensitive_file (a filename in a query value is a search term; the file
+ * actually being read arrives in the PATH or via lfi, both still scanned).
+ * Categories with real query-delivered attacks (traversal ?file=../, lfi
+ * ?f=http://, sqli) stay query-eligible.
+ */
+#define NGX_HTTP_SHIELD_NO_QUERY       0x8
+
 /* Category identifiers. The order here defines the bit position used by the
  * shield_skip bitmask, so only ever append. */
 typedef enum {
@@ -1034,7 +1057,7 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
         ngx_http_shield_sqli, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_XSS, "xss",
         ngx_http_shield_xss, NGX_HTTP_SHIELD_MATCH_DECODED
-        | NGX_HTTP_SHIELD_NO_BODY),
+        | NGX_HTTP_SHIELD_NO_BODY | NGX_HTTP_SHIELD_NO_QUERY),
     /* traversal also matches RAW: several signatures are encoded forms
      * (..%2f, ..%5c, .%%32%65) whose whole point is the still-encoded bytes. */
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_TRAVERSAL, "traversal",
@@ -1087,7 +1110,7 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
         ngx_http_shield_imagetragick, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SENSITIVE_FILE, "sensitive_file",
         ngx_http_shield_sensitive_file, NGX_HTTP_SHIELD_MATCH_DECODED
-        | NGX_HTTP_SHIELD_NO_BODY),
+        | NGX_HTTP_SHIELD_NO_BODY | NGX_HTTP_SHIELD_NO_QUERY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_WEBSHELL, "webshell",
         ngx_http_shield_webshell, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_SSRF_META, "ssrf_meta",
@@ -1139,6 +1162,28 @@ ngx_http_shield_no_body_mask(void)
 
     for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
         if (ngx_http_shield_categories[i].match & NGX_HTTP_SHIELD_NO_BODY) {
+            mask |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
+        }
+    }
+
+    return mask;
+}
+
+/*
+ * The set of categories that must not be applied to the query string, as a
+ * bitmask in the same bit space as shield_skip. Folded into the skip mask on
+ * the query-component scan only (the path component is scanned at full
+ * strength). Same cost model as ngx_http_shield_no_body_mask(): one OR at scan
+ * time, nothing in the automaton.
+ */
+static ngx_inline uint64_t
+ngx_http_shield_no_query_mask(void)
+{
+    uint64_t    mask = 0;
+    ngx_uint_t  i;
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
+        if (ngx_http_shield_categories[i].match & NGX_HTTP_SHIELD_NO_QUERY) {
             mask |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
         }
     }
