@@ -24,7 +24,7 @@ Design
   sqli adds 16). Unknown categories fall back to 21.
 
 The API key is read from ABUSEIPDB_API_KEY in the environment (populate it from
-/etc/myguard-build-env; never put it on the command line or in the unit file
+/etc/shield-abuseipdb.env; never put it on the command line or in the unit file
 literally). --dry-run prints what would be sent and calls nothing.
 """
 
@@ -107,24 +107,75 @@ def categories_for(cat: str) -> list[int]:
     return CAT_MAP.get(cat, DEFAULT_CATS)
 
 
+def sanitize_req(req: str) -> str:
+    """Reduce a request line to `METHOD /path` for a PUBLIC report.
+
+    The raw request line is sent to a third party (AbuseIPDB), so the query
+    string is dropped entirely: URLs routinely carry session tokens, API keys,
+    e-mail addresses and other PII in query params. We keep only the method and
+    the path, which is what identifies the attack pattern. The path may still be
+    hostile bytes, so control/newline chars are stripped.
+    """
+    parts = req.split(" ", 2)
+    method = parts[0] if parts else ""
+    target = parts[1] if len(parts) > 1 else ""
+    path = target.split("?", 1)[0]          # drop the query string (PII)
+    method = "".join(ch for ch in method if ch.isalnum())[:16]
+    path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7f)[:256]
+    out = (method + " " + path).strip()
+    return out
+
+
 def build_comment(entry: dict) -> str:
-    """A public, non-sensitive one-liner. Never echo secrets or internal hosts."""
+    """A public, non-sensitive one-liner. Never echo secrets, PII or internal hosts."""
     cat = str(entry.get("cat", "?"))
     src = str(entry.get("src", "?"))
-    req = str(entry.get("req", ""))
-    comment = f"nginx-http-shield: {cat} attack in {src}; request line: {req}"
+    req = sanitize_req(str(entry.get("req", "")))
+    comment = f"nginx-http-shield: {cat} attack in {src}; {req}"
     return comment[:COMMENT_MAX]
 
 
 class Suppressor:
-    """Local quota protection: private-IP skip, per-IP window, daily cap."""
+    """Local quota protection: private-IP skip, per-IP window, daily cap.
 
-    def __init__(self, window_s: int, daily_cap: int):
+    Persisted to `state_path` so a restart does NOT reset the per-IP window or
+    the daily count -- otherwise a crash-loop would bypass both and blow the
+    quota. Saved after every recorded report (cheap: the map is bounded by the
+    dedup window). Loaded on construction.
+    """
+
+    def __init__(self, window_s: int, daily_cap: int, state_path: str | None = None) -> None:
         self.window_s = window_s
         self.daily_cap = daily_cap
+        self.state_path = state_path
         self._last: dict[str, float] = {}
         self._day: str | None = None
         self._count = 0
+        self._load()
+
+    def _load(self) -> None:
+        if not self.state_path:
+            return
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as fh:
+                st = json.load(fh)
+            self._day = st.get("day")
+            self._count = int(st.get("count", 0))
+            self._last = {k: float(v) for k, v in st.get("last", {}).items()}
+        except (FileNotFoundError, ValueError, KeyError, TypeError):
+            pass
+
+    def _save(self) -> None:
+        if not self.state_path:
+            return
+        tmp = self.state_path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"day": self._day, "count": self._count,
+                           "last": self._last}, fh)
+            os.replace(tmp, self.state_path)
+        except OSError:
+            pass
 
     def _roll_day(self, now: float) -> None:
         today = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y-%m-%d")
@@ -132,6 +183,11 @@ class Suppressor:
             self._day = today
             self._count = 0
             self._last.clear()
+
+    def _prune(self, now: float) -> None:
+        """Drop entries older than the dedup window so the map stays bounded."""
+        cutoff = now - self.window_s
+        self._last = {ip: t for ip, t in self._last.items() if t >= cutoff}
 
     def allow(self, ip: str, now: float) -> tuple[bool, str]:
         self._roll_day(now)
@@ -145,15 +201,48 @@ class Suppressor:
     def record(self, ip: str, now: float) -> None:
         self._last[ip] = now
         self._count += 1
+        self._prune(now)
+        self._save()
 
 
 class Reporter:
-    def __init__(self, api_key: str, timeout: float, dry_run: bool):
+    """POSTs to AbuseIPDB with a global cooldown after 429 / network failures.
+
+    A failure sets `cooldown_until`; the caller must consult `in_cooldown()`
+    before the next send so one unreachable/rate-limited API does not get
+    hammered by every subsequent log line. 429 honours Retry-After; other
+    failures use bounded exponential backoff.
+    """
+
+    BACKOFF_BASE = 5.0
+    BACKOFF_MAX = 300.0
+
+    def __init__(self, api_key: str, timeout: float, dry_run: bool) -> None:
         self.api_key = api_key
         self.timeout = timeout
         self.dry_run = dry_run
+        self.cooldown_until = 0.0
+        self._fail_streak = 0
 
-    def report(self, ip: str, cats: list[int], comment: str, ts: str) -> tuple[bool, str]:
+    def in_cooldown(self, now: float) -> float:
+        """Return seconds remaining in cooldown (0 if clear)."""
+        return max(0.0, self.cooldown_until - now)
+
+    def _note_success(self) -> None:
+        self._fail_streak = 0
+        self.cooldown_until = 0.0
+
+    def _note_failure(self, now: float, retry_after: float | None) -> None:
+        self._fail_streak += 1
+        if retry_after is not None:
+            delay = retry_after
+        else:
+            delay = min(self.BACKOFF_MAX,
+                        self.BACKOFF_BASE * (2 ** (self._fail_streak - 1)))
+        self.cooldown_until = now + delay
+
+    def report(self, ip: str, cats: list[int], comment: str, ts: str,
+               now: float) -> tuple[bool, str]:
         payload = {
             "ip": ip,
             "categories": ",".join(str(c) for c in cats),
@@ -177,12 +266,19 @@ class Reporter:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read().decode("utf-8", "replace")
+            self._note_success()
             return True, body
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
-            # 429 = we hit AbuseIPDB's own rate limit; treat as soft failure.
+            retry_after = None
+            if e.code == 429:
+                ra = e.headers.get("Retry-After")
+                if ra and ra.isdigit():
+                    retry_after = float(ra)
+            self._note_failure(now, retry_after)
             return False, f"HTTP {e.code}: {body}"
         except (urllib.error.URLError, OSError) as e:
+            self._note_failure(now, None)
             return False, f"network: {e}"
 
 
@@ -208,36 +304,42 @@ def save_offset(state_path: str, log_path: str, offset: int, inode: int) -> None
     os.replace(tmp, state_path)
 
 
-def process_line(line: str, sup: Suppressor, reporter: Reporter, now: float, log) -> None:
+def process_line(line: str, sup: Suppressor, reporter: Reporter, now: float, log) -> bool:
+    """Process one log line. Return True if the line is done with (advance the
+    offset past it), False if it must be retried later (a send failed / API in
+    cooldown) so the caller keeps the offset on this line."""
     line = line.strip()
     if not line:
-        return
+        return True
     try:
         entry = json.loads(line)
     except ValueError:
         log(f"skip: malformed JSON: {line[:120]!r}")
-        return
+        return True   # never parseable; do not retry
 
     ip = str(entry.get("ip", ""))
     if not is_reportable_ip(ip):
-        return
+        return True
 
     ok, why = sup.allow(ip, now)
     if not ok:
-        return
+        return True   # deduped / capped -- intentionally dropped, not retried
 
     cats = categories_for(str(entry.get("cat", "")))
     comment = build_comment(entry)
     ts = str(entry.get("ts", ""))
 
-    sent, detail = reporter.report(ip, cats, comment, ts)
+    sent, detail = reporter.report(ip, cats, comment, ts, now)
     if sent:
+        # Record (and durably checkpoint suppression) only on a confirmed send.
         sup.record(ip, now)
         log(f"reported {ip} cats={cats}: {detail[:200]}")
-    else:
-        # Do NOT record on failure, so a transient error retries next time the
-        # same IP reappears; but avoid a hot retry loop by not re-reading.
-        log(f"FAILED  {ip} cats={cats}: {detail[:200]}")
+        return True
+
+    # Failed: reporter has set a cooldown. Do NOT advance past this line -- it is
+    # retried once the cooldown clears, giving at-least-once delivery.
+    log(f"FAILED  {ip} cats={cats} (retry after cooldown): {detail[:200]}")
+    return False
 
 
 def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
@@ -266,10 +368,23 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
                 time.sleep(args.poll)
                 continue
 
+        # Respect a global cooldown from a prior 429/network failure: pause
+        # here without reading, so we don't advance past unsent lines.
+        now = time.time()
+        wait = reporter.in_cooldown(now)
+        if wait > 0:
+            time.sleep(min(wait, args.poll))
+            continue
+
+        pos = fh.tell()
         line = fh.readline()
         if line:
-            offset = fh.tell()
-            process_line(line, sup, reporter, time.time(), log)
+            if process_line(line, sup, reporter, time.time(), log):
+                offset = fh.tell()
+            else:
+                # Send failed: rewind to retry this exact line after cooldown.
+                fh.seek(pos)
+                time.sleep(args.poll)
             continue
 
         # EOF: persist offset, then check for rotation/truncation.
@@ -319,7 +434,7 @@ def main(argv: list[str]) -> int:
     api_key = os.environ.get("ABUSEIPDB_API_KEY", "")
     if not api_key and not args.dry_run:
         print("ABUSEIPDB_API_KEY not set in environment "
-              "(populate from /etc/myguard-build-env)", file=sys.stderr)
+              "(populate from /etc/shield-abuseipdb.env)", file=sys.stderr)
         return 2
 
     def log(msg: str) -> None:
@@ -331,8 +446,12 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
 
+    # Suppression state lives next to the offset state so dedup window and daily
+    # cap survive a restart (a crash-loop must not reset them and blow the quota).
+    sup_state = os.path.join(os.path.dirname(args.state) or ".", "suppress.json")
+
     reporter = Reporter(api_key, args.timeout, args.dry_run)
-    sup = Suppressor(args.dedup_window, args.daily_cap)
+    sup = Suppressor(args.dedup_window, args.daily_cap, sup_state)
 
     log(f"shield reporter starting: {args.logfile} "
         f"(dedup={args.dedup_window}s cap={args.daily_cap}/day "

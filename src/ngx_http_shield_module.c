@@ -343,6 +343,18 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
     ts = (ngx_str_t *) &ngx_cached_http_log_iso8601;
     req = r->request_line;
 
+    /* Bound the request line BEFORE escaping so the finished record always fits
+     * a syslog datagram (4096) whole -- truncating the serialized JSON after the
+     * fact could split a \uXXXX escape and emit invalid JSON. Worst-case blowup
+     * is 6x (every byte -> \uXXXX); leave generous room for the syslog header
+     * and the fixed scaffolding. The escape loop's own `p < last - 6` guard then
+     * guarantees it never stops mid-escape. Bounding on an input byte boundary
+     * (not a UTF-8 char boundary) is safe: each source byte escapes independently.
+     */
+    if (req.len > 600) {
+        req.len = 600;
+    }
+
     /* Worst case: every request byte expands to a 6-char \uXXXX escape, plus
      * the fixed scaffolding, timestamp, IP, category, source and status. */
     cap = ts->len + r->connection->addr_text.len
@@ -411,11 +423,14 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
             return;
         }
         sp = ngx_syslog_add_header(slcf->syslog_peer, sb);
-        if (line.len > (size_t) (sb + scap - sp)) {
-            line.len = sb + scap - sp;   /* truncate to the syslog frame */
+        /* The record is already bounded (req capped above) to fit the frame
+         * whole. If a pathologically long header ever left too little room,
+         * skip the send rather than truncate -- a partial record is invalid
+         * JSON, and dropping one datagram is the safer failure. */
+        if (line.len <= (size_t) (sb + scap - sp)) {
+            sp = ngx_cpymem(sp, line.data, line.len);
+            (void) ngx_syslog_send(slcf->syslog_peer, sb, sp - sb);
         }
-        sp = ngx_cpymem(sp, line.data, line.len);
-        (void) ngx_syslog_send(slcf->syslog_peer, sb, sp - sb);
     }
 }
 

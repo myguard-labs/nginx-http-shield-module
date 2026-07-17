@@ -203,3 +203,26 @@ GET /t?id=1%20union%20select%20pw
 [403, 200]
 --- response_body_like eval
 [qr//, qr/"cat":"sqli".*"mode":"block".*"status":403/]
+
+=== TEST 12: an oversized request line is bounded and stays valid one-line JSON
+# The request line is capped (600 bytes) before escaping so the record always
+# fits a syslog datagram whole and can never be truncated mid-\uXXXX. Here a
+# ~4KB attack query must still yield exactly one JSON object ending in }\n, with
+# the `req` field present and closed -- i.e. the bound never split the record.
+--- config
+    location /t {
+        shield block;
+        shield_log $TEST_NGINX_SERVER_ROOT/logs/hit12.json;
+        empty_gif;
+    }
+    location /dump {
+        alias $TEST_NGINX_SERVER_ROOT/logs/hit12.json;
+        default_type text/plain;
+    }
+--- request eval
+["GET /t?id=1%20union%20select%20pw&pad=" . ("a" x 4000), "GET /dump"]
+--- error_code eval
+[403, 200]
+# one object, req field opened and the record closed with "}\n -- not cut off.
+--- response_body_like eval
+[qr//, qr/^\{.*"req":".*"\}\n\z/s]

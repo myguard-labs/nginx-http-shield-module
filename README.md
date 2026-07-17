@@ -182,14 +182,19 @@ tails the JSON log (surviving logrotate via an inode/offset state file), skips
 private/loopback/reserved IPs, de-duplicates each IP for 15 minutes (matching
 AbuseIPDB's own per-IP limit), enforces a daily cap (default 1000, the free
 tier), maps the shield category to AbuseIPDB IDs, and POSTs to
-`/api/v2/report`. The API key comes from `ABUSEIPDB_API_KEY` in the environment
-— never the command line. A hardened `systemd` unit is provided:
+`/api/v2/report`. The public report comment carries only `METHOD /path` — the
+query string is stripped, since URLs routinely carry tokens/PII you must not
+forward to a third party. Suppression and daily-cap state are persisted, so a
+restart cannot reset them and overrun the quota; a 429 or network failure backs
+off (honouring `Retry-After`) and the unsent line is retried, not dropped. The
+API key comes from `ABUSEIPDB_API_KEY` in the environment — never the command
+line. A hardened `systemd` unit is provided:
 
 ```bash
 sudo cp tools/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
 sudo cp tools/shield-abuseipdb-reporter.service /etc/systemd/system/
 sudo install -m600 /dev/null /etc/shield-abuseipdb.env
-echo 'ABUSEIPDB_API_KEY=xxxx' | sudo tee /etc/shield-abuseipdb.env
+sudoedit /etc/shield-abuseipdb.env    # add: ABUSEIPDB_API_KEY=...  (editor, not echo)
 sudo systemctl enable --now shield-abuseipdb-reporter
 ```
 
