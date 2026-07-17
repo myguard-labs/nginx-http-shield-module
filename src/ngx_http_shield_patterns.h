@@ -1252,11 +1252,23 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ofbiz[] = {
 };
 
 /* Metabase CVE-2023-38646 pre-auth RCE: the setup-validate endpoint is a real
- * first-run install endpoint. The attack carries an H2 JDBC connection string
- * with an INIT script -- that is the part no installer sends. */
+ * first-run install endpoint. The attack (CVE-2023-38646) carries an H2 JDBC
+ * connection string with an INIT script -- "INIT=CREATE ALIAS ... AS ..." or
+ * "INIT=RUNSCRIPT FROM ..." -- which runs SQL at connect and is the RCE
+ * primitive. That INIT clause is the part no installer sends.
+ *
+ * The gadget term is "init=", NOT a bare "jdbc:h2:" DSN. Requiring only the
+ * endpoint plus any H2 DSN blocked every benign shape that reaches this endpoint
+ * with an in-memory H2 connection string -- a legitimate first-run install, a
+ * health probe, the DSN quoted in documentation ("jdbc:h2:mem:test" with no
+ * INIT script, t/05 TEST 73). The endpoint is kept as a term so "init=" (an
+ * ordinary query/JSON key elsewhere) is attack-only only in combination; the
+ * H2 DSN term stays so an INIT clause against a non-H2 engine (where it is not
+ * this RCE) does not match. */
 static const ngx_http_shield_sig_t  ngx_http_shield_rule_metabase[] = {
     NGX_HTTP_SHIELD_SIG("/api/setup/validate"),
     NGX_HTTP_SHIELD_SIG("jdbc:h2:"),
+    NGX_HTTP_SHIELD_SIG("init="),
 };
 
 /* No "sqli_time_based" AND-rule ("sleep(" + "select "). Both terms are ordinary
