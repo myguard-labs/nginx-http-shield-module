@@ -56,7 +56,7 @@ typedef struct {
     ngx_queue_t        queue;     /* LRU list head over all ban nodes           */
 
 #ifdef NGX_TEST_HARNESS
-    /* CI-only slab fault injection (see ngx_shield_testprobe.h).
+    /* CI-only slab fault injection (see ngx_shield_probe_hooks.c).
      *
      * These live in SHARED memory rather than in a process global on purpose:
      * the request that arms the fault and the request that trips it may be

@@ -114,7 +114,8 @@ if [ "$MODE" = "coverage" ]; then
 fi
 
 # TEST_HARNESS=1 compiles the CI-only shield_probe introspection endpoint into
-# the module (src/ngx_shield_testprobe.c). Off by default and never set by the
+# the module (t/harness/src/ngx_test_probe.c plus the shield-specific hooks in
+# src/ngx_shield_probe_hooks.c). Off by default and never set by the
 # .deb build, so the endpoint cannot reach a shipped package. The define goes
 # through --with-cc-opt, so it is visible core-wide -- harmless, since only our
 # TUs test for it.

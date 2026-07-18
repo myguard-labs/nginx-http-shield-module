@@ -27,7 +27,11 @@
 
 #include "ngx_http_shield_patterns.h"
 #include "ngx_http_shield_ban.h"
-#include "ngx_shield_testprobe.h"
+#include "ngx_shield_probe_hooks.h"
+
+#ifdef NGX_TEST_HARNESS
+#include "ngx_test_probe.h"
+#endif
 
 
 #define NGX_HTTP_SHIELD_OFF     0
@@ -2016,8 +2020,10 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  * shield_probe <zone>;
  *
  * Installs a content handler in this location that renders worker + shm state
- * as JSON. Compiled out entirely unless NGX_TEST_HARNESS is defined; see
- * src/ngx_shield_testprobe.h.
+ * as JSON. The renderer itself lives in t/harness (nginx-test-harness); this
+ * module supplies only the HTTP surface and, via ngx_shield_probe_hooks.c, the
+ * shield-specific zone semantics. Compiled out entirely unless
+ * NGX_TEST_HARNESS is defined.
  *
  * The zone is resolved with a size of 0, which is nginx's documented "attach to
  * an already-declared zone" form (the same call ngx_http_limit_req uses to bind
@@ -2074,9 +2080,22 @@ ngx_http_shield_probe_handler(ngx_http_request_t *r)
 
     /* Applied before rendering, so the response reports the state the caller
      * just asked for rather than the state from before the request. */
-    (void) ngx_shield_probe_arm(slcf->probe_zone, &r->args);
+    (void) ngx_test_probe_arm(slcf->probe_zone, &r->args);
 
-    size = NGX_SHIELD_PROBE_JSON_MAX;
+    /*
+     * NGX_TEST_PROBE_JSON_MAX bounds the harness's GENERIC document only; the
+     * zone name and whatever the module hook appends are the caller's to add.
+     * Shield's hook renders four fixed keys and four integers
+     * (",\"nodes\":N,\"banned\":N,\"fault\":{\"slab_nth\":N,\"slab_seen\":N}"),
+     * which is ~60 bytes of literal plus the digits -- 128 covers it with room
+     * for every value widening to a full 64-bit decimal at once.
+     *
+     * Undersizing here does not overflow (rendering is ngx_slprintf-based and
+     * truncates at `last`), but a truncated document fails to parse in the
+     * prober, which surfaces as "broken probe" on every case rather than as a
+     * wrong answer on one.
+     */
+    size = NGX_TEST_PROBE_JSON_MAX + NGX_HTTP_SHIELD_PROBE_ZONE_MAX;
     if (slcf->probe_zone != NULL) {
         size += slcf->probe_zone->shm.name.len;
     }
@@ -2086,7 +2105,7 @@ ngx_http_shield_probe_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    last = ngx_shield_probe_json(buf, buf + size, slcf->probe_zone);
+    last = ngx_test_probe_json(buf, buf + size, slcf->probe_zone);
 
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = last - buf;
@@ -2249,6 +2268,14 @@ ngx_http_shield_init(ngx_conf_t *cf)
     }
 
     *h = ngx_http_shield_handler;
+
+#ifdef NGX_TEST_HARNESS
+    /* Hand the harness probe shield's zone semantics. Done here rather than in
+     * init_process so it is in place before any worker can serve a probe
+     * request; the hooks are plain function pointers in the module's own image,
+     * so they survive the fork with no per-worker work. */
+    ngx_shield_probe_hooks_register();
+#endif
 
     return NGX_OK;
 }
