@@ -732,6 +732,21 @@ eval_delta(const json_value *before, const json_value *after,
         return 0;
     }
 
+    /*
+     * "fds" is -1 when the probe could not read /proc/self/fd at all. Both
+     * snapshots then carry -1, and the subtraction below cancels them into a
+     * delta of 0 -- so every `delta fds == 0` rule would PASS while measuring
+     * nothing. An assertion that cannot fail is worse than a missing one.
+     */
+    if (strcmp(pa->path, "fds") == 0
+        && (b->number == -1 || a->number == -1))
+    {
+        snprintf(why, whylen,
+                 "delta path \"fds\" is unavailable (-1) in the %s snapshot",
+                 (b->number == -1) ? "before" : "after");
+        return 0;
+    }
+
     want = unquote(pa->literal, scratch, sizeof(scratch));
     wanted = strtod(want, &stop);
 

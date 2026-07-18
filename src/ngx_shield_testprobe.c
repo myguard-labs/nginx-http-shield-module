@@ -112,6 +112,7 @@ ngx_shield_probe_fd_count(void)
 {
 #if (NGX_LINUX)
     ngx_dir_t   dir;
+    ngx_err_t   err;
     ngx_int_t   n;
     ngx_str_t   name = ngx_string("/proc/self/fd");
 
@@ -120,12 +121,17 @@ ngx_shield_probe_fd_count(void)
     }
 
     n = 0;
+    err = 0;
 
     for ( ;; ) {
         ngx_set_errno(0);
 
         if (ngx_read_dir(&dir) == NGX_ERROR) {
-            break;                        /* end of directory, or unreadable */
+            /* End of directory leaves errno at the 0 set above; anything else
+             * is a real read failure, and a partial count would understate the
+             * fd total -- i.e. hide the very leak this exists to catch. */
+            err = ngx_errno;
+            break;
         }
 
         if (ngx_de_name(&dir)[0] == '.') {
@@ -136,6 +142,10 @@ ngx_shield_probe_fd_count(void)
     }
 
     (void) ngx_close_dir(&dir);
+
+    if (err != 0) {
+        return -1;
+    }
 
     /* The directory handle was itself one of the entries it just listed, and
      * it is closed again by the time the caller sees this number. */
