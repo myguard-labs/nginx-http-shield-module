@@ -179,9 +179,32 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
          * stamped under the old, longer policy -- they would read as live
          * past the point the running config says they lapse, and hold slab
          * space the current policy considers reclaimable. Deriving means the
-         * live config always governs, and a reload takes effect at once. */
+         * live config always governs, and a reload takes effect at once.
+         *
+         * The two clocks are EXCLUSIVE, not OR-ed. An armed node is governed by
+         * banned_until alone; only an unarmed (counting) node is governed by its
+         * window. Deriving the deadline made window_start load-bearing for
+         * eviction, but ban_record_locked still stamps `window_start = now` when
+         * it arms -- there purely to reset the counter cleanly. OR-ing the two
+         * therefore let that counter-hygiene write silently re-arm a SECOND
+         * liveness clock, and the node's real lifetime became
+         * max(bantime, window) instead of bantime: with count=1 window=1000
+         * bantime=100 the ban lapsed at t=100 but the node stayed unevictable
+         * until t=1100, 11x bantime, on any config where window > bantime
+         * (nothing validates against one). Checking banned_until FIRST and
+         * falling through to the window only when the node is unarmed keeps each
+         * node under exactly one deadline (S32-1).
+         *
+         * `now < bn->window_start` mirrors the same guard in record(): a
+         * backward wall-clock step would otherwise leave a window_start in the
+         * future, whose derived deadline reads live for the whole interval and
+         * freezes reclaim until real time catches up. Treat it as stale, which
+         * is what record() does with the counting window (S32-3). */
         if (bn->banned_until > now
-            || ngx_http_shield_time_add_clamp(bn->window_start, window) > now)
+            || (bn->banned_until == 0
+                && now >= bn->window_start
+                && ngx_http_shield_time_add_clamp(bn->window_start, window)
+                       > now))
         {
             /* Live: keep it, but move it off the tail so the NEXT call starts
              * on a node this one has not already rejected. `prev` was captured
@@ -275,6 +298,19 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
     {
         bn->window_start = now;
         bn->hits = 0;
+
+        /* Retire a LAPSED ban when the window rolls. banned_until is what marks
+         * a node "armed" for eviction purposes (see ban_expire), so a stale
+         * past value would keep the node off the window arm forever: an address
+         * that was banned once and came back later would be counting under a
+         * window that ban_expire no longer honours, and could be evicted
+         * mid-count -- the eviction-bypass shape from S27-1, reachable a second
+         * way. A ban that is still live is left alone; ban_expire keeps the node
+         * on banned_until, and the block above does not run for it anyway while
+         * the attacker keeps hitting. */
+        if (bn->banned_until <= now) {
+            bn->banned_until = 0;
+        }
     }
 
     bn->hits++;
