@@ -27,6 +27,7 @@
 
 #include "ngx_http_shield_patterns.h"
 #include "ngx_http_shield_ban.h"
+#include "ngx_shield_testprobe.h"
 
 
 #define NGX_HTTP_SHIELD_OFF     0
@@ -65,6 +66,10 @@ typedef struct {
     ngx_uint_t   ban_count;   /* hits within ban_window that trigger a ban    */
     time_t       ban_window;  /* fixed hit-count window, seconds              */
     time_t       ban_time;    /* how long a triggered ban lasts, seconds      */
+
+#ifdef NGX_TEST_HARNESS
+    ngx_shm_zone_t *probe_zone; /* zone the shield_probe endpoint reports on  */
+#endif
 } ngx_http_shield_loc_conf_t;
 
 
@@ -132,6 +137,11 @@ static ngx_int_t ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone,
     void *data);
 static char *ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+#ifdef NGX_TEST_HARNESS
+static char *ngx_http_shield_probe(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static ngx_int_t ngx_http_shield_probe_handler(ngx_http_request_t *r);
+#endif
 static char *ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
@@ -193,6 +203,20 @@ static ngx_command_t  ngx_http_shield_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
+
+#ifdef NGX_TEST_HARNESS
+
+    /* CI-only introspection endpoint; absent from any build that does not
+     * define NGX_TEST_HARNESS, so a config using it fails to load there
+     * rather than silently exposing zone internals. */
+    { ngx_string("shield_probe"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_http_shield_probe,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+#endif
 
       ngx_null_command
 };
@@ -1973,6 +1997,113 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     return NGX_CONF_OK;
 }
+
+
+#ifdef NGX_TEST_HARNESS
+
+/* ---- shield_probe: CI-only introspection endpoint ---------------------- */
+
+/*
+ * shield_probe <zone>;
+ *
+ * Installs a content handler in this location that renders worker + shm state
+ * as JSON. Compiled out entirely unless NGX_TEST_HARNESS is defined; see
+ * src/ngx_shield_testprobe.h.
+ *
+ * The zone is resolved with a size of 0, which is nginx's documented "attach to
+ * an already-declared zone" form (the same call ngx_http_limit_req uses to bind
+ * a location to a zone declared elsewhere). Declaring the zone remains
+ * shield_ban_zone's job -- a probe must observe state, never create it.
+ */
+static char *
+ngx_http_shield_probe(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_shield_loc_conf_t  *slcf = conf;
+
+    ngx_str_t                 *value;
+    ngx_http_core_loc_conf_t  *clcf;
+
+    value = cf->args->elts;
+
+    if (slcf->probe_zone != NULL) {
+        return "is duplicate";
+    }
+
+    slcf->probe_zone = ngx_shared_memory_add(cf, &value[1], 0,
+                                             &ngx_http_shield_module);
+    if (slcf->probe_zone == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+    clcf->handler = ngx_http_shield_probe_handler;
+
+    return NGX_CONF_OK;
+}
+
+
+static ngx_int_t
+ngx_http_shield_probe_handler(ngx_http_request_t *r)
+{
+    size_t                       size;
+    u_char                      *buf, *last;
+    ngx_int_t                    rc;
+    ngx_buf_t                   *b;
+    ngx_chain_t                  out;
+    ngx_http_shield_loc_conf_t  *slcf;
+
+    if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
+        return NGX_HTTP_NOT_ALLOWED;
+    }
+
+    rc = ngx_http_discard_request_body(r);
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
+
+    size = NGX_SHIELD_PROBE_JSON_MAX;
+    if (slcf->probe_zone != NULL) {
+        size += slcf->probe_zone->shm.name.len;
+    }
+
+    buf = ngx_pnalloc(r->pool, size);
+    if (buf == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    last = ngx_shield_probe_json(buf, buf + size, slcf->probe_zone);
+
+    r->headers_out.status = NGX_HTTP_OK;
+    r->headers_out.content_length_n = last - buf;
+    ngx_str_set(&r->headers_out.content_type, "application/json");
+    r->headers_out.content_type_len = r->headers_out.content_type.len;
+    r->headers_out.content_type_lowcase = NULL;
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+        return rc;
+    }
+
+    b = ngx_calloc_buf(r->pool);
+    if (b == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    b->pos = buf;
+    b->last = last;
+    b->memory = 1;
+    b->last_buf = (r == r->main) ? 1 : 0;
+    b->last_in_chain = 1;
+
+    out.buf = b;
+    out.next = NULL;
+
+    return ngx_http_output_filter(r, &out);
+}
+
+#endif /* NGX_TEST_HARNESS */
 
 
 /*
