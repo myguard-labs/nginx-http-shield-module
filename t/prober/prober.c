@@ -35,6 +35,11 @@
  * `send` is repeatable and concatenates verbatim, so a stanza can spell out a
  * malformed request byte for byte. Escapes: \r \n \t \\ \" \0 \xNN.
  *
+ * `repeat 200 AAAA` appends its text N times. It exists because the cases that
+ * matter most -- the ones that overrun a server limit -- need kilobytes of
+ * filler, and pasting that into the rule file makes the case unreadable and its
+ * actual size impossible to check by eye.
+ *
  * Every request must ask for Connection: close; see http.h for why.
  *
  * Output is TAP, so `prove` consumes it exactly like the Perl suite.
@@ -382,6 +387,28 @@ load_rules(const char *file, test_case *cases, size_t max)
         } else if (strcmp(directive, "expect") == 0) {
             parse_expect(&cases[n - 1], trim(arg), file, lineno);
 
+        } else if (strcmp(directive, "repeat") == 0) {
+            char   *count_s = strtok(arg, " \t");
+            char   *text = strtok(NULL, "");
+            long    count;
+            long    k;
+
+            if (count_s == NULL || text == NULL) {
+                die("%s:%d: repeat needs <count> <text>", file, lineno);
+            }
+
+            count = strtol(count_s, NULL, 10);
+
+            if (count < 1 || count > 100000) {
+                die("%s:%d: repeat count %ld out of range (1..100000)",
+                    file, lineno, count);
+            }
+
+            for (k = 0; k < count; k++) {
+                append_escaped(&cases[n - 1].request, &cases[n - 1].request_len,
+                               &cap, text);
+            }
+
         } else if (strcmp(directive, "from") == 0) {
             cases[n - 1].source = xstrdup(trim(arg));
 
@@ -561,6 +588,15 @@ arm_fault(const char *query, const char *source, char *errbuf, size_t errlen)
                  "Connection: close\r\n\r\n",
                  opt_probe_uri, query);
 
+    /* snprintf reports what it WOULD have written, so on truncation n exceeds
+     * the buffer; handing that length to http_request() would read off the end
+     * of the stack. A long fault query is a rule-file mistake, so say so. */
+    if (n < 0 || (size_t) n >= sizeof(req)) {
+        snprintf(errbuf, errlen, "fault query \"%.64s\" does not fit in a "
+                 "%zu-byte request buffer", query, sizeof(req));
+        return -1;
+    }
+
     if (http_request(opt_host, opt_port, (const unsigned char *) req,
                      (size_t) n, opt_timeout_ms, source, &resp,
                      errbuf, errlen) != 0)
@@ -592,6 +628,12 @@ fetch_probe(char *errbuf, size_t errlen)
     n = snprintf(req, sizeof(req),
                  "GET %s HTTP/1.1\r\nHost: prober\r\nConnection: close\r\n\r\n",
                  opt_probe_uri);
+
+    if (n < 0 || (size_t) n >= sizeof(req)) {
+        snprintf(errbuf, errlen, "probe URI \"%.64s\" does not fit in a "
+                 "%zu-byte request buffer", opt_probe_uri, sizeof(req));
+        return NULL;
+    }
 
     if (http_request(opt_host, opt_port, (const unsigned char *) req,
                      (size_t) n, opt_timeout_ms, NULL, &resp,

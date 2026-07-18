@@ -22,7 +22,7 @@ send    POST /body HTTP/1.1\r\n
 send    Host: prober\r\n
 send    Content-Type: application/octet-stream\r\n
 send    Content-Type: text/plain\r\n
-send    Content-Length: 34\r\n
+send    Content-Length: 35\r\n
 send    Connection: close\r\n\r\n
 send    id=1+union+select+1,2,3--&x=1234567
 expect  status=403
@@ -47,14 +47,29 @@ send    GET /guarded?id=1+union+select+1,2,3-- HTTP/1.1\n
 send    Host: prober\nConnection: close\n\n
 expect  status=403
 
-name    oversized header value does not take the worker down
+# A large-but-legal header stays under large_client_header_buffers (4 8k by
+# default), so it must be parsed normally and reach the upstream -- 502 from the
+# dead proxy target. This is the control for the case below it.
+name    large but legal header value is parsed normally
 send    GET /guarded HTTP/1.1\r\n
 send    Host: prober\r\n
-send    X-Filler: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-send    AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-send    AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+send    X-Filler:
+repeat  40 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 send    \r\nConnection: close\r\n\r\n
 expect  status=502
+
+# 128 * 64 = 8192 bytes of value, which is the whole default buffer before the
+# request line and the other headers are even counted, so nginx and angie both
+# reject the request at the parser with 400. Asserting 502 here (as this case
+# did while its filler was only 196 bytes long) would mean the case never
+# reached the limit it was named after.
+name    oversized header value is rejected by the parser
+send    GET /guarded HTTP/1.1\r\n
+send    Host: prober\r\n
+send    X-Filler:
+repeat  128 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+send    \r\nConnection: close\r\n\r\n
+expect  status=400
 
 # The worker must still be alive and the zone still coherent after everything
 # above. If any earlier case killed it, this one fails on connect.

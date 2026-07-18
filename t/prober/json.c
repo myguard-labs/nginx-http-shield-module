@@ -130,6 +130,14 @@ parse_string_raw(jparse *s)
                 free(out);
                 return NULL;
             }
+
+        } else if ((unsigned char) c < 0x20) {
+            /* RFC 8259 requires C0 controls to be escaped. Accepting a raw one
+             * would let a probe document with a stray newline or NUL inside a
+             * string still parse, which is the shape a rendering bug takes. */
+            s->err = "raw control character in string";
+            free(out);
+            return NULL;
         }
 
         if (len + 1 >= cap) {
@@ -315,6 +323,69 @@ parse_array(jparse *s)
 }
 
 
+/*
+ * Validate a collected token against the RFC 8259 number grammar:
+ *
+ *     -? ( 0 | [1-9][0-9]* ) ( '.' [0-9]+ )? ( [eE] [+-]? [0-9]+ )?
+ *
+ * strtod() alone is far more permissive -- it takes "+1", ".5", "0x10", "inf",
+ * and leading-zero forms JSON forbids. The probe renderer emits plain integers,
+ * so anything else in the document means the renderer misformatted a field, and
+ * a lenient parser would turn that into a silently passing assertion.
+ */
+static int
+number_token_is_json(const char *t)
+{
+    const char *p = t;
+
+    if (*p == '-') {
+        p++;
+    }
+
+    if (*p == '0') {
+        p++;                                    /* no leading zeros allowed */
+
+    } else if (*p >= '1' && *p <= '9') {
+        while (*p >= '0' && *p <= '9') {
+            p++;
+        }
+
+    } else {
+        return 0;                               /* "+1", ".5", "" */
+    }
+
+    if (*p == '.') {
+        p++;
+
+        if (*p < '0' || *p > '9') {
+            return 0;                           /* "1." */
+        }
+
+        while (*p >= '0' && *p <= '9') {
+            p++;
+        }
+    }
+
+    if (*p == 'e' || *p == 'E') {
+        p++;
+
+        if (*p == '+' || *p == '-') {
+            p++;
+        }
+
+        if (*p < '0' || *p > '9') {
+            return 0;                           /* "1e", "1e+" */
+        }
+
+        while (*p >= '0' && *p <= '9') {
+            p++;
+        }
+    }
+
+    return *p == '\0';
+}
+
+
 static json_value *
 parse_number(jparse *s)
 {
@@ -323,14 +394,26 @@ parse_number(jparse *s)
     size_t      n = 0;
     json_value *v;
 
-    while (s->p < s->end && n + 1 < sizeof(buf)
+    while (s->p < s->end
            && (strchr("-+.eE", *s->p) != NULL
                || (*s->p >= '0' && *s->p <= '9')))
     {
+        /* Truncating the token and parsing the prefix would turn an absurd
+         * number into a plausible one, so overflow is an error, not a clamp. */
+        if (n + 1 >= sizeof(buf)) {
+            s->err = "number too long";
+            return NULL;
+        }
+
         buf[n++] = *s->p++;
     }
 
     buf[n] = '\0';
+
+    if (!number_token_is_json(buf)) {
+        s->err = "malformed number";
+        return NULL;
+    }
 
     v = value_new(JSON_NUMBER);
     if (v == NULL) {

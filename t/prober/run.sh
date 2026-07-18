@@ -50,6 +50,21 @@ else
     exit 1
 fi
 
+# Check the oracle before trusting anything it says. Every rule assertion is
+# evaluated against the JSON reader, so if that is broken the rules can all pass
+# while proving nothing. Emitted as a bail-out rather than as extra TAP lines,
+# so the plan the prober prints stays the plan the run reports.
+if [ -x ./json_test ]; then
+    if ! JSON_TEST_OUT="$(./json_test 2>&1)"; then
+        echo "Bail out! prober JSON self-test failed:"
+        printf '%s\n' "$JSON_TEST_OUT" | sed 's/^/# /'
+        exit 1
+    fi
+else
+    echo "Bail out! no json_test binary -- run t/prober/build.sh first"
+    exit 1
+fi
+
 PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/prober.XXXXXX")"
 trap 'rm -rf "$PREFIX"' EXIT
 
@@ -78,6 +93,14 @@ done
 
 STATUS=0
 ./prober -H 127.0.0.1 -p "$PORT" rules/*.rule || STATUS=$?
+
+# Stop the server synchronously rather than leaving it to the EXIT trap. kill(1)
+# only delivers TERM; without waiting for the process to actually go, the script
+# can return while workers are still writing out their .gcda files, and the
+# coverage job downstream then reads a partial profile. Waiting also means the
+# error-log grep below reads a file nobody is still appending to.
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
 
 # Surface worker crashes: a segfault shows up as [alert] in the error log even
 # when every individual assertion passed.

@@ -37,8 +37,17 @@ ngx_shield_probe_arm(ngx_shm_zone_t *zone, ngx_str_t *args)
 
     end = args->data + args->len;
 
+    /*
+     * Match the key as a whole query argument, not as a substring: it must
+     * start the query or follow an '&', or "not_fault_slab=1" would arm the
+     * injector through a parameter nobody wrote.
+     */
     for (p = args->data; (size_t) (end - p) >= keylen; p++) {
-        if (ngx_strncmp(p, key, keylen) == 0) {
+        if (ngx_strncmp(p, key, keylen) != 0) {
+            continue;
+        }
+
+        if (p == args->data || p[-1] == '&') {
             break;
         }
     }
@@ -64,6 +73,13 @@ ngx_shield_probe_arm(ngx_shm_zone_t *zone, ngx_str_t *args)
     while (v < end && *v >= '0' && *v <= '9') {
         value = value * 10 + (*v - '0');
         v++;
+    }
+
+    /* The value has to end where the argument ends. "fault_slab=1junk" is
+     * malformed, and the contract for malformed input is NGX_DECLINED rather
+     * than a best guess at what the caller meant. */
+    if (v < end && *v != '&') {
+        return NGX_DECLINED;
     }
 
     if (negative) {

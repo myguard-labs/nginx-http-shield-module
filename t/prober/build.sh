@@ -19,4 +19,9 @@ fi
 # shellcheck disable=SC2086
 $CC $CFLAGS -o prober prober.c json.c http.c
 
-echo "built: $PWD/prober"
+# The JSON reader is the oracle every rule assertion is evaluated against, so it
+# gets its own TAP self-test rather than being trusted because the rules pass.
+# shellcheck disable=SC2086
+$CC $CFLAGS -o json_test json_test.c json.c
+
+echo "built: $PWD/prober $PWD/json_test"

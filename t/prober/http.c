@@ -44,13 +44,21 @@ http_response_free(http_response *resp)
 }
 
 
+/*
+ * send(MSG_NOSIGNAL) rather than write(): several rule files deliberately
+ * provoke the server into closing mid-request (malformed framing, oversized
+ * headers), and a plain write() to a closed peer raises SIGPIPE, whose default
+ * action would kill the whole prober. A harness that dies on the case it was
+ * written to exercise reports a crash as a missing test, so the failure has to
+ * arrive as EPIPE on this one request instead.
+ */
 static int
 write_all(int fd, const unsigned char *buf, size_t len)
 {
     size_t off = 0;
 
     while (off < len) {
-        ssize_t n = write(fd, buf + off, len - off);
+        ssize_t n = send(fd, buf + off, len - off, MSG_NOSIGNAL);
 
         if (n < 0) {
             if (errno == EINTR) {

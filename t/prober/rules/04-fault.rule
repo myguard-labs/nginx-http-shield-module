@@ -17,6 +17,25 @@ send    Host: prober\r\nConnection: close\r\n\r\n
 expect  status=200
 probe   zone.fault.slab_nth == -1
 
+# The arming key is matched as a whole query argument. A parameter that merely
+# ENDS in the key name must not reach the injector: the fault sites are the one
+# part of the harness that can change how the module behaves, so the way in has
+# to be exact rather than approximate.
+name    a lookalike query parameter does not arm the injector
+send    GET /__probe?not_fault_slab=3 HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.fault.slab_nth == -1
+
+# Likewise a value with trailing junk is malformed, and malformed input is
+# declined rather than guessed at -- arming "3" from "3junk" would mean the
+# harness silently disagreed with the rule file about what was requested.
+name    a trailing-junk fault value does not arm the injector
+send    GET /__probe?fault_slab=3junk HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.fault.slab_nth == -1
+
 # A NEW address needs a node allocated. With the very next slab allocation
 # forced to fail, ban_record_locked returns NGX_ERROR and the module logs
 # "zone is full" and drops the hit -- without failing the request, because the

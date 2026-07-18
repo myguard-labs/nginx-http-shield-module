@@ -47,3 +47,4 @@ cov-mod.info
 
 # prober binary (t/prober/build.sh output)
 t/prober/prober
+t/prober/json_test
