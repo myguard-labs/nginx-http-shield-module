@@ -52,7 +52,7 @@
  * zone name length on top. Rendering is ngx_slprintf-based and truncates at
  * `last` rather than overflowing, so this bound is a quality-of-output
  * concern, not a safety boundary. */
-#define NGX_SHIELD_PROBE_JSON_MAX  512
+#define NGX_SHIELD_PROBE_JSON_MAX  768
 
 
 /*
@@ -63,7 +63,14 @@
  * errors, so the prober can distinguish "no zone configured" from "zone empty".
  *
  * Walks the ban LRU queue under the slab mutex. That is O(nodes) and is why
- * this is a test-only endpoint.
+ * this is a test-only endpoint. P4 added two more test-only costs on the same
+ * grounds: a /proc/self/fd scan ("fds") and a walk of the cycle pool's block
+ * chain ("pool.cycle_*"). Both exist so the prober can diff them either side of
+ * a request -- fd and cycle-pool leaks are invisible to ASan and valgrind,
+ * because the memory stays reachable and the fds are closed at worker exit.
+ *
+ * "fds" is -1 where /proc is unavailable (non-Linux, or a sandbox without it);
+ * a delta rule against -1 fails rather than reading as "no leak".
  */
 u_char *ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone);
 

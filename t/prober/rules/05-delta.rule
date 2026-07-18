@@ -1,0 +1,91 @@
+# Delta assertions -- P4 of the harness.
+#
+# Every `delta` line snapshots /__probe immediately before the case's request
+# and again after it, and asserts on the CHANGE. That is the leak detection
+# neither ASan nor valgrind can give us here:
+#
+#   - a leaked fd is not a memory error at all, so no sanitizer sees it;
+#   - a request-pool allocation is freed wholesale at request end, so a
+#     per-request leak inside it is invisible from outside -- which is why
+#     pool.cycle_used watches the CYCLE pool instead, where nothing in normal
+#     request handling may allocate, because it lives as long as the worker;
+#   - slab and node accounting live in shared memory that outlives every
+#     request, so an over- or under-count only shows as a drift over time.
+#
+# The prober re-reads the after-snapshot a few times before believing a
+# failure, because the worker closes the case's connection asynchronously; a
+# real leak survives the re-reads, a close in flight does not.
+
+# Baseline: a request the shield passes through to the (dead) upstream must
+# leave nothing behind at all. 502 is the pass verdict -- see the note in
+# conf/prober.conf about the dead-upstream oracle.
+name    a passed-through request leaks no fd, no cycle-pool memory, no node
+from    127.0.0.20
+send    GET /unguarded HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=502
+delta   fds == 0
+delta   pool.cycle_used == 0
+delta   pool.cycle_large == 0
+delta   connections.free == 0
+delta   zone.nodes == 0
+
+# A BLOCKED request runs the whole detection path -- rule matching, logging,
+# the ban lookup -- which is where a leak would actually live. The first hit
+# from an unseen peer allocates exactly one ban node, and one node's worth of
+# slab, and nothing else.
+name    a blocked request allocates exactly one ban node and leaks nothing else
+from    127.0.0.21
+send    GET /banned2?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+delta   zone.nodes == 1
+delta   fds == 0
+delta   pool.cycle_used == 0
+
+# The same peer again reuses its node: the count must not move. A rule that
+# only ever asserted "+1" would keep passing if the module allocated a fresh
+# node per request and never found the existing one -- the bug that fills the
+# zone with duplicates of one address.
+name    a repeat offender reuses its node instead of allocating another
+from    127.0.0.21
+send    GET /banned2?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+delta   zone.nodes == 0
+delta   zone.slab_pages_free == 0
+delta   fds == 0
+delta   pool.cycle_used == 0
+
+# Malformed input is the classic place for an early return to skip a cleanup
+# path, so the same accounting is asserted on a request the parser rejects
+# outright rather than one the module gets to finish handling.
+name    a request rejected by the parser leaks nothing
+from    127.0.0.22
+send    GET /guarded?id=1\x00union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=400
+delta   fds == 0
+delta   pool.cycle_used == 0
+delta   zone.nodes == 0
+
+# The failed-allocation path: the module must not keep whatever it managed to
+# grab before the slab said no. Asserting the node count stays put is stronger
+# than the equivalent `probe` line, because it holds regardless of how many
+# nodes earlier rule files happened to leave in the zone.
+name    a slab failure leaves the zone accounting exactly where it was
+from    127.0.0.23
+fault   fault_slab=1
+send    GET /banned2?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+delta   zone.nodes == 0
+delta   zone.slab_pages_free == 0
+delta   fds == 0
+probe   zone.fault.slab_seen >= 1
+
+name    disarm the injector again
+send    GET /__probe?fault_slab=-1 HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.fault.slab_nth == -1

@@ -55,6 +55,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define MAX_ASSERTS  32
 #define MAX_CASES    256
@@ -88,6 +89,8 @@ typedef struct {
     size_t          n_expects;
     probe_assert    probes[MAX_ASSERTS];
     size_t          n_probes;
+    probe_assert    deltas[MAX_ASSERTS];   /* asserted on after minus before */
+    size_t          n_deltas;
 } test_case;
 
 
@@ -238,6 +241,12 @@ case_free(test_case *tc)
         free(tc->probes[i].literal);
     }
 
+    for (i = 0; i < tc->n_deltas; i++) {
+        free(tc->deltas[i].path);
+        free(tc->deltas[i].op);
+        free(tc->deltas[i].literal);
+    }
+
     memset(tc, 0, sizeof(*tc));
 }
 
@@ -276,14 +285,21 @@ parse_expect(test_case *tc, char *arg, const char *file, int lineno)
 }
 
 
+/*
+ * Both `probe` and `delta` are <path> <op> <value>; they differ only in what
+ * the left-hand side is measured against, so they share the parser and the
+ * directive name is carried through purely for the error message.
+ */
 static void
-parse_probe(test_case *tc, char *arg, const char *file, int lineno)
+parse_assert(probe_assert *list, size_t *count, const char *directive,
+             char *arg, const char *file, int lineno)
 {
     char         *path, *op, *lit;
     probe_assert *pa;
 
-    if (tc->n_probes >= MAX_ASSERTS) {
-        die("%s:%d: too many probe lines (max %d)", file, lineno, MAX_ASSERTS);
+    if (*count >= MAX_ASSERTS) {
+        die("%s:%d: too many %s lines (max %d)", file, lineno, directive,
+            MAX_ASSERTS);
     }
 
     path = strtok(arg, " \t");
@@ -291,15 +307,15 @@ parse_probe(test_case *tc, char *arg, const char *file, int lineno)
     lit = strtok(NULL, "");
 
     if (path == NULL || op == NULL || lit == NULL) {
-        die("%s:%d: probe needs <path> <op> <value>", file, lineno);
+        die("%s:%d: %s needs <path> <op> <value>", file, lineno, directive);
     }
 
-    pa = &tc->probes[tc->n_probes];
+    pa = &list[*count];
     pa->path = xstrdup(path);
     pa->op = xstrdup(op);
     pa->literal = xstrdup(trim(lit));
 
-    tc->n_probes++;
+    (*count)++;
 }
 
 
@@ -426,7 +442,12 @@ load_rules(const char *file, test_case *cases, size_t max)
             cases[n - 1].fault = xstrdup(trim(arg));
 
         } else if (strcmp(directive, "probe") == 0) {
-            parse_probe(&cases[n - 1], trim(arg), file, lineno);
+            parse_assert(cases[n - 1].probes, &cases[n - 1].n_probes,
+                         directive, trim(arg), file, lineno);
+
+        } else if (strcmp(directive, "delta") == 0) {
+            parse_assert(cases[n - 1].deltas, &cases[n - 1].n_deltas,
+                         directive, trim(arg), file, lineno);
 
         } else {
             die("%s:%d: unknown directive \"%s\"", file, lineno, directive);
@@ -679,6 +700,75 @@ fetch_probe(char *errbuf, size_t errlen)
 }
 
 
+/*
+ * Evaluate one `delta` assertion: (after - before) <op> <value>.
+ *
+ * Both sides must be numbers in both documents. A path that is a number before
+ * and absent after (or vice versa) is a probe-shape change, not a delta of
+ * zero, so it fails rather than defaulting.
+ */
+static int
+eval_delta(const json_value *before, const json_value *after,
+           const probe_assert *pa, char *why, size_t whylen)
+{
+    char              scratch[512];
+    char             *stop;
+    double            wanted, change;
+    const char       *want;
+    const json_value *b, *a;
+
+    b = json_get(before, pa->path);
+    a = json_get(after, pa->path);
+
+    if (b == NULL || a == NULL) {
+        snprintf(why, whylen, "delta path \"%.128s\" is %s in the %s snapshot",
+                 pa->path, "not present", (b == NULL) ? "before" : "after");
+        return 0;
+    }
+
+    if (b->type != JSON_NUMBER || a->type != JSON_NUMBER) {
+        snprintf(why, whylen, "delta path \"%.128s\" is %s/%s, not a number",
+                 pa->path, json_type_name(b->type), json_type_name(a->type));
+        return 0;
+    }
+
+    want = unquote(pa->literal, scratch, sizeof(scratch));
+    wanted = strtod(want, &stop);
+
+    if (stop == want || *stop != '\0') {
+        snprintf(why, whylen, "delta %.128s: \"%.128s\" is not a number",
+                 pa->path, want);
+        return 0;
+    }
+
+    change = a->number - b->number;
+
+    if (!compare_number(change, pa->op, wanted)) {
+        snprintf(why, whylen,
+                 "delta %.128s: %g -> %g is %+g, want %.16s %.128s",
+                 pa->path, b->number, a->number, change, pa->op, want);
+        return 0;
+    }
+
+    return 1;
+}
+
+
+/*
+ * How many times to re-read the probe before believing a delta failure, and
+ * how long to wait between reads.
+ *
+ * The worker closes the case's connection asynchronously, so an fd or
+ * connection delta can read as +1 purely because the close has not been
+ * processed yet -- a race, not a leak. Re-reading absorbs that. It cannot
+ * absorb a real leak: a leaked fd never comes back, so every retry sees the
+ * same delta and the case still fails, only later. Bounded so a genuine
+ * failure costs a fifth of a second rather than hanging the run.
+ */
+#define DELTA_SETTLE_TRIES  8
+#define DELTA_SETTLE_US     25000
+
+
 /* Returns 1 if the case passed. Diagnostics are printed as TAP comments. */
 static int
 run_case(const test_case *tc)
@@ -687,6 +777,7 @@ run_case(const test_case *tc)
     char           why[512];
     int            ok = 1;
     size_t         i;
+    json_value    *before = NULL;
     http_response  resp;
 
     if (tc->request_len == 0) {
@@ -701,11 +792,26 @@ run_case(const test_case *tc)
         return 0;
     }
 
+    /*
+     * The before-snapshot is taken AFTER arming, so a fault counter reset does
+     * not show up as a delta of its own, and immediately before the send, so
+     * nothing but the case's own request sits between the two reads.
+     */
+    if (tc->n_deltas > 0) {
+        before = fetch_probe(errbuf, sizeof(errbuf));
+
+        if (before == NULL) {
+            printf("# %s\n", errbuf);
+            return 0;
+        }
+    }
+
     if (http_request(opt_host, opt_port, tc->request, tc->request_len,
                      opt_timeout_ms, tc->source, &resp,
                      errbuf, sizeof(errbuf)) != 0)
     {
         printf("# request failed: %s\n", errbuf);
+        json_free(before);
         return 0;
     }
 
@@ -752,6 +858,7 @@ run_case(const test_case *tc)
 
         if (doc == NULL) {
             printf("# %s\n", errbuf);
+            json_free(before);
             return 0;
         }
 
@@ -763,6 +870,57 @@ run_case(const test_case *tc)
         }
 
         json_free(doc);
+    }
+
+    if (tc->n_deltas > 0) {
+        int try;
+        int settled = 0;
+
+        for (try = 0; try < DELTA_SETTLE_TRIES && !settled; try++) {
+            json_value *after;
+
+            if (try > 0) {
+                usleep(DELTA_SETTLE_US);
+            }
+
+            after = fetch_probe(errbuf, sizeof(errbuf));
+
+            if (after == NULL) {
+                printf("# %s\n", errbuf);
+                json_free(before);
+                return 0;
+            }
+
+            settled = 1;
+            why[0] = '\0';
+
+            for (i = 0; i < tc->n_deltas; i++) {
+                char one[512];
+
+                if (!eval_delta(before, after, &tc->deltas[i], one,
+                                sizeof(one)))
+                {
+                    settled = 0;
+
+                    /* Keep only the first failure of the last attempt: the
+                     * retries exist to let a close land, so the interesting
+                     * diagnostic is the one that survived them. */
+                    if (why[0] == '\0') {
+                        snprintf(why, sizeof(why), "%s", one);
+                    }
+                }
+            }
+
+            json_free(after);
+        }
+
+        if (!settled) {
+            printf("# %s (unchanged over %d re-reads, so not a close race)\n",
+                   why, DELTA_SETTLE_TRIES);
+            ok = 0;
+        }
+
+        json_free(before);
     }
 
     return ok;

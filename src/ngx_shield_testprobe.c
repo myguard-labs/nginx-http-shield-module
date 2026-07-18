@@ -97,15 +97,111 @@ ngx_shield_probe_arm(ngx_shm_zone_t *zone, ngx_str_t *args)
 }
 
 
+/*
+ * Open file descriptors held by THIS worker.
+ *
+ * The delta of this across a request is the fd-leak signal: a connection,
+ * upstream socket or temp file the module forgot to close stays visible here
+ * long after the response body is on the wire, where the response itself shows
+ * nothing. Linux-only by construction (/proc/self/fd); elsewhere the field is
+ * reported as -1 so a rule asserting on it fails loudly rather than silently
+ * comparing against a fabricated zero.
+ */
+static ngx_int_t
+ngx_shield_probe_fd_count(void)
+{
+#if (NGX_LINUX)
+    ngx_dir_t   dir;
+    ngx_int_t   n;
+    ngx_str_t   name = ngx_string("/proc/self/fd");
+
+    if (ngx_open_dir(&name, &dir) == NGX_ERROR) {
+        return -1;
+    }
+
+    n = 0;
+
+    for ( ;; ) {
+        ngx_set_errno(0);
+
+        if (ngx_read_dir(&dir) == NGX_ERROR) {
+            break;                        /* end of directory, or unreadable */
+        }
+
+        if (ngx_de_name(&dir)[0] == '.') {
+            continue;                     /* "." and ".." */
+        }
+
+        n++;
+    }
+
+    (void) ngx_close_dir(&dir);
+
+    /* The directory handle was itself one of the entries it just listed, and
+     * it is closed again by the time the caller sees this number. */
+    return n > 0 ? n - 1 : n;
+#else
+    return -1;
+#endif
+}
+
+
+/*
+ * Bytes handed out from the CYCLE pool, plus its block and large-alloc counts.
+ *
+ * Request pools are freed wholesale at request end, so a per-request pool leak
+ * is invisible from outside -- which is exactly why this measures the cycle
+ * pool instead. Nothing in normal request handling may allocate there: it lives
+ * as long as the worker does, so an allocation on it per request is an
+ * unbounded leak. The delta across a request is therefore expected to be 0,
+ * and any other value is a bug even though ASan and valgrind both stay quiet
+ * (the memory is still reachable and still freed at exit).
+ */
+static void
+ngx_shield_probe_pool_stats(ngx_pool_t *pool, size_t *used, ngx_uint_t *blocks,
+    ngx_uint_t *large)
+{
+    u_char            *start;
+    ngx_pool_t        *p;
+    ngx_pool_large_t  *l;
+
+    *used = 0;
+    *blocks = 0;
+    *large = 0;
+
+    if (pool == NULL) {
+        return;
+    }
+
+    /* Only the first block carries the full ngx_pool_t header; the blocks
+     * chained after it carry ngx_pool_data_t alone. */
+    for (p = pool; p != NULL; p = p->d.next) {
+        start = (u_char *) p + ((p == pool) ? sizeof(ngx_pool_t)
+                                            : sizeof(ngx_pool_data_t));
+        (*blocks)++;
+        *used += (size_t) (p->d.last - start);
+    }
+
+    /* Large allocations hang off the head pool regardless of which block was
+     * current when ngx_palloc_large() ran. */
+    for (l = pool->large; l != NULL; l = l->next) {
+        if (l->alloc != NULL) {
+            (*large)++;
+        }
+    }
+}
+
+
 u_char *
 ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
 {
+    size_t                       pool_used;
     time_t                       now;
     u_char                      *p;
     ngx_queue_t                 *q;
-    ngx_int_t                    fault_nth;
+    ngx_int_t                    fault_nth, fds;
     ngx_uint_t                   nodes, banned, pages_free, present;
-    ngx_uint_t                   fault_seen;
+    ngx_uint_t                   fault_seen, pool_blocks, pool_large;
     ngx_http_shield_ban_node_t  *node;
     ngx_http_shield_ban_ctx_t   *ctx;
 
@@ -115,6 +211,10 @@ ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
     present = 0;
     fault_nth = -1;
     fault_seen = 0;
+
+    fds = ngx_shield_probe_fd_count();
+    ngx_shield_probe_pool_stats(ngx_cycle->pool, &pool_used, &pool_blocks,
+                                &pool_large);
 
     /*
      * Worker identity and connection accounting.
@@ -129,13 +229,20 @@ ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
                      "\"flavor_version\":\"%s\","
                      "\"pid\":%P,"
                      "\"page_size\":%uz,"
-                     "\"connections\":{\"total\":%ui,\"free\":%ui}",
+                     "\"connections\":{\"total\":%ui,\"free\":%ui},"
+                     "\"fds\":%i,"
+                     "\"pool\":{\"cycle_used\":%uz,\"cycle_blocks\":%ui,"
+                     "\"cycle_large\":%ui}",
                      (u_char *) NGX_SHIELD_PROBE_FLAVOR,
                      (u_char *) NGX_SHIELD_PROBE_FLAVOR_VER,
                      ngx_pid,
                      (size_t) ngx_pagesize,
                      (ngx_uint_t) ngx_cycle->connection_n,
-                     (ngx_uint_t) ngx_cycle->free_connection_n);
+                     (ngx_uint_t) ngx_cycle->free_connection_n,
+                     fds,
+                     pool_used,
+                     pool_blocks,
+                     pool_large);
 
     if (zone == NULL) {
         return ngx_slprintf(p, last, ",\"zone\":{\"present\":false}}");
