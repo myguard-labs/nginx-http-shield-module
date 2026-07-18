@@ -63,9 +63,24 @@ typedef struct {
 
 
 /* Eviction budgets for ngx_http_shield_ban_expire(): SCAN bounds how far the
- * LRU-tail walk looks (large enough to see past a cluster of live nodes so it
- * still reaches stale entries and reclaim makes progress); EVICT bounds how
- * many nodes a single call actually frees (the real per-request work cost). */
+ * LRU-tail walk looks in ONE call; EVICT bounds how many nodes that call frees
+ * (the real per-request work cost).
+ *
+ * SCAN alone cannot guarantee reclaim, and raising it does not fix that. The
+ * walk always restarts at the tail, so a cluster of live nodes LARGER than SCAN
+ * parked there consumes the whole budget on skips forever and the zone never
+ * reclaims, even with free-able nodes just head-ward -- new attackers then
+ * cannot be recorded and the ban fails OPEN (S30-1, the third instance of this
+ * class after S27-1 and the PR#50 shared-cap bug). Any constant bound is
+ * defeated by a cluster that outgrows it, and banned nodes cluster by
+ * construction: with the documented count=5 window=1m bantime=1h they stay live
+ * 60x longer than counting nodes.
+ *
+ * The fix is not a bigger number but a moving start point: every live node the
+ * walk skips is ROTATED to the LRU head (see ngx_http_shield_ban_expire), so the
+ * next call begins on nodes it has not examined yet. Reclaim therefore makes
+ * progress across calls regardless of cluster size, while per-call work stays
+ * bounded by SCAN. */
 #define NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN   32
 #define NGX_HTTP_SHIELD_BAN_EXPIRE_EVICT  4
 
