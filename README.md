@@ -138,14 +138,21 @@ http {
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus `httpoxy`, `range_dos` and `ctrl_char`). |
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
 | `shield_ban_zone` | http | — | Define a shared-memory zone `name:size` (e.g. `shield:10m`) for the ban list. See [Repeat-offender banning](#repeat-offender-banning). |
-| `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a sliding `window`. |
+| `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. |
 
 ### Repeat-offender banning
 
 In block mode, a single shield hit blocks that request. `shield_ban` escalates a **persistent**
-attacker to a hard ban: after `count` hits inside a sliding `window`, the client
+attacker to a hard ban: after `count` hits inside a `window`, the client
 IP is refused for `bantime` — with the configured `shield_status`, **before any
 signature scanning**, so a known-bad IP costs only a shared-memory lookup.
+
+The `window` is **fixed (tumbling), not sliding**: the first hit starts it, and
+once it elapses the counter resets wholesale rather than ageing out individual
+hits. An attacker who paces hits across a window boundary — `count - 1` at the
+end of one window and `count - 1` at the start of the next — stays under the
+trigger. Size `window` for the burst you want to catch rather than assuming a
+rolling count.
 
 ```nginx
 http {

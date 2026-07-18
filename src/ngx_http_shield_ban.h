@@ -6,7 +6,7 @@
  *
  * The shared-memory state engine for shield_ban lives here, split out of the
  * HTTP module so it depends only on <ngx_core.h> (rbtree + slab + queue + time)
- * and never on <ngx_http.h>. That lets the eviction / sliding-window / ban-arm
+ * and never on <ngx_http.h>. That lets the eviction / fixed-window / ban-arm
  * logic be exercised by a direct-call unit harness (t/ban_unit.c) with synthetic
  * addresses and a synthetic clock -- the path Test::Nginx cannot reach because
  * it drives a single loopback client with no clock control.
