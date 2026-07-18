@@ -114,6 +114,22 @@ def test_sanitize_req_absolute_form_drops_internal_host():
     assert "internal.corp" not in out
 
 
+def test_sanitize_req_authority_form_drops_internal_host():
+    # authority-form (CONNECT) has no scheme and no leading "/", so the target
+    # IS the internal host -- it must never reach AbuseIPDB.
+    out = mod.sanitize_req("CONNECT internal.corp:443 HTTP/1.1")
+    assert out == "CONNECT"
+    assert "internal.corp" not in out
+
+    out = mod.sanitize_req("CONNECT 10.0.0.5:22 HTTP/1.1")
+    assert out == "CONNECT"
+    assert "10.0.0.5" not in out
+
+
+def test_sanitize_req_asterisk_form():
+    assert mod.sanitize_req("OPTIONS * HTTP/1.1") == "OPTIONS"
+
+
 def test_sanitize_req_length_caps():
     long_seg = "/" + "a" * 5000
     out = mod.sanitize_req("GET " + long_seg + "?x=1")
