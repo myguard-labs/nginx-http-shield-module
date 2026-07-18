@@ -370,6 +370,41 @@ test_expire_backward_clock_does_not_freeze_reclaim(void)
     ctx_free_all();
 }
 
+
+/*
+ * S32-1 follow-up (CodeRabbit, PR #62): the lapse-retirement must not be gated
+ * on the window roll. When ban_time < window the ban lapses INSIDE the current
+ * window, so a returning address between banned_until and window_start + window
+ * rolls nothing -- and if the stale armed state survived, ban_expire would deny
+ * that node the window arm for the rest of the window, exactly while it is
+ * rebuilding its hit count. That is the S27-1 eviction bypass a second way.
+ */
+static void
+test_lapsed_ban_retired_before_window_rollover(void)
+{
+    u_char a[4] = { 10, 0, 0, 99 };
+
+    ctx_reset();
+
+    /* window=1000 >> ban_time=100. count=1 -> armed at once, lapses at t=200. */
+    hit(0xD999, a, 4, 100, 1, 1000, 100);
+
+    /* Return at t=300: the ban has lapsed but the window [100,1100) has NOT
+     * rolled, so this hit counts under the ORIGINAL window. */
+    hit(0xD999, a, 4, 300, 5, 1000, 100);
+
+    /* Counting under a live window -> must be protected by the window arm. */
+    ngx_http_shield_ban_expire(&g_ctx, 350, 1000);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xD999, a, 4) != NULL,
+       "counting node protected after a ban lapse, before window rollover");
+
+    /* And still stale once that window finally lapses. */
+    ngx_http_shield_ban_expire(&g_ctx, 1200, 1000);
+    OK(live_allocs == 0, "reclaimed once the original window lapses");
+
+    ctx_free_all();
+}
+
 /* A genuinely stale node (window + ban both elapsed) IS reclaimed by expire. */
 static void
 test_expire_reclaims_stale(void)
@@ -636,6 +671,7 @@ main(void)
     test_expire_armed_node_ignores_window();
     test_reban_after_lapse_keeps_window_protection();
     test_expire_backward_clock_does_not_freeze_reclaim();
+    test_lapsed_ban_retired_before_window_rollover();
     test_expire_reclaims_stale();
     test_expire_progresses_past_live_cluster();
     test_expire_progresses_past_oversized_live_cluster();

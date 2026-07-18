@@ -152,15 +152,14 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
      * changes whether a node is evictable, and a node that is genuinely in use
      * gets moved back to the head by ngx_http_shield_ban_lookup anyway.
      *
-     * Cost note: rotating turns what was a read-only skip into two shm writes
-     * (the queue unlink and the head insert) per skipped node, so a full SCAN
-     * of live nodes now dirties up to 2*SCAN queue links under the slab mutex
-     * instead of none. That is bounded and small -- SCAN is 32, the writes are
-     * pointer stores into the same cache lines the walk already touched, and it
-     * only happens on the alloc-miss path (ban_expire runs when a NEW address
-     * needs a node, not per request). Bounded extra work under the lock is the
-     * price of the progress guarantee; an unbounded walk, or no rotation at
-     * all, were both worse (see S30-1). */
+     * Cost note: rotating turns what was a read-only skip into a queue unlink
+     * plus a head insert per skipped node -- several pointer stores each,
+     * touching the neighbouring links and the queue sentinel -- so a full SCAN
+     * of live nodes now dirties shm that a plain skip left untouched. The work
+     * is bounded (SCAN is 32) and confined to the alloc-miss path: ban_expire
+     * runs when a NEW address needs a node, not per request. Bounded extra work
+     * under the lock is the price of the progress guarantee; an unbounded walk,
+     * or no rotation at all, were both worse (see S30-1). */
     scanned = 0;
     evicted = 0;
     q = ngx_queue_last(&ctx->sh->queue);
@@ -293,24 +292,29 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
      * backward (ngx_time() is wall-clock based). Treat that as a window reset
      * too, so a backward clock jump can never leave a stale window_start in the
      * future and quietly widen the hit-count leniency window. */
+    /* Retire a LAPSED ban as soon as we see one, INDEPENDENT of the window roll
+     * below. banned_until is what marks a node "armed" for eviction purposes
+     * (see ban_expire), so a stale past value keeps the node off the window arm:
+     * an address that was banned once and came back would be counting under a
+     * window that ban_expire no longer honours, and could be evicted mid-count
+     * -- the eviction-bypass shape from S27-1, reachable a second way.
+     *
+     * This must NOT be folded into the window-roll branch below. When
+     * ban_time < window the ban lapses INSIDE the current window, so a return
+     * between banned_until and window_start + window rolls nothing and would
+     * leave the stale armed state in place for the rest of the window -- exactly
+     * the interval in which the node is rebuilding its hit count and most needs
+     * the window arm. A still-live ban is left alone: ban_expire keeps that node
+     * on banned_until, which is the whole point of the S32-1 split. */
+    if (bn->banned_until != 0 && bn->banned_until <= now) {
+        bn->banned_until = 0;
+    }
+
     if (now < bn->window_start
         || now - bn->window_start >= window)
     {
         bn->window_start = now;
         bn->hits = 0;
-
-        /* Retire a LAPSED ban when the window rolls. banned_until is what marks
-         * a node "armed" for eviction purposes (see ban_expire), so a stale
-         * past value would keep the node off the window arm forever: an address
-         * that was banned once and came back later would be counting under a
-         * window that ban_expire no longer honours, and could be evicted
-         * mid-count -- the eviction-bypass shape from S27-1, reachable a second
-         * way. A ban that is still live is left alone; ban_expire keeps the node
-         * on banned_until, and the block above does not run for it anyway while
-         * the attacker keeps hitting. */
-        if (bn->banned_until <= now) {
-            bn->banned_until = 0;
-        }
     }
 
     bn->hits++;
