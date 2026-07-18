@@ -277,6 +277,99 @@ test_expire_honours_lengthened_window_after_reload(void)
     ctx_free_all();
 }
 
+/*
+ * S32-1: an ARMED node is governed by banned_until ALONE, never by the derived
+ * window. ban_record_locked stamps `window_start = now` when it arms (counter
+ * hygiene), so while the two clocks were OR-ed that write re-armed a second
+ * liveness deadline and the node's real lifetime became max(bantime, window).
+ * The repro config is the one from the audit: count=1 window=1000 bantime=100.
+ * The ban lapses at t=200; before the fix the node stayed unevictable until
+ * t=1101, 11x bantime.
+ */
+static void
+test_expire_armed_node_ignores_window(void)
+{
+    u_char a[4] = { 10, 0, 0, 40 };
+
+    ctx_reset();
+
+    /* count=1 -> this single hit arms immediately. window (1000) >> bantime. */
+    hit(0xD100, a, 4, 100, 1, 1000, 100);
+
+    /* Still banned at t=150: banned_until (200) governs, node must be kept. */
+    ngx_http_shield_ban_expire(&g_ctx, 150, 1000);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xD100, a, 4) != NULL,
+       "armed node kept while banned_until is live");
+
+    /* Ban lapsed at t=200. The derived window would say live until t=1100,
+     * but an armed node is not governed by it -> reclaim at bantime. */
+    ngx_http_shield_ban_expire(&g_ctx, 250, 1000);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xD100, a, 4) == NULL,
+       "lapsed ban reclaimed at banned_until, not at window_start+window");
+    OK(live_allocs == 0, "slab freed at bantime, not at max(bantime, window)");
+
+    ctx_free_all();
+}
+
+/*
+ * S32-1 companion: retiring a lapsed ban must not cost the node its window
+ * protection. Once an address has been banned, banned_until stays non-zero
+ * until the window rolls; if it were left stale forever the node would never
+ * again qualify for the window arm and could be evicted mid-count -- the S27-1
+ * eviction bypass, reachable a second way.
+ */
+static void
+test_reban_after_lapse_keeps_window_protection(void)
+{
+    u_char a[4] = { 10, 0, 0, 41 };
+
+    ctx_reset();
+
+    /* Banned at t=100, ban lapses at t=200. */
+    hit(0xD101, a, 4, 100, 1, 60, 100);
+
+    /* At t=300 the attacker returns: window rolls, the lapsed ban is retired
+     * and this hit counts under a fresh window [300,360). count=5 -> unarmed. */
+    hit(0xD101, a, 4, 300, 5, 60, 100);
+
+    /* Mid-window: the node is counting and must be protected by the window
+     * arm again, exactly as a never-banned node would be. */
+    ngx_http_shield_ban_expire(&g_ctx, 330, 60);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xD101, a, 4) != NULL,
+       "re-counting node after a lapsed ban is protected by its window");
+
+    /* And once THAT window lapses it is stale like any other. */
+    ngx_http_shield_ban_expire(&g_ctx, 400, 60);
+    OK(live_allocs == 0, "reclaimed once the fresh window lapses");
+
+    ctx_free_all();
+}
+
+/*
+ * S32-3: expire() mirrors record()'s backward-clock guard. A wall clock stepped
+ * backward leaves window_start in the future; deriving a deadline from it reads
+ * live for the whole interval and freezes reclaim until real time catches up.
+ */
+static void
+test_expire_backward_clock_does_not_freeze_reclaim(void)
+{
+    u_char a[4] = { 10, 0, 0, 42 };
+
+    ctx_reset();
+
+    /* Recorded at t=1000, unarmed (count=5, one hit). */
+    hit(0xD102, a, 4, 1000, 5, 60, 600);
+
+    /* Clock steps back to t=100: window_start (1000) is now in the future.
+     * Treat as stale rather than deriving a deadline of 1060 > 100. */
+    ngx_http_shield_ban_expire(&g_ctx, 100, 60);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xD102, a, 4) == NULL,
+       "future window_start treated as stale, reclaim not frozen");
+    OK(live_allocs == 0, "slab freed after backward clock step");
+
+    ctx_free_all();
+}
+
 /* A genuinely stale node (window + ban both elapsed) IS reclaimed by expire. */
 static void
 test_expire_reclaims_stale(void)
@@ -408,19 +501,32 @@ test_expire_progresses_past_live_cluster(void)
 
     ctx_reset();
 
-    /* Live cluster first -> occupies the LRU tail (long window, all live @600). */
+    /* Live cluster first -> occupies the LRU tail (long window, all live @600).
+     *
+     * Inserted at t=100, BEFORE the stale node, so the clock only moves forward
+     * across this setup. Ordering matters: creating a node runs ban_expire()
+     * with the creating call's `now`, and expire() treats a window_start in the
+     * FUTURE as stale (the S32-3 backward-clock guard). Stamping the cluster at
+     * t=500 and then inserting the stale node at t=100 would step the clock
+     * backward and let that insert reclaim cluster nodes before the assertion
+     * below ever runs. */
     for (i = 0; i < n_live; i++) {
         live[3] = (u_char) (1 + i);
-        hit((ngx_uint_t) (0xF100 + i), live, 4, 500, 5, 3600, 600);
+        /* count=1 -> armed immediately, banned_until = 100 + 36000. */
+        hit((ngx_uint_t) (0xF100 + i), live, 4, 100, 1, 60, 36000);
     }
-    /* Stale node last -> at the head. Its window_start is far enough back that
-     * the (single, derived) window used below leaves it lapsed, while the
-     * cluster above -- touched at 500 -- is still live. */
-    hit(0xF000, stale, 4, 100, 5, 10, 600);
+    /* Stale node last -> at the head, and never banned (count=5, one hit) so it
+     * is governed by its window alone. */
+    hit(0xF000, stale, 4, 400, 5, 10, 600);
 
     /* The walk starts at the tail (first live node), must skip all n_live live
      * nodes (> EVICT) and still reach the stale head node and free it.
-     * window=2000: cluster [500,2500) live @2400, stale [100,2100) lapsed. */
+     *
+     * The cluster is LRU-OLDER (touched t=100) than the stale node (t=400) yet
+     * expires much later -- that inversion is the point: "oldest touched" is not
+     * "soonest to expire", so the walk cannot stop at the first live node it
+     * meets. At t=2400 the cluster is held by its ban (until 36100) while the
+     * stale node's derived window [400,2400) has just lapsed. */
     ngx_http_shield_ban_expire(&g_ctx, 2400, 2000);
     OK(ngx_http_shield_ban_lookup(&g_ctx, 0xF000, stale, 4) == NULL,
        "eviction makes progress: stale node freed past a live tail cluster");
@@ -527,6 +633,9 @@ main(void)
     test_expire_preserves_live_window();
     test_expire_honours_shortened_window_after_reload();
     test_expire_honours_lengthened_window_after_reload();
+    test_expire_armed_node_ignores_window();
+    test_reban_after_lapse_keeps_window_protection();
+    test_expire_backward_clock_does_not_freeze_reclaim();
     test_expire_reclaims_stale();
     test_expire_progresses_past_live_cluster();
     test_expire_progresses_past_oversized_live_cluster();
