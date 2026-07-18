@@ -772,16 +772,31 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
         allowed = generic_allowed;
         header_skip = slcf->skip | ~allowed;
 
-        /* Preserve the existing named scans and their stable log labels. */
-        if (&header[i] == r->headers_in.user_agent) {
+        /* Preserve the existing named scans and their stable log labels.
+         *
+         * These match on the NAME, never on the r->headers_in.<field> pointer.
+         * That pointer addresses only the FIRST instance nginx parsed, and all
+         * three of these fields are chained (ngx_http_process_header_line
+         * appends duplicates rather than rejecting them). A pointer compare
+         * therefore misses every duplicate, which fell through to the generic
+         * mask -- for Content-Type that dropped java_rce, so Struts OGNL in a
+         * second Content-Type went entirely unscanned (S30-2). Per-field policy
+         * has to reach EVERY instance of the field. */
+        if (ngx_http_shield_header_name_is(&header[i], "User-Agent",
+                                           sizeof("User-Agent") - 1))
+        {
             source = "user-agent";
             header_skip = slcf->skip;
 
-        } else if (&header[i] == r->headers_in.referer) {
+        } else if (ngx_http_shield_header_name_is(&header[i], "Referer",
+                                                  sizeof("Referer") - 1))
+        {
             source = "referer";
             header_skip = slcf->skip;
 
-        } else if (&header[i] == r->headers_in.content_type) {
+        } else if (ngx_http_shield_header_name_is(&header[i], "Content-Type",
+                                                  sizeof("Content-Type") - 1))
+        {
             source = "content-type";
             /* Multipart boundaries are opaque random strings. Keep the
              * header-borne exploit categories (especially Struts OGNL) but do

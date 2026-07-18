@@ -350,3 +350,49 @@ Referer: http://example.com/b374k
 --- error_log
 category=webshell source=referer
 --- error_code: 403
+
+=== TEST 35: java_rce fires in a DUPLICATE Content-Type (S30-2 named-mask bypass)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Content-Type: text/plain
+Content-Type: %{(#a=1)}
+--- error_log
+category=java_rce source=content-type
+--- error_code: 403
+
+=== TEST 36: full ruleset reaches a DUPLICATE User-Agent
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+User-Agent: curl/8.0
+User-Agent: b374k
+--- error_log
+category=webshell source=user-agent
+--- error_code: 403
+
+=== TEST 37: full ruleset reaches a DUPLICATE Referer
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Referer: http://example.com/
+Referer: http://example.com/b374k
+--- error_log
+category=webshell source=referer
+--- error_code: 403
+
+=== TEST 38: duplicate Content-Type with only benign values still passes
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Content-Type: text/plain
+Content-Type: application/json
+--- error_code: 200
