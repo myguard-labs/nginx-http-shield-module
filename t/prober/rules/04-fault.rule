@@ -1,0 +1,77 @@
+# Slab fault injection -- the paths that were unreachable before P3.
+#
+# The zone-full branch in ngx_http_shield_ban_record() used to carry an
+# LCOV_EXCL saying it "needs a full zone, not driveable without malloc/slab
+# fault injection". Filling a real 1m zone honestly would take thousands of
+# distinct source addresses, which a loopback harness cannot produce. Arming
+# the allocator to fail on demand reaches the same branch in one request.
+#
+# `fault` issues a probe request that arms the counter, then the case's own
+# request trips it. Arming resets the counter, so nth is relative to the case.
+
+# Disarm first: rules share one server, and a fault left armed by an earlier
+# file would make everything after it fail in a way that looks unrelated.
+name    disarm any inherited slab fault
+send    GET /__probe?fault_slab=-1 HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.fault.slab_nth == -1
+
+# The arming key is matched as a whole query argument. A parameter that merely
+# ENDS in the key name must not reach the injector: the fault sites are the one
+# part of the harness that can change how the module behaves, so the way in has
+# to be exact rather than approximate.
+name    a lookalike query parameter does not arm the injector
+send    GET /__probe?not_fault_slab=3 HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.fault.slab_nth == -1
+
+# Likewise a value with trailing junk is malformed, and malformed input is
+# declined rather than guessed at -- arming "3" from "3junk" would mean the
+# harness silently disagreed with the rule file about what was requested.
+name    a trailing-junk fault value does not arm the injector
+send    GET /__probe?fault_slab=3junk HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.fault.slab_nth == -1
+
+# A NEW address needs a node allocated. With the very next slab allocation
+# forced to fail, ban_record_locked returns NGX_ERROR and the module logs
+# "zone is full" and drops the hit -- without failing the request, because the
+# ban is a best-effort escalation and never a correctness gate.
+#
+# The request must still be BLOCKED (403): the shield verdict is independent
+# of whether the ban bookkeeping succeeded. That is the property worth pinning.
+# `from` is load-bearing here. Ban nodes are keyed on the PEER, so a request
+# from 127.0.0.1 finds the node earlier rules already created and never
+# allocates -- the armed fault would sit untouched and the case would pass for
+# the wrong reason. A fresh source address forces the allocation.
+name    slab exhaustion drops the ban hit but still blocks the request
+from    127.0.0.9
+fault   fault_slab=1
+send    GET /banned2?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+probe   zone.fault.slab_seen >= 1
+
+# The failed allocation must not have left a partial node behind.
+name    a failed slab allocation records no node
+send    GET /__probe HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.nodes == 1
+
+name    disarm and confirm the allocator recovers
+send    GET /__probe?fault_slab=-1 HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.fault.slab_nth == -1
+
+# Same address, no fault: the node it failed to create earlier is created now.
+name    the same peer is recorded once the fault is cleared
+from    127.0.0.9
+send    GET /banned2?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+probe   zone.nodes == 2

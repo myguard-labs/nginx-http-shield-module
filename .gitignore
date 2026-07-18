@@ -44,3 +44,7 @@ cov-mod.info
 *.gcov
 .pytest_cache/
 .ruff_cache/
+
+# prober binary (t/prober/build.sh output)
+t/prober/prober
+t/prober/json_test

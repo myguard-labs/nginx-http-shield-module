@@ -1,0 +1,46 @@
+# Core block/detect behaviour, expressed against the wire rather than through
+# Test::Nginx. These duplicate coverage the Perl suite already has on nginx --
+# the point is that this file also runs on ANGIE, where t/ cannot run at all.
+#
+# The location layout these rules assume is in t/prober/conf/prober.conf.
+
+name    sqli union select in the query string is blocked
+send    GET /guarded?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+
+name    shellshock in User-Agent is blocked
+send    GET /guarded HTTP/1.1\r\n
+send    Host: prober\r\n
+send    User-Agent: () { :; }; /bin/cat /etc/passwd\r\n
+send    Connection: close\r\n\r\n
+expect  status=403
+
+name    path traversal is blocked
+send    GET /guarded?f=../../../../etc/passwd HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+
+name    cloud metadata SSRF is blocked
+send    GET /guarded?url=http://169.254.169.254/latest/meta-data/ HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+
+# A benign request must reach the upstream. The upstream is a dead port, so
+# 502 proves the request PASSED the shield -- see the index.md note: `return
+# 200` short-circuits before PRECONTENT and empty_gif 405s a POST, both of
+# which read as "not blocked" and mislead.
+name    benign request passes the shield and reaches upstream
+send    GET /guarded?q=hello+world HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=502
+
+name    detect mode logs but does not block
+send    GET /detected?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=502
+
+name    shield off lets a payload through untouched
+send    GET /unguarded?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=502

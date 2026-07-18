@@ -54,12 +54,48 @@ typedef struct {
     ngx_rbtree_t       rbtree;
     ngx_rbtree_node_t  sentinel;
     ngx_queue_t        queue;     /* LRU list head over all ban nodes           */
+
+#ifdef NGX_TEST_HARNESS
+    /* CI-only slab fault injection (see ngx_shield_testprobe.h).
+     *
+     * These live in SHARED memory rather than in a process global on purpose:
+     * the request that arms the fault and the request that trips it may be
+     * served by different workers, and a global would make the harness pass or
+     * fail on which worker happened to answer. Tests currently pin
+     * worker_processes 1, which would hide exactly that bug.
+     *
+     * nth: -1 = never fail (the ngx_label_autoconf convention), else fail the
+     * nth slab allocation after arming. seen: allocations counted since.
+     */
+    ngx_int_t          fault_slab_nth;
+    ngx_uint_t         fault_slab_seen;
+#endif
 } ngx_http_shield_ban_shctx_t;
 
 typedef struct {
     ngx_http_shield_ban_shctx_t *sh;
     ngx_slab_pool_t             *shpool;
 } ngx_http_shield_ban_ctx_t;
+
+
+/*
+ * Slab allocation for ban nodes.
+ *
+ * In a normal build this is ngx_slab_alloc_locked() and nothing else. Under
+ * NGX_TEST_HARNESS it routes through a counter so a test can force the Nth
+ * allocation to fail, which is the only way to reach the zone-full path in
+ * ngx_http_shield_ban_record_locked() -- filling a real 1m zone would take
+ * thousands of distinct source addresses the loopback harness cannot produce.
+ */
+#ifdef NGX_TEST_HARNESS
+void *ngx_http_shield_ban_slab_alloc(ngx_http_shield_ban_ctx_t *ctx,
+    size_t size);
+#define ngx_shield_slab_alloc(ctx, size)                                      \
+    ngx_http_shield_ban_slab_alloc(ctx, size)
+#else
+#define ngx_shield_slab_alloc(ctx, size)                                      \
+    ngx_slab_alloc_locked((ctx)->shpool, size)
+#endif
 
 
 /* Eviction budgets for ngx_http_shield_ban_expire(): SCAN bounds how far the

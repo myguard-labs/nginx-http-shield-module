@@ -3,6 +3,7 @@ name: Build and Test
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NGINX_VERSION: "1.31.3"
+  ANGIE_VERSION: "1.12.0"
 
 on:
   push:
@@ -280,6 +281,53 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: bash t/run-ban-unit.sh
 
+  prober:
+    name: Prober rules (${{ matrix.flavor }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: nginx
+            version_key: NGINX_VERSION
+          - flavor: angie
+            version_key: ANGIE_VERSION
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl libpcre2-dev zlib1g-dev
+
+      # The expansion goes through a step env var rather than straight into the
+      # run block: an inline ${{ }} is substituted into the script text before
+      # the shell ever sees it, which is the template-injection shape zizmor
+      # fails the Validation job on.
+      - name: Resolve version
+        env:
+          RESOLVED_VERSION: ${{ env[matrix.version_key] }}
+        run: echo "VER=$RESOLVED_VERSION" >> "$GITHUB_ENV"
+
+      # This is the angie leg's whole point. Stock Test::Nginx::Socket refuses to
+      # run against angie: it probes the version banner and requires
+      # "nginx version: x.y", while angie answers "Angie version: Angie/x.y", so
+      # it bails before the first test. Until now the angie leg was therefore
+      # build-and-load only. The prober reads no banner, so angie gets the same
+      # functional coverage nginx does.
+      - name: Build server with the test harness
+        run: TEST_HARNESS=1 bash tools/ci-build.sh "${{ matrix.flavor }}" "$VER" debug
+
+      - name: Build the prober
+        run: bash t/prober/build.sh
+
+      - name: Run prober rules
+        run: bash t/prober/run.sh "${{ matrix.flavor }}" "$VER"
+
   coverage:
     name: C line coverage
     runs-on: ubuntu-latest
@@ -301,14 +349,27 @@ jobs:
       # gcov-instrumented static build so the module TU is measured while the
       # Test::Nginx suite drives every attack/config path through the very
       # server binary that carries the counters.
+      # TEST_HARNESS=1 so the coverage build carries the probe endpoint and the
+      # slab fault injector. Without it the prober cannot run, and the
+      # alloc-failure paths whose LCOV_EXCL markers were removed would count as
+      # uncovered and drag the run under the floor.
       - name: Build with coverage instrumentation
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" coverage
+        run: TEST_HARNESS=1 bash tools/ci-build.sh nginx "$NGINX_VERSION" coverage
 
       - name: Run t/ (populates .gcda counters)
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
           TEST_NGINX_TIMEOUT: "30"
         run: prove t/
+
+      # The prober reaches paths t/ structurally cannot: the slab-exhaustion
+      # branch in ban_record (via armed allocation failure) and per-peer ban
+      # behaviour (via bound source addresses out of 127.0.0.0/8).
+      - name: Build the prober
+        run: bash t/prober/build.sh
+
+      - name: Run prober rules (adds fault-injection coverage)
+        run: bash t/prober/run.sh nginx "$NGINX_VERSION"
 
       # The ban state engine's multi-node / eviction / window-slide / expiry
       # paths are unreachable from Test::Nginx (single loopback client, no clock

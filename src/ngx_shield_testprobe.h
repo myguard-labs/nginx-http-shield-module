@@ -67,6 +67,25 @@
  */
 u_char *ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone);
 
+
+/*
+ * Arm or clear slab fault injection from a query string, e.g.
+ *
+ *     GET /__probe?fault_slab=1     fail the next slab allocation
+ *     GET /__probe?fault_slab=-1    disarm
+ *
+ * Returns NGX_OK if a fault directive was found and applied, NGX_DECLINED
+ * otherwise (including a malformed value, which is ignored rather than
+ * guessed at).
+ *
+ * A side effect on GET is not REST-clean, and that is a deliberate trade: the
+ * alternative is reading a request body inside the probe handler, which means
+ * the harness would exercise a different nginx code path than the plain-GET
+ * introspection it also has to serve. This endpoint only exists in a build
+ * that cannot ship, so the cost of the shortcut is bounded.
+ */
+ngx_int_t ngx_shield_probe_arm(ngx_shm_zone_t *zone, ngx_str_t *args);
+
 #endif /* NGX_TEST_HARNESS */
 
 #endif /* NGX_SHIELD_TESTPROBE_H_INCLUDED_ */
