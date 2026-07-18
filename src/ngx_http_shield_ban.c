@@ -220,7 +220,13 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
         ngx_queue_insert_head(&ctx->sh->queue, &bn->queue);
     }
 
-    /* Slide the window: if the current window has elapsed, start a fresh one.
+    /* Roll the window: if the current window has elapsed, start a fresh one.
+     * This is a FIXED (tumbling) window, not a sliding one -- the count resets
+     * wholesale rather than ageing out individual hits, so an attacker pacing
+     * hits across a window boundary can stay under `count`. That is the
+     * documented trade-off (README "Repeat-offender banning"): a true sliding
+     * window needs per-hit timestamps, which this fixed-size node cannot hold.
+     *
      * A still-active ban does not reset the window -- it just keeps extending
      * while the attacker keeps hitting, which is the intended behavior.
      *

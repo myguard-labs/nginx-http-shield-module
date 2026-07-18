@@ -63,7 +63,7 @@ typedef struct {
 
     ngx_shm_zone_t *ban_zone; /* shield_ban shm zone; NULL/UNSET = no banning */
     ngx_uint_t   ban_count;   /* hits within ban_window that trigger a ban    */
-    time_t       ban_window;  /* sliding hit-count window, seconds            */
+    time_t       ban_window;  /* fixed hit-count window, seconds              */
     time_t       ban_time;    /* how long a triggered ban lasts, seconds      */
 } ngx_http_shield_loc_conf_t;
 
@@ -1964,7 +1964,7 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  * shield_ban zone=<name> count=<n> window=<time> bantime=<time>  -- policy.
  * Binds a location to a zone defined by shield_ban_zone and sets the trigger:
  * ban the client for <bantime> once it produces <count> shield hits inside a
- * sliding <window>. The zone must already be defined at http level.
+ * fixed <window>. The zone must already be defined at http level.
  */
 static char *
 ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
