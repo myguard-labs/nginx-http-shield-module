@@ -260,7 +260,7 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
 
         ngx_http_shield_ban_expire(ctx, now, window);
 
-        node = ngx_slab_alloc_locked(ctx->shpool, size);
+        node = ngx_shield_slab_alloc(ctx, size);
         if (node == NULL) {
             /* Out of slab space and nothing reclaimable: drop this hit. */
             return NGX_ERROR;
@@ -329,3 +329,32 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
 
     return NGX_OK;
 }
+
+
+#ifdef NGX_TEST_HARNESS
+
+/*
+ * CI-only slab allocator wrapper. See the declaration in ngx_http_shield_ban.h.
+ *
+ * Counting happens only while a fault is armed, so an armed nth is relative to
+ * the arming request and not to whatever traffic the server saw beforehand --
+ * otherwise a rule's "fail the first allocation" would depend on how many
+ * cases ran before it.
+ *
+ * Runs under the slab mutex, which the caller already holds.
+ */
+void *
+ngx_http_shield_ban_slab_alloc(ngx_http_shield_ban_ctx_t *ctx, size_t size)
+{
+    if (ctx->sh->fault_slab_nth >= 0) {
+        ctx->sh->fault_slab_seen++;
+
+        if ((ngx_int_t) ctx->sh->fault_slab_seen == ctx->sh->fault_slab_nth) {
+            return NULL;
+        }
+    }
+
+    return ngx_slab_alloc_locked(ctx->shpool, size);
+}
+
+#endif /* NGX_TEST_HARNESS */

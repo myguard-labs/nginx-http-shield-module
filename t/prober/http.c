@@ -120,7 +120,7 @@ parse_response(http_response *resp)
 int
 http_request(const char *host, int port,
              const unsigned char *req, size_t req_len,
-             int timeout_ms,
+             int timeout_ms, const char *source,
              http_response *resp,
              char *errbuf, size_t errlen)
 {
@@ -156,6 +156,30 @@ http_request(const char *host, int port,
     /* Nagle would coalesce the deliberately-split writes some rules depend on
      * to exercise request smuggling and partial-header handling. */
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
+    if (source != NULL) {
+        struct sockaddr_in  local;
+
+        memset(&local, 0, sizeof(local));
+        local.sin_family = AF_INET;
+        local.sin_port = 0;
+
+        if (inet_pton(AF_INET, source, &local.sin_addr) != 1) {
+            snprintf(errbuf, errlen, "bad source address \"%s\"", source);
+            close(fd);
+            return -1;
+        }
+
+        /* SO_REUSEADDR so a rule can reuse a source address while an earlier
+         * connection from it is still in TIME_WAIT. */
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+        if (bind(fd, (struct sockaddr *) &local, sizeof(local)) != 0) {
+            snprintf(errbuf, errlen, "bind %s: %s", source, strerror(errno));
+            close(fd);
+            return -1;
+        }
+    }
 
     if (connect(fd, (struct sockaddr *) &sin, sizeof(sin)) != 0) {
         snprintf(errbuf, errlen, "connect %s:%d: %s",

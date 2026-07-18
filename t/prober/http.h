@@ -40,9 +40,15 @@ typedef struct {
  * response that arrives but is malformed is success here with status -1,
  * because "the server answered garbage" is a test outcome, not a harness fault.
  */
+/*
+ * `source` optionally binds the client socket to a specific local address
+ * before connecting. Anything in 127.0.0.0/8 is local, so rules can present
+ * themselves as distinct peers -- which is what makes per-address ban
+ * behaviour testable at all. Pass NULL for the default source.
+ */
 int http_request(const char *host, int port,
                  const unsigned char *req, size_t req_len,
-                 int timeout_ms,
+                 int timeout_ms, const char *source,
                  http_response *resp,
                  char *errbuf, size_t errlen);
 

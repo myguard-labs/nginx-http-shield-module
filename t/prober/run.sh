@@ -33,14 +33,20 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
-if [ ! -f "$MODULE" ]; then
-    echo "Bail out! no module at $MODULE"
-    exit 1
-fi
-
-if ! grep -qa shield_probe "$MODULE"; then
-    echo "Bail out! module at $MODULE has no shield_probe directive --" \
-         "it was built without TEST_HARNESS=1"
+# debug/module modes build a dynamic .so and need load_module; asan and
+# coverage modes use --add-module and link the module into the binary, where a
+# load_module line fails with "module is already loaded".
+#
+# Decide by looking inside the BINARY, not by whether a .so exists: switching
+# build modes leaves the previous mode's .so behind in objs/, so a file-exists
+# test picks the stale artifact and emits load_module for a static build.
+if grep -qa shield_probe "$BIN"; then
+    LOAD=""                                   # statically linked (asan/coverage)
+elif [ -f "$MODULE" ] && grep -qa shield_probe "$MODULE"; then
+    LOAD="load_module $MODULE;"               # dynamic (debug/module)
+else
+    echo "Bail out! neither $BIN nor $MODULE carries shield_probe --" \
+         "rebuild with TEST_HARNESS=1"
     exit 1
 fi
 
@@ -48,7 +54,7 @@ PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/prober.XXXXXX")"
 trap 'rm -rf "$PREFIX"' EXIT
 
 mkdir -p "$PREFIX/logs" "$PREFIX/conf"
-sed -e "s#@MODULE@#$MODULE#" -e "s#@PORT@#$PORT#" \
+sed -e "s#@LOAD@#$LOAD#" -e "s#@PORT@#$PORT#" \
     conf/prober.conf > "$PREFIX/conf/nginx.conf"
 
 if ! "$BIN" -t -p "$PREFIX" -c conf/nginx.conf >"$PREFIX/logs/conftest" 2>&1; then

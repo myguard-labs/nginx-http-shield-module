@@ -28,6 +28,10 @@
  *     probe   zone.nodes == 1
  *     probe   flavor == "angie"
  *
+ * `from 127.0.0.9` binds the client socket to a local source address, so a
+ * rule can present itself as a distinct peer. Ban behaviour is keyed on the
+ * peer, so this is what makes per-address ban logic testable at all.
+ *
  * `send` is repeatable and concatenates verbatim, so a stanza can spell out a
  * malformed request byte for byte. Escapes: \r \n \t \\ \" \0 \xNN.
  *
@@ -71,6 +75,8 @@ typedef struct {
 
 typedef struct {
     char           *name;
+    char           *fault;      /* probe query armed before the send, or NULL */
+    char           *source;     /* local address to connect from, or NULL     */
     unsigned char  *request;
     size_t          request_len;
     expectation     expects[MAX_ASSERTS];
@@ -213,6 +219,8 @@ case_free(test_case *tc)
     size_t i;
 
     free(tc->name);
+    free(tc->fault);
+    free(tc->source);
     free(tc->request);
 
     for (i = 0; i < tc->n_expects; i++) {
@@ -374,6 +382,12 @@ load_rules(const char *file, test_case *cases, size_t max)
         } else if (strcmp(directive, "expect") == 0) {
             parse_expect(&cases[n - 1], trim(arg), file, lineno);
 
+        } else if (strcmp(directive, "from") == 0) {
+            cases[n - 1].source = xstrdup(trim(arg));
+
+        } else if (strcmp(directive, "fault") == 0) {
+            cases[n - 1].fault = xstrdup(trim(arg));
+
         } else if (strcmp(directive, "probe") == 0) {
             parse_probe(&cases[n - 1], trim(arg), file, lineno);
 
@@ -530,6 +544,42 @@ eval_probe(const json_value *doc, const probe_assert *pa, char *why,
 }
 
 
+/*
+ * Issue a probe request carrying a fault directive, e.g. "fault_slab=1".
+ * The reply is discarded: what matters is the side effect on the zone, and the
+ * following case's own probe assertions verify it took.
+ */
+static int
+arm_fault(const char *query, const char *source, char *errbuf, size_t errlen)
+{
+    char           req[512];
+    int            n;
+    http_response  resp;
+
+    n = snprintf(req, sizeof(req),
+                 "GET %s?%s HTTP/1.1\r\nHost: prober\r\n"
+                 "Connection: close\r\n\r\n",
+                 opt_probe_uri, query);
+
+    if (http_request(opt_host, opt_port, (const unsigned char *) req,
+                     (size_t) n, opt_timeout_ms, source, &resp,
+                     errbuf, errlen) != 0)
+    {
+        return -1;
+    }
+
+    if (resp.status != 200) {
+        snprintf(errbuf, errlen, "arming \"%.64s\" returned status %d",
+                 query, resp.status);
+        http_response_free(&resp);
+        return -1;
+    }
+
+    http_response_free(&resp);
+    return 0;
+}
+
+
 static json_value *
 fetch_probe(char *errbuf, size_t errlen)
 {
@@ -544,7 +594,8 @@ fetch_probe(char *errbuf, size_t errlen)
                  opt_probe_uri);
 
     if (http_request(opt_host, opt_port, (const unsigned char *) req,
-                     (size_t) n, opt_timeout_ms, &resp, errbuf, errlen) != 0)
+                     (size_t) n, opt_timeout_ms, NULL, &resp,
+                     errbuf, errlen) != 0)
     {
         return NULL;
     }
@@ -591,8 +642,16 @@ run_case(const test_case *tc)
         return 0;
     }
 
+    if (tc->fault != NULL
+        && arm_fault(tc->fault, tc->source, errbuf, sizeof(errbuf)) != 0)
+    {
+        printf("# %s\n", errbuf);
+        return 0;
+    }
+
     if (http_request(opt_host, opt_port, tc->request, tc->request_len,
-                     opt_timeout_ms, &resp, errbuf, sizeof(errbuf)) != 0)
+                     opt_timeout_ms, tc->source, &resp,
+                     errbuf, sizeof(errbuf)) != 0)
     {
         printf("# request failed: %s\n", errbuf);
         return 0;

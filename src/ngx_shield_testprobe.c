@@ -14,13 +14,82 @@
 #include "ngx_http_shield_ban.h"
 
 
+ngx_int_t
+ngx_shield_probe_arm(ngx_shm_zone_t *zone, ngx_str_t *args)
+{
+    static const u_char        key[] = "fault_slab=";
+    const size_t               keylen = sizeof(key) - 1;
+
+    int                        negative;
+    u_char                    *p, *end, *v;
+    ngx_int_t                  value;
+    ngx_http_shield_ban_ctx_t *ctx;
+
+    if (zone == NULL || args == NULL || args->len < keylen) {
+        return NGX_DECLINED;
+    }
+
+    ctx = zone->data;
+
+    if (ctx == NULL || ctx->sh == NULL || ctx->shpool == NULL) {
+        return NGX_DECLINED;
+    }
+
+    end = args->data + args->len;
+
+    for (p = args->data; (size_t) (end - p) >= keylen; p++) {
+        if (ngx_strncmp(p, key, keylen) == 0) {
+            break;
+        }
+    }
+
+    if ((size_t) (end - p) < keylen) {
+        return NGX_DECLINED;
+    }
+
+    v = p + keylen;
+    negative = 0;
+
+    if (v < end && *v == '-') {
+        negative = 1;
+        v++;
+    }
+
+    if (v >= end || *v < '0' || *v > '9') {
+        return NGX_DECLINED;
+    }
+
+    value = 0;
+
+    while (v < end && *v >= '0' && *v <= '9') {
+        value = value * 10 + (*v - '0');
+        v++;
+    }
+
+    if (negative) {
+        value = -value;
+    }
+
+    /* Arming resets the counter, so an armed nth is relative to this request
+     * rather than to whatever traffic the zone saw before it. */
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+    ctx->sh->fault_slab_nth = value;
+    ctx->sh->fault_slab_seen = 0;
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+    return NGX_OK;
+}
+
+
 u_char *
 ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
 {
     time_t                       now;
     u_char                      *p;
     ngx_queue_t                 *q;
+    ngx_int_t                    fault_nth;
     ngx_uint_t                   nodes, banned, pages_free, present;
+    ngx_uint_t                   fault_seen;
     ngx_http_shield_ban_node_t  *node;
     ngx_http_shield_ban_ctx_t   *ctx;
 
@@ -28,6 +97,8 @@ ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
     banned = 0;
     pages_free = 0;
     present = 0;
+    fault_nth = -1;
+    fault_seen = 0;
 
     /*
      * Worker identity and connection accounting.
@@ -87,6 +158,8 @@ ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
          * portable signal for a harness that must run on release-ish CI
          * builds of both nginx and angie. */
         pages_free = ctx->shpool->pfree;
+        fault_nth = ctx->sh->fault_slab_nth;
+        fault_seen = ctx->sh->fault_slab_seen;
 
         ngx_shmtx_unlock(&ctx->shpool->mutex);
     }
@@ -98,14 +171,17 @@ ngx_shield_probe_json(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
                         "\"size\":%uz,"
                         "\"slab_pages_free\":%ui,"
                         "\"nodes\":%ui,"
-                        "\"banned\":%ui"
+                        "\"banned\":%ui,"
+                        "\"fault\":{\"slab_nth\":%i,\"slab_seen\":%ui}"
                         "}}",
                         (u_char *) (present ? "true" : "false"),
                         &zone->shm.name,
                         (size_t) zone->shm.size,
                         pages_free,
                         nodes,
-                        banned);
+                        banned,
+                        fault_nth,
+                        fault_seen);
 }
 
 #else

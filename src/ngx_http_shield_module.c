@@ -1866,12 +1866,13 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 
     if (rc == NGX_ERROR) {
-        /* LCOV_EXCL_START -- slab-exhaustion path needs a full zone, not
-         * driveable without malloc/slab fault injection. */
+        /* Reachable under test: t/prober/rules/04-fault.rule arms a slab fault
+         * via the probe endpoint and drives this path. It used to carry an
+         * LCOV_EXCL because filling a real zone would need thousands of
+         * distinct source addresses the loopback harness cannot produce. */
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "shield_ban zone \"%V\" is full; hit not counted",
                       &slcf->ban_zone->shm.name);
-        /* LCOV_EXCL_STOP */
     }
 }
 
@@ -1918,6 +1919,14 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_http_shield_ban_rbtree_insert);
     ngx_queue_init(&ctx->sh->queue);
+
+#ifdef NGX_TEST_HARNESS
+    /* -1 = no fault armed. ngx_slab_alloc() does not zero, so this must be set
+     * explicitly: a stray 0 here would mean "fail allocation number zero",
+     * which never trips, and would hide a genuinely broken arming path. */
+    ctx->sh->fault_slab_nth = -1;
+    ctx->sh->fault_slab_seen = 0;
+#endif
 
     len = sizeof(" in shield_ban_zone \"\"") + shm_zone->shm.name.len;
     ctx->shpool->log_ctx = ngx_slab_alloc(ctx->shpool, len);
@@ -2062,6 +2071,10 @@ ngx_http_shield_probe_handler(ngx_http_request_t *r)
     }
 
     slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
+
+    /* Applied before rendering, so the response reports the state the caller
+     * just asked for rather than the state from before the request. */
+    (void) ngx_shield_probe_arm(slcf->probe_zone, &r->args);
 
     size = NGX_SHIELD_PROBE_JSON_MAX;
     if (slcf->probe_zone != NULL) {
