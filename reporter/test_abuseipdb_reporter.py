@@ -330,6 +330,24 @@ def test_reporter_permanent_4xx_is_dropped(monkeypatch):
         assert r._fail_streak == 0
 
 
+def test_reporter_3xx_is_dropped(monkeypatch):
+    # A non-followed 3xx redirect failure is not transient; only 429 and 5xx
+    # retry. Everything else (incl. 3xx) is DROP, no cooldown, no streak bump.
+    import urllib.error
+
+    def boom(req, timeout):
+        raise urllib.error.HTTPError(mod.API_URL, 302, "Found", {},
+                                     _FakeBody(b'{}'))
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
+    assert outcome == mod.Reporter.DROP
+    assert "HTTP 302" in detail
+    assert r.in_cooldown(now=0.0) == 0.0
+    assert r._fail_streak == 0
+
+
 def test_reporter_5xx_is_retry(monkeypatch):
     # Server-side errors are transient -> RETRY with backoff.
     import urllib.error
@@ -718,10 +736,28 @@ def test_follow_resumes_from_saved_offset(tmp_path, monkeypatch):
     assert any(f"at offset={logfile.stat().st_size}" in m for m in logs)
 
 
+def _persistent_new_inode(args, real_stat, delta=12345, extra_size=0):
+    """os.stat replacement that ALWAYS reports a different inode for the log
+    path (a rotation that stays rotated), so the grace loop eventually switches.
+    Other paths pass through unchanged."""
+    def fake_stat(p, *a, **k):
+        st = real_stat(p, *a, **k)
+        if str(p) == args.logfile:
+            class S:
+                st_ino = st.st_ino + delta
+                st_size = st.st_size + extra_size
+                st_mode = st.st_mode
+            return S()
+        return st
+    return fake_stat
+
+
 def test_follow_detects_rotation(tmp_path, monkeypatch):
+    # Rotation switches only after a STABLE EOF grace (ROTATION_EOF_GRACE empty
+    # polls). Empty file + a persistently-new inode -> grace elapses -> switch.
     args = _mk_args(tmp_path)
     logfile = Path(args.logfile)
-    logfile.write_text("")   # empty: open ok, first readline is EOF
+    logfile.write_text("")   # empty: open ok, readline is EOF each pass
 
     mod._stop = False
     logs = []
@@ -729,37 +765,68 @@ def test_follow_detects_rotation(tmp_path, monkeypatch):
     sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
 
     real_stat = os.stat
-    calls = {"n": 0}
-
-    def fake_stat(p, *a, **k):
-        st = real_stat(p, *a, **k)
-        # On the EOF rotation check, report a different inode to force reopen.
-        if str(p) == args.logfile:
-            calls["n"] += 1
-            if calls["n"] == 1:
-                class S:
-                    st_ino = st.st_ino + 12345
-                    st_size = st.st_size
-                    st_mode = st.st_mode
-                return S()
-        return st
-
-    monkeypatch.setattr(os, "stat", fake_stat)
-    _stopping_sleep(monkeypatch, after=1)
+    monkeypatch.setattr(os, "stat", _persistent_new_inode(args, real_stat))
+    # Needs > ROTATION_EOF_GRACE sleeps to let the grace elapse before we stop.
+    _stopping_sleep(monkeypatch, after=mod.ROTATION_EOF_GRACE + 2)
     try:
         mod.follow(args, rep, sup, logs.append)
     finally:
         mod._stop = False
         monkeypatch.setattr(os, "stat", real_stat)
-    assert any("rotation/truncation detected" in m for m in logs)
+    assert any("rotation detected" in m for m in logs)
+
+
+def test_follow_truncation_reopens_immediately(tmp_path, monkeypatch):
+    # Same inode but size shrank below our offset (in-place truncation): there is
+    # nothing to drain, so follow() reopens at once (no grace window).
+    args = _mk_args(tmp_path)
+    logfile = Path(args.logfile)
+    logfile.write_text("some-old-content\n")
+
+    mod._stop = False
+    logs = []
+    rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
+    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+    # Resume at EOF so the first read is EOF and we hit the rotation/trunc check.
+    inode = os.stat(logfile).st_ino
+    mod.save_offset(args.state, args.logfile, logfile.stat().st_size, inode)
+
+    real_stat = os.stat
+    calls = {"n": 0}
+
+    def fake_stat(p, *a, **k):
+        st = real_stat(p, *a, **k)
+        if str(p) == args.logfile:
+            calls["n"] += 1
+            if calls["n"] == 1:              # report truncation ONCE, then real
+                class S:
+                    st_ino = st.st_ino        # SAME inode
+                    st_size = 0               # shrank below offset
+                    st_mode = st.st_mode
+                return S()
+        return st
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    # Stop the moment truncation is logged, so the post-reopen loop can't spin.
+    def stop_on_trunc(msg):
+        logs.append(msg)
+        if "truncation detected" in msg:
+            mod._stop = True
+    _stopping_sleep(monkeypatch, after=3)
+    try:
+        mod.follow(args, rep, sup, stop_on_trunc)
+    finally:
+        mod._stop = False
+        monkeypatch.setattr(os, "stat", real_stat)
+    assert any("truncation detected" in m for m in logs)
 
 
 def test_follow_drains_late_lines_before_rotating(tmp_path, monkeypatch):
     # S27-8 grace drain: nginx can append to the renamed inode between our last
-    # read and its SIGUSR1 reopen. follow() must read those late lines from the
-    # OLD fd before switching to the new file, or they are lost. We model this by
-    # appending a line to the file exactly when rotation is first detected, so it
-    # is only visible to the drain readline (not the normal read).
+    # read and its SIGUSR1 reopen. follow() must NOT close the old fd on the
+    # first rotation stat -- it keeps reading the old inode across the grace
+    # window, so a line written after rotation is detected is still consumed
+    # (and the grace count restarts on any late read).
     args = _mk_args(tmp_path, dry_run=True)
     logfile = Path(args.logfile)
     logfile.write_text("")   # empty: open ok, first readline is EOF
@@ -781,28 +848,28 @@ def test_follow_drains_late_lines_before_rotating(tmp_path, monkeypatch):
         st = real_stat(p, *a, **k)
         if str(p) == args.logfile:
             calls["n"] += 1
+            # First rotation check: append a late line to the OLD inode so the
+            # next read-loop pass picks it up during the grace window.
             if calls["n"] == 1:
-                # Append the late line NOW so the drain readline sees it, then
-                # report a new inode so follow() enters the drain branch.
                 with open(args.logfile, "a", encoding="utf-8") as fh:
                     fh.write(late)
-                new_size = real_stat(args.logfile).st_size
+            new_size = real_stat(args.logfile).st_size
 
-                class S:
-                    st_ino = st.st_ino + 12345
-                    st_size = new_size
-                    st_mode = st.st_mode
-                return S()
+            class S:
+                st_ino = st.st_ino + 12345   # persistently rotated
+                st_size = new_size
+                st_mode = st.st_mode
+            return S()
         return st
 
     monkeypatch.setattr(os, "stat", fake_stat)
-    _stopping_sleep(monkeypatch, after=1)
+    _stopping_sleep(monkeypatch, after=mod.ROTATION_EOF_GRACE + 4)
     try:
         mod.follow(args, rep, sup, logs.append)
     finally:
         mod._stop = False
         monkeypatch.setattr(os, "stat", real_stat)
 
-    # The late line was drained from the old fd (reported) before reopening.
-    assert any("drained 1 late line" in m for m in logs)
+    # The late line appended after rotation was still read from the old fd.
     assert any("reported 8.8.8.8" in m or "dry-run" in m for m in logs)
+    assert any("rotation detected" in m for m in logs)

@@ -111,7 +111,7 @@ ngx_http_shield_ban_lookup(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t hash,
 void
 ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now)
 {
-    ngx_uint_t                   i;
+    ngx_uint_t                   scanned, evicted;
     ngx_queue_t                 *q, *prev;
     ngx_rbtree_node_t           *node;
     ngx_http_shield_ban_node_t  *bn;
@@ -128,12 +128,25 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now)
      * still has a live window would let an attacker defeat the ban by rotating
      * source addresses to keep the zone at the eviction margin -- no single IP
      * ever accumulates enough hits to arm (S27-1). So we scan past live nodes
-     * looking for a stale one. Bounded to a few candidates so a single request
-     * never pays an unbounded cleanup cost. */
+     * looking for a stale one.
+     *
+     * Two separate budgets, not one shared iteration cap. If a single "scan up
+     * to N" cap counted skips and evictions together, a cluster of >=N live
+     * nodes at the tail would consume the whole cap on skips and the call would
+     * reclaim nothing even though stale nodes sit just past them -- and since
+     * every call restarts at the same tail, the zone could never reclaim (the
+     * allocation keeps failing despite reclaimable space). So SCAN bounds how
+     * far we look (generous, to see past a live-tail cluster) and EVICT bounds
+     * how many we actually free (the real per-request work cost). */
+    scanned = 0;
+    evicted = 0;
     q = ngx_queue_last(&ctx->sh->queue);
 
-    for (i = 0; i < 4 && q != ngx_queue_sentinel(&ctx->sh->queue); i++) {
-
+    while (q != ngx_queue_sentinel(&ctx->sh->queue)
+           && scanned < NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN
+           && evicted < NGX_HTTP_SHIELD_BAN_EXPIRE_EVICT)
+    {
+        scanned++;
         prev = ngx_queue_prev(q);
         bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
 
@@ -149,6 +162,7 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now)
         ngx_queue_remove(q);
         ngx_rbtree_delete(&ctx->sh->rbtree, node);
         ngx_slab_free_locked(ctx->shpool, node);
+        evicted++;
         q = prev;
     }
 }

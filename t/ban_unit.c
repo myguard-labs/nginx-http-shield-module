@@ -280,6 +280,48 @@ test_rotation_does_not_defeat_ban(void)
     ctx_free_all();
 }
 
+/*
+ * Progress past a cluster of live nodes at the LRU TAIL. If the eviction walk
+ * bounded skips and evictions with one shared cap, N (> that cap) live nodes at
+ * the tail would starve the cap before reaching a stale node just head-ward --
+ * and since each call restarts at the tail, the zone could never reclaim despite
+ * free-able space (CodeRabbit PR#50). Separate SCAN (how far we look) from EVICT
+ * (how many we free) fixes it.
+ *
+ * Setup so the LIVE cluster is tail-ward of the stale node: insert the live
+ * nodes FIRST (each new head-insert pushes earlier ones toward the tail), so the
+ * first-inserted live node is the LRU tail; insert the stale node LAST so it is
+ * at the head. The tail-to-head walk must skip the whole live cluster (more than
+ * EVICT nodes) to reach and free the stale node.
+ */
+static void
+test_expire_progresses_past_live_cluster(void)
+{
+    u_char stale[4] = { 10, 0, 0, 80 };
+    u_char live[4]  = { 10, 0, 0, 0 };
+    int    i;
+    int    n_live = NGX_HTTP_SHIELD_BAN_EXPIRE_EVICT + 2;   /* > EVICT, < SCAN */
+
+    ctx_reset();
+
+    /* Live cluster first -> occupies the LRU tail (long window, all live @600). */
+    for (i = 0; i < n_live; i++) {
+        live[3] = (u_char) (1 + i);
+        hit((ngx_uint_t) (0xF100 + i), live, 4, 500, 5, 3600, 600);
+    }
+    /* Stale node last -> at the head. Short window, long elapsed, never banned. */
+    hit(0xF000, stale, 4, 100, 5, 10, 600);   /* window [100,110), stale @600 */
+
+    /* The walk starts at the tail (first live node), must skip all n_live live
+     * nodes (> EVICT) and still reach the stale head node and free it. */
+    ngx_http_shield_ban_expire(&g_ctx, 600);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xF000, stale, 4) == NULL,
+       "eviction makes progress: stale node freed past a live tail cluster");
+    OK(live_allocs == (size_t) n_live, "all live cluster nodes retained");
+
+    ctx_free_all();
+}
+
 /* Hash collision: two different addresses sharing one hash must stay distinct
  * (exercises the comparator + exact-address resolution in lookup). */
 static void
@@ -377,6 +419,7 @@ main(void)
     test_backward_clock_resets_window();
     test_expire_preserves_live_window();
     test_expire_reclaims_stale();
+    test_expire_progresses_past_live_cluster();
     test_rotation_does_not_defeat_ban();
     test_hash_collision_distinct();
     test_ipv4_ipv6_distinct();

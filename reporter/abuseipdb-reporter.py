@@ -79,6 +79,13 @@ DEFAULT_CATS = [21]
 # AbuseIPDB comment cap is 1024 chars; stay well under and never leak internals.
 COMMENT_MAX = 500
 
+# After a rotation is detected, keep reading the OLD (renamed) inode until it
+# returns this many consecutive empty reads a poll apart -- a "stable EOF" --
+# before switching to the new file. This drains records nginx appends to the
+# renamed inode between our last read and its SIGUSR1 reopen, and tolerates a
+# send cooldown mid-drain (we simply keep the old fd open across it).
+ROTATION_EOF_GRACE = 2
+
 _stop = False
 
 
@@ -322,14 +329,15 @@ class Reporter:
                     retry_after = float(ra)
                 self._note_failure(now, retry_after)
                 return self.RETRY, f"HTTP 429: {body}"
-            if 400 <= e.code < 500:
-                # Permanent client error: retrying never helps. Do NOT set a
-                # cooldown (a bad single record must not stall the whole queue)
-                # and do NOT count it toward the backoff streak.
-                return self.DROP, f"HTTP {e.code} (permanent, dropped): {body}"
-            # 5xx (or anything else): server-side / transient -> retry.
-            self._note_failure(now, None)
-            return self.RETRY, f"HTTP {e.code}: {body}"
+            if 500 <= e.code < 600:
+                # Server-side error: transient -> retry with backoff.
+                self._note_failure(now, None)
+                return self.RETRY, f"HTTP {e.code}: {body}"
+            # Anything else (permanent 4xx, or a non-followed 3xx redirect
+            # failure): retrying never helps. DROP -- log, advance, and do NOT
+            # set a cooldown or bump the backoff streak, so one bad record can
+            # never stall the whole queue. Only 429 and 5xx are retryable.
+            return self.DROP, f"HTTP {e.code} (permanent, dropped): {body}"
         except (urllib.error.URLError, OSError) as e:
             self._note_failure(now, None)
             return self.RETRY, f"network: {e}"
@@ -408,6 +416,7 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
     fh = None
     cur_inode = -1
     last_save = 0.0
+    rotation_eofs = 0     # consecutive stable-EOF polls after rotation detected
 
     while not _stop:
         # (Re)open if not open, or if the file was rotated/truncated.
@@ -438,6 +447,10 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
         pos = fh.tell()
         line = fh.readline()
         if line:
+            # A line was available: if we were counting down a post-rotation
+            # EOF grace, a late write just arrived on the old inode -> the fd is
+            # not stable yet, restart the grace count.
+            rotation_eofs = 0
             if process_line(line, sup, reporter, time.time(), log):
                 offset = fh.tell()
                 # Checkpoint the offset periodically DURING a backlog, not only
@@ -463,32 +476,39 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
         try:
             disk = os.stat(log_path)
             if disk.st_ino != cur_inode or disk.st_size < offset:
-                # Rotation (new inode) or truncation. Before switching to the
-                # new file, drain any lines nginx appended to the OLD (renamed)
-                # inode between our last read and its SIGUSR1 reopen -- our fh
-                # still points at that inode, so read it to EOF first. Without
-                # this grace drain those late-written records are lost.
-                if disk.st_ino != cur_inode:
-                    drained = 0
-                    while not _stop and reporter.in_cooldown(time.time()) == 0:
-                        pos = fh.tell()
-                        tail = fh.readline()
-                        if not tail:
-                            break
-                        if process_line(tail, sup, reporter, time.time(), log):
-                            offset = fh.tell()
-                            drained += 1
-                        else:
-                            fh.seek(pos)
-                            break
-                    if drained:
-                        log(f"drained {drained} late line(s) from rotated file")
-                        save_offset(args.state, log_path, offset, cur_inode)
-                log("rotation/truncation detected; reopening")
+                # Rotation (new inode) or truncation detected on the path. Do NOT
+                # close the old descriptor yet: nginx may still be appending to
+                # the renamed inode until it reopens on SIGUSR1, and we may have a
+                # failed line rewound for retry. We keep reading the OLD fh (which
+                # still points at the rotated inode) on subsequent loop passes --
+                # the normal read branch above drains it and honours cooldown /
+                # retry-rewind -- and only switch to the new file once the old fd
+                # has reached a STABLE EOF (rotation_eofs consecutive empty reads
+                # a poll apart) with no send pending. On truncation (same inode,
+                # shrunk) there is nothing to drain, so switch immediately.
+                if disk.st_ino == cur_inode:
+                    log("truncation detected; reopening")
+                    fh.close()
+                    fh = None
+                    offset = 0
+                    saved_inode = -1
+                    continue
+
+                rotation_eofs += 1
+                if rotation_eofs < ROTATION_EOF_GRACE:
+                    # Give the old inode another poll to flush late writes; the
+                    # read branch will pick them up before we count another EOF.
+                    time.sleep(args.poll)
+                    continue
+
+                # Stable EOF on the rotated inode: safe to switch now.
+                log("rotation detected; old file drained, reopening")
+                save_offset(args.state, log_path, offset, cur_inode)
                 fh.close()
                 fh = None
                 offset = 0
                 saved_inode = -1
+                rotation_eofs = 0
                 continue
         except FileNotFoundError:
             fh.close()

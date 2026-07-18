@@ -62,6 +62,14 @@ typedef struct {
 } ngx_http_shield_ban_ctx_t;
 
 
+/* Eviction budgets for ngx_http_shield_ban_expire(): SCAN bounds how far the
+ * LRU-tail walk looks (large enough to see past a cluster of live nodes so it
+ * still reaches stale entries and reclaim makes progress); EVICT bounds how
+ * many nodes a single call actually frees (the real per-request work cost). */
+#define NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN   32
+#define NGX_HTTP_SHIELD_BAN_EXPIRE_EVICT  4
+
+
 /*
  * `now + delta`, clamped to the maximum signed time_t. A 32-bit time_t build
  * with a large ban_time/ban_window would otherwise overflow into a negative
