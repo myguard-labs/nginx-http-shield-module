@@ -345,6 +345,59 @@ test_rotation_does_not_defeat_ban(void)
  * at the head. The tail-to-head walk must skip the whole live cluster (more than
  * EVICT nodes) to reach and free the stale node.
  */
+/*
+ * S30-7 / S30-1: the same shape, but with a live tail cluster LARGER than SCAN.
+ *
+ * The existing test above uses n_live = EVICT + 2, deliberately "< SCAN", so it
+ * can never observe the case where the cluster itself exhausts the scan budget.
+ * A constant scan bound is defeated as soon as the cluster outgrows it: the walk
+ * restarts at the same tail every call, burns all SCAN steps on live nodes, and
+ * reclaims nothing even though stale nodes sit just head-ward. New addresses can
+ * then never be recorded -- the ban fails OPEN, which is the S27-1 outcome by a
+ * different route.
+ *
+ * Under the README's own example (count=5 window=1m bantime=1h) banned nodes
+ * stay live 60x longer than counting ones, so a >SCAN live cluster is routine
+ * rather than adversarial.
+ */
+static void
+test_expire_progresses_past_oversized_live_cluster(void)
+{
+    u_char stale[4] = { 10, 0, 1, 80 };
+    u_char live[4]  = { 10, 1, 0, 0 };
+    int    i;
+    int    n_live = NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN + 8;   /* > SCAN */
+
+    ctx_reset();
+
+    /* Live cluster first -> occupies the LRU tail. Banned for a long time, so
+     * every one of them is genuinely live and must not be evicted. */
+    for (i = 0; i < n_live; i++) {
+        live[2] = (u_char) (i >> 8);
+        live[3] = (u_char) (i & 0xff);
+        /* count=1 -> armed immediately, banned_until = 500 + 36000. */
+        hit((ngx_uint_t) (0xE000 + i), live, 4, 500, 1, 60, 36000);
+    }
+
+    /* One genuinely stale node at the head (window lapsed, never banned). */
+    hit(0xEFFF, stale, 4, 100, 5, 10, 600);
+
+    /* At t=600 the stale node is reclaimable but sits n_live (> SCAN) nodes
+     * head-ward of the tail, so ONE call cannot reach it. The real caller runs
+     * expire() once per recorded hit, and each call rotates the live nodes it
+     * skipped to the head, so a bounded number of calls must reach the stale
+     * node. Without rotation every call rescans the same tail and this loop
+     * never reclaims (S30-1). Allow generous headroom, then assert progress. */
+    for (i = 0; i < 16 && live_allocs > (size_t) n_live; i++) {
+        ngx_http_shield_ban_expire(&g_ctx, 600, 10);
+    }
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xEFFF, stale, 4) == NULL,
+       "reclaim progresses past a live cluster LARGER than SCAN");
+    OK(live_allocs == (size_t) n_live, "oversized live cluster fully retained");
+
+    ctx_free_all();
+}
+
 static void
 test_expire_progresses_past_live_cluster(void)
 {
@@ -476,6 +529,7 @@ main(void)
     test_expire_honours_lengthened_window_after_reload();
     test_expire_reclaims_stale();
     test_expire_progresses_past_live_cluster();
+    test_expire_progresses_past_oversized_live_cluster();
     test_rotation_does_not_defeat_ban();
     test_hash_collision_distinct();
     test_ipv4_ipv6_distinct();

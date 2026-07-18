@@ -134,11 +134,23 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
      * Two separate budgets, not one shared iteration cap. If a single "scan up
      * to N" cap counted skips and evictions together, a cluster of >=N live
      * nodes at the tail would consume the whole cap on skips and the call would
-     * reclaim nothing even though stale nodes sit just past them -- and since
-     * every call restarts at the same tail, the zone could never reclaim (the
-     * allocation keeps failing despite reclaimable space). So SCAN bounds how
-     * far we look (generous, to see past a live-tail cluster) and EVICT bounds
-     * how many we actually free (the real per-request work cost). */
+     * reclaim nothing even though stale nodes sit just past them. So SCAN bounds
+     * how far we look and EVICT bounds how many we actually free.
+     *
+     * That split is still not sufficient on its own: a live cluster LARGER than
+     * SCAN parked at the tail exhausts the scan budget on skips, and because the
+     * walk restarts at the same tail every call, the zone can never reclaim --
+     * new attackers stop being recorded and the ban fails OPEN (S30-1). Banned
+     * nodes form exactly such a cluster: they are only touched while they keep
+     * sending, and under the documented count=5 window=1m bantime=1h they stay
+     * live 60x longer than a counting node.
+     *
+     * So every live node we skip is ROTATED to the LRU head. The next call then
+     * starts on nodes it has not examined yet, which guarantees progress across
+     * calls for any cluster size while keeping per-call work bounded by SCAN.
+     * The rotation only reorders live entries among themselves -- it never
+     * changes whether a node is evictable, and a node that is genuinely in use
+     * gets moved back to the head by ngx_http_shield_ban_lookup anyway. */
     scanned = 0;
     evicted = 0;
     q = ngx_queue_last(&ctx->sh->queue);
@@ -161,7 +173,12 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
         if (bn->banned_until > now
             || ngx_http_shield_time_add_clamp(bn->window_start, window) > now)
         {
-            /* Live: keep it, look at the next-older node. */
+            /* Live: keep it, but move it off the tail so the NEXT call starts
+             * on a node this one has not already rejected. `prev` was captured
+             * before the rotation, so the walk continues head-ward correctly
+             * even though q itself has just moved to the head. */
+            ngx_queue_remove(q);
+            ngx_queue_insert_head(&ctx->sh->queue, q);
             q = prev;
             continue;
         }
