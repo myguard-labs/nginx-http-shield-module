@@ -341,10 +341,17 @@ uncovered. Neither is acceptable for a near-zero-FP floor.
 An **AND-rule** requires a *set* of terms to co-occur in the same buffer before
 its category fires:
 
+> **Same buffer, literally.** The request line/query and the body are scanned
+> independently, with no term state carried between them, so an AND-rule whose
+> terms arrive in different parts of the request cannot fire. A rule that pairs
+> a request *path* with a *body* gadget is dead by construction — pick terms
+> that travel together (this is why `metabase_jdbc_rce` keys on the H2 INIT
+> gadget rather than on Metabase's setup endpoint).
+
 | Rule | Category | Fires only when the buffer has… |
 |---|---|---|
 | `ofbiz_authbypass` | `exploit_path` | `requirepasswordchange=y` **and** `/webtools/control/` |
-| `metabase_jdbc_rce` | `deserial` | `/api/setup/validate` **and** `jdbc:h2:` |
+| `metabase_jdbc_rce` | `deserial` | `jdbc:h2:` **and** `init=` |
 | `jenkins_cli_read` | `exploit_path` | `/cli?` **and** `remoting=true` |
 | `vmware_wsone_ssti` | `exploit_path` | `/catalog-portal/ui/oauth/verify` **and** `${` |
 | `ssrf_wildcard_dns` | `ssrf_meta` | `.nip.io` **and** `169-254-169-254` |

