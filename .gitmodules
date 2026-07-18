@@ -1,0 +1,3 @@
+[submodule "t/harness"]
+	path = t/harness
+	url = https://github.com/myguard-labs/nginx-test-harness.git

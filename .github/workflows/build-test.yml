@@ -29,6 +29,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          submodules: true
 
       - name: Install validation tools
         run: |
@@ -48,7 +49,8 @@ jobs:
             --suppress=unusedStructMember \
             -I src \
             src/ngx_http_shield_module.c \
-            src/ngx_http_shield_ban.c
+            src/ngx_http_shield_ban.c \
+            src/ngx_shield_probe_hooks.c
           git diff --check
 
       - name: Check runner trust boundary
@@ -88,6 +90,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          submodules: true
 
       - name: Install build dependencies
         run: |
@@ -153,12 +156,21 @@ jobs:
           # shellcheck disable=SC2086
           (
             cd "$build"
-            for src in ngx_http_shield_module ngx_http_shield_ban; do
+            for src in ngx_http_shield_module ngx_http_shield_ban \
+                       ngx_shield_probe_hooks; do
+              # -DNGX_TEST_HARNESS so the probe hooks are compiled as real code
+              # rather than as the empty translation unit they collapse to
+              # without it -- a strict-compile gate that only ever saw the
+              # disabled form would prove nothing about the code that actually
+              # runs in CI. The harness include path comes with it, since the
+              # hooks include ngx_test_probe.h.
               cc -c -fPIC $cflags \
                 -Wall -Wextra -Wshadow -Wstrict-prototypes \
                 -Wstrict-aliasing -Wunreachable-code -Werror \
                 -Wno-unused-parameter \
+                -DNGX_TEST_HARNESS \
                 -I "$GITHUB_WORKSPACE/src" \
+                -I "$GITHUB_WORKSPACE/t/harness/src" \
                 $incs "$GITHUB_WORKSPACE/src/${src}.c" \
                 -o "/tmp/${src}.o"
             done
@@ -173,6 +185,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          submodules: true
 
       - name: Install dependencies
         run: |
@@ -202,6 +215,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          submodules: true
 
       - name: Install dependencies
         run: |
@@ -234,6 +248,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          submodules: true
 
       - name: Install pytest
         run: |
@@ -259,6 +274,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          submodules: true
 
       - name: Install dependencies
         run: |
@@ -304,10 +320,13 @@ jobs:
             version_key: NGINX_VERSION
             mode: asan
     steps:
+      # submodules: the prober engine lives in t/harness (nginx-test-harness).
+      # Without it t/prober/run.sh bails, so this is not optional for this job.
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          submodules: true
 
       - name: Install dependencies
         run: |
@@ -336,7 +355,7 @@ jobs:
       # parses rule files and raw socket bytes, so it gets the same treatment as
       # the module it is testing.
       - name: Build the prober
-        run: SAN=$([ "${{ matrix.mode }}" = asan ] && echo 1 || echo 0) bash t/prober/build.sh
+        run: SAN=$([ "${{ matrix.mode }}" = asan ] && echo 1 || echo 0) bash t/harness/prober/build.sh
 
       - name: Run prober rules
         run: bash t/prober/run.sh "${{ matrix.flavor }}" "$VER"
@@ -350,6 +369,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          submodules: true
 
       - name: Install dependencies
         run: |
@@ -379,7 +399,7 @@ jobs:
       # branch in ban_record (via armed allocation failure) and per-peer ban
       # behaviour (via bound source addresses out of 127.0.0.0/8).
       - name: Build the prober
-        run: bash t/prober/build.sh
+        run: bash t/harness/prober/build.sh
 
       - name: Run prober rules (adds fault-injection coverage)
         run: bash t/prober/run.sh nginx "$NGINX_VERSION"
