@@ -182,6 +182,17 @@ http {
   against one zone cross-applies whichever location handled the request and
   corrupts the count. Locations that need different policies must each reference
   their own zone.
+- **Zone state is per-instance and non-persistent.** The shm zone is an anonymous
+  mapping: it does not survive a binary upgrade or a full restart, and bans are
+  lost with it. A reload keeps the zone (and so the bans) as long as the zone
+  name and size are unchanged.
+- **Shared-zone availability:** every zone access takes the zone's slab mutex,
+  so a worker killed (`SIGKILL`, OOM) while holding it leaves the mutex held and
+  further access to that zone blocks — the same exposure as nginx's own
+  `limit_req`/`limit_conn` zones, which use the identical slab-mutex pattern. No
+  code path here can hold the lock across an operation that blocks or faults:
+  the critical sections are bounded rbtree/queue work with no allocation beyond
+  `ngx_slab_alloc_locked` and no I/O. Recovery is a restart.
 
 ### Hit log
 

@@ -150,7 +150,17 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
      * calls for any cluster size while keeping per-call work bounded by SCAN.
      * The rotation only reorders live entries among themselves -- it never
      * changes whether a node is evictable, and a node that is genuinely in use
-     * gets moved back to the head by ngx_http_shield_ban_lookup anyway. */
+     * gets moved back to the head by ngx_http_shield_ban_lookup anyway.
+     *
+     * Cost note: rotating turns what was a read-only skip into two shm writes
+     * (the queue unlink and the head insert) per skipped node, so a full SCAN
+     * of live nodes now dirties up to 2*SCAN queue links under the slab mutex
+     * instead of none. That is bounded and small -- SCAN is 32, the writes are
+     * pointer stores into the same cache lines the walk already touched, and it
+     * only happens on the alloc-miss path (ban_expire runs when a NEW address
+     * needs a node, not per request). Bounded extra work under the lock is the
+     * price of the progress guarantee; an unbounded walk, or no rotation at
+     * all, were both worse (see S30-1). */
     scanned = 0;
     evicted = 0;
     q = ngx_queue_last(&ctx->sh->queue);
