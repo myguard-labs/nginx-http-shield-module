@@ -79,6 +79,13 @@ DEFAULT_CATS = [21]
 # AbuseIPDB comment cap is 1024 chars; stay well under and never leak internals.
 COMMENT_MAX = 500
 
+# After a rotation is detected, keep reading the OLD (renamed) inode until it
+# returns this many consecutive empty reads a poll apart -- a "stable EOF" --
+# before switching to the new file. This drains records nginx appends to the
+# renamed inode between our last read and its SIGUSR1 reopen, and tolerates a
+# send cooldown mid-drain (we simply keep the old fd open across it).
+ROTATION_EOF_GRACE = 2
+
 _stop = False
 
 
@@ -108,20 +115,44 @@ def categories_for(cat: str) -> list[int]:
 
 
 def sanitize_req(req: str) -> str:
-    """Reduce a request line to `METHOD /path` for a PUBLIC report.
+    """Reduce a request line to `METHOD /first-segment` for a PUBLIC report.
 
-    The raw request line is sent to a third party (AbuseIPDB), so the query
-    string is dropped entirely: URLs routinely carry session tokens, API keys,
-    e-mail addresses and other PII in query params. We keep only the method and
-    the path, which is what identifies the attack pattern. The path may still be
-    hostile bytes, so control/newline chars are stripped.
+    The raw request line is sent to a third party (AbuseIPDB), whose TOS
+    requires stripping PII. Two layers of reduction:
+
+    * the query string is dropped entirely -- URLs routinely carry session
+      tokens, API keys, e-mail addresses and other PII in query params;
+    * only the FIRST path segment is kept. Deeper segments routinely carry
+      per-request PII -- password-reset tokens (/reset/<token>), e-mail
+      addresses, tenant/customer IDs (/u/<id>/...), and absolute-form requests
+      leak the internal host (GET http://internal.host/...). The first segment
+      is enough to identify the attack pattern (/wp-login.php, /.env,
+      /cgi-bin) without shipping the sensitive tail.
+
+    The path may still be hostile bytes, so control/newline chars are stripped.
     """
     parts = req.split(" ", 2)
     method = parts[0] if parts else ""
     target = parts[1] if len(parts) > 1 else ""
     path = target.split("?", 1)[0]          # drop the query string (PII)
+
+    # Absolute-form (GET http://host/path): drop the scheme+authority, which
+    # would leak an internal hostname, and keep only the path.
+    scheme = path.find("://")
+    if scheme != -1:
+        rest = path[scheme + 3:]
+        slash = rest.find("/")
+        path = rest[slash:] if slash != -1 else "/"
+
+    # Keep the leading slash and the first path segment only.
+    if path.startswith("/"):
+        seg = path[1:].split("/", 1)[0]
+        path = "/" + seg
+    else:
+        path = path.split("/", 1)[0]
+
     method = "".join(ch for ch in method if ch.isalnum())[:16]
-    path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7f)[:256]
+    path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7f)[:128]
     out = (method + " " + path).strip()
     return out
 
@@ -247,8 +278,23 @@ class Reporter:
                         self.BACKOFF_BASE * (2 ** exp))
         self.cooldown_until = now + delay
 
+    # report() outcomes.
+    OK = "ok"          # accepted; record + advance offset
+    RETRY = "retry"    # transient (429/5xx/network); keep offset, retry after cooldown
+    DROP = "drop"      # permanent (4xx != 429); log + advance, never retryable
+
     def report(self, ip: str, cats: list[int], comment: str, ts: str,
-               now: float) -> tuple[bool, str]:
+               now: float) -> tuple[str, str]:
+        """POST one report. Returns (outcome, detail) where outcome is one of
+        OK / RETRY / DROP.
+
+        A permanent client error -- 400/401/403/422 etc. (a bad API key, a
+        report older than AbuseIPDB's 60-day policy, a malformed payload) -- can
+        never succeed on replay, so it is classified DROP: the caller advances
+        past the record instead of rewinding to it forever (which would wedge
+        the daemon and process no later line). Only 429 (rate limit, honours
+        Retry-After), 5xx (server-side, transient) and network errors are
+        RETRY. 429 is NOT a 4xx-drop: it clears once the window resets."""
         payload = {
             "ip": ip,
             "categories": ",".join(str(c) for c in cats),
@@ -257,7 +303,7 @@ class Reporter:
         if ts:
             payload["timestamp"] = ts
         if self.dry_run:
-            return True, "dry-run " + json.dumps(payload)
+            return self.OK, "dry-run " + json.dumps(payload)
 
         data = urllib.parse.urlencode(payload).encode()
         req = urllib.request.Request(
@@ -273,19 +319,28 @@ class Reporter:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read().decode("utf-8", "replace")
             self._note_success()
-            return True, body
+            return self.OK, body
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
-            retry_after = None
             if e.code == 429:
+                retry_after = None
                 ra = e.headers.get("Retry-After")
                 if ra and ra.isdigit():
                     retry_after = float(ra)
-            self._note_failure(now, retry_after)
-            return False, f"HTTP {e.code}: {body}"
+                self._note_failure(now, retry_after)
+                return self.RETRY, f"HTTP 429: {body}"
+            if 500 <= e.code < 600:
+                # Server-side error: transient -> retry with backoff.
+                self._note_failure(now, None)
+                return self.RETRY, f"HTTP {e.code}: {body}"
+            # Anything else (permanent 4xx, or a non-followed 3xx redirect
+            # failure): retrying never helps. DROP -- log, advance, and do NOT
+            # set a cooldown or bump the backoff streak, so one bad record can
+            # never stall the whole queue. Only 429 and 5xx are retryable.
+            return self.DROP, f"HTTP {e.code} (permanent, dropped): {body}"
         except (urllib.error.URLError, OSError) as e:
             self._note_failure(now, None)
-            return False, f"network: {e}"
+            return self.RETRY, f"network: {e}"
 
 
 def load_offset(state_path: str, log_path: str) -> tuple[int, int]:
@@ -335,14 +390,20 @@ def process_line(line: str, sup: Suppressor, reporter: Reporter, now: float, log
     comment = build_comment(entry)
     ts = str(entry.get("ts", ""))
 
-    sent, detail = reporter.report(ip, cats, comment, ts, now)
-    if sent:
+    outcome, detail = reporter.report(ip, cats, comment, ts, now)
+    if outcome == Reporter.OK:
         # Record (and durably checkpoint suppression) only on a confirmed send.
         sup.record(ip, now)
         log(f"reported {ip} cats={cats}: {detail[:200]}")
         return True
 
-    # Failed: reporter has set a cooldown. Do NOT advance past this line -- it is
+    if outcome == Reporter.DROP:
+        # Permanent client error (4xx != 429). Retrying can never succeed, so
+        # advance past this record rather than wedging the queue on it forever.
+        log(f"DROP    {ip} cats={cats}: {detail[:200]}")
+        return True
+
+    # RETRY: reporter has set a cooldown. Do NOT advance past this line -- it is
     # retried once the cooldown clears, giving at-least-once delivery.
     log(f"FAILED  {ip} cats={cats} (retry after cooldown): {detail[:200]}")
     return False
@@ -355,6 +416,7 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
     fh = None
     cur_inode = -1
     last_save = 0.0
+    rotation_eofs = 0     # consecutive stable-EOF polls after rotation detected
 
     while not _stop:
         # (Re)open if not open, or if the file was rotated/truncated.
@@ -385,8 +447,21 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
         pos = fh.tell()
         line = fh.readline()
         if line:
+            # A line was available: if we were counting down a post-rotation
+            # EOF grace, a late write just arrived on the old inode -> the fd is
+            # not stable yet, restart the grace count.
+            rotation_eofs = 0
             if process_line(line, sup, reporter, time.time(), log):
                 offset = fh.tell()
+                # Checkpoint the offset periodically DURING a backlog, not only
+                # at EOF. A sustained flood can keep us in this branch for hours;
+                # without a mid-stream checkpoint a crash would replay everything
+                # since the last EOF and re-POST already-sent reports (quota
+                # waste). Cheap: a small JSON write at most every 2s.
+                now = time.time()
+                if now - last_save >= 2.0:
+                    save_offset(args.state, log_path, offset, cur_inode)
+                    last_save = now
             else:
                 # Send failed: rewind to retry this exact line after cooldown.
                 fh.seek(pos)
@@ -401,11 +476,39 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
         try:
             disk = os.stat(log_path)
             if disk.st_ino != cur_inode or disk.st_size < offset:
-                log("rotation/truncation detected; reopening")
+                # Rotation (new inode) or truncation detected on the path. Do NOT
+                # close the old descriptor yet: nginx may still be appending to
+                # the renamed inode until it reopens on SIGUSR1, and we may have a
+                # failed line rewound for retry. We keep reading the OLD fh (which
+                # still points at the rotated inode) on subsequent loop passes --
+                # the normal read branch above drains it and honours cooldown /
+                # retry-rewind -- and only switch to the new file once the old fd
+                # has reached a STABLE EOF (rotation_eofs consecutive empty reads
+                # a poll apart) with no send pending. On truncation (same inode,
+                # shrunk) there is nothing to drain, so switch immediately.
+                if disk.st_ino == cur_inode:
+                    log("truncation detected; reopening")
+                    fh.close()
+                    fh = None
+                    offset = 0
+                    saved_inode = -1
+                    continue
+
+                rotation_eofs += 1
+                if rotation_eofs < ROTATION_EOF_GRACE:
+                    # Give the old inode another poll to flush late writes; the
+                    # read branch will pick them up before we count another EOF.
+                    time.sleep(args.poll)
+                    continue
+
+                # Stable EOF on the rotated inode: safe to switch now.
+                log("rotation detected; old file drained, reopening")
+                save_offset(args.state, log_path, offset, cur_inode)
                 fh.close()
                 fh = None
                 offset = 0
                 saved_inode = -1
+                rotation_eofs = 0
                 continue
         except FileNotFoundError:
             fh.close()

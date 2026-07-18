@@ -86,7 +86,23 @@ jobs:
           sudo apt-get install -y \
             build-essential curl libpcre2-dev zlib1g-dev \
             cpanminus libio-socket-ssl-perl
-          sudo cpanm --notest --quiet Test::Nginx
+
+      # Pin Test::Nginx to an exact version + SHA-256 and install from the
+      # verified tarball. This job runs cpanm as root on a self-hosted builder;
+      # an unpinned `cpanm Test::Nginx` would run install code from whatever the
+      # latest (or a compromised) CPAN release happens to be, as root (S27-10).
+      # Bump TEST_NGINX_VERSION + TEST_NGINX_SHA256 together when upgrading.
+      - name: Install pinned + verified Test::Nginx
+        env:
+          TEST_NGINX_VERSION: "0.32"
+          TEST_NGINX_SHA256: "8b47ac9d3489ab2289cb2d8bbdbf059878b8fef222b6fe74ad6148e1a280a6dc"
+          TEST_NGINX_URL: "https://cpan.metacpan.org/authors/id/A/AG/AGENT/Test-Nginx-0.32.tar.gz"
+        run: |
+          set -euo pipefail
+          tgz="$(mktemp --suffix=.tar.gz)"
+          curl -fsSL "$TEST_NGINX_URL" -o "$tgz"
+          echo "${TEST_NGINX_SHA256}  ${tgz}" | sha256sum -c -
+          sudo cpanm --notest --quiet "$tgz"
 
       - name: Build server and dynamic module
         run: |
