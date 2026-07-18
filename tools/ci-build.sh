@@ -113,6 +113,23 @@ if [ "$MODE" = "coverage" ]; then
     ADD_MODULE="--add-module=$MODULE_DIR"
 fi
 
+# TEST_HARNESS=1 compiles the CI-only shield_probe introspection endpoint into
+# the module (src/ngx_shield_testprobe.c). Off by default and never set by the
+# .deb build, so the endpoint cannot reach a shipped package. The define goes
+# through --with-cc-opt, so it is visible core-wide -- harmless, since only our
+# TUs test for it.
+if [ "${TEST_HARNESS:-0}" = "1" ]; then
+    CC_OPT="$CC_OPT -DNGX_TEST_HARNESS"
+fi
+
+# angie names its server binary objs/angie, nginx names it objs/nginx. Report
+# the path that actually exists -- the old hardcoded objs/nginx was a lie on the
+# angie leg, and any caller that trusted it got "No such file or directory".
+BIN="nginx"
+if [ "$FLAVOR" = "angie" ]; then
+    BIN="angie"
+fi
+
 cd "$ROOT/$DIR"
 
 ./configure \
@@ -124,7 +141,7 @@ cd "$ROOT/$DIR"
 case "$MODE" in
     asan|coverage)
         make -j"$(nproc)"
-        echo "built: $ROOT/$DIR/objs/nginx"
+        echo "built: $ROOT/$DIR/objs/$BIN"
         ;;
     module)
         # Only the module .so -- deliberately no full `make`, so the nginx core
@@ -135,6 +152,6 @@ case "$MODE" in
     *)
         make -j"$(nproc)" modules
         make -j"$(nproc)"
-        echo "built: $ROOT/$DIR/objs/nginx"
+        echo "built: $ROOT/$DIR/objs/$BIN"
         ;;
 esac
