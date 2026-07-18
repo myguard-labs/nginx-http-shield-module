@@ -46,7 +46,8 @@ jobs:
             --suppress=unusedFunction \
             --suppress=unusedStructMember \
             -I src \
-            src/ngx_http_shield_module.c
+            src/ngx_http_shield_module.c \
+            src/ngx_http_shield_ban.c
           git diff --check
 
       - name: Check runner trust boundary
@@ -151,13 +152,15 @@ jobs:
           # shellcheck disable=SC2086
           (
             cd "$build"
-            cc -c -fPIC $cflags \
-              -Wall -Wextra -Wshadow -Wstrict-prototypes \
-              -Wstrict-aliasing -Wunreachable-code -Werror \
-              -Wno-unused-parameter \
-              -I "$GITHUB_WORKSPACE/src" \
-              $incs "$GITHUB_WORKSPACE/src/ngx_http_shield_module.c" \
-              -o /tmp/module.o
+            for src in ngx_http_shield_module ngx_http_shield_ban; do
+              cc -c -fPIC $cflags \
+                -Wall -Wextra -Wshadow -Wstrict-prototypes \
+                -Wstrict-aliasing -Wunreachable-code -Werror \
+                -Wno-unused-parameter \
+                -I "$GITHUB_WORKSPACE/src" \
+                $incs "$GITHUB_WORKSPACE/src/${src}.c" \
+                -o "/tmp/${src}.o"
+            done
           )
 
   test-nginx:
