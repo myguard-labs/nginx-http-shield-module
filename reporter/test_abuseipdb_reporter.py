@@ -88,14 +88,37 @@ def test_sanitize_req_method_alnum_only():
 def test_sanitize_req_empty_and_partial():
     assert mod.sanitize_req("") == ""
     assert mod.sanitize_req("GET") == "GET"
-    assert mod.sanitize_req("GET /only/path") == "GET /only/path"
+
+
+def test_sanitize_req_keeps_only_first_segment():
+    # Deeper path segments carry PII (reset tokens, e-mails, tenant IDs) and
+    # must be dropped; only the first segment (the attack-pattern signal) stays.
+    assert mod.sanitize_req("GET /reset/TOKEN-abc123 HTTP/1.1") == "GET /reset"
+    assert mod.sanitize_req("GET /u/12345/profile HTTP/1.1") == "GET /u"
+    assert mod.sanitize_req("POST /wp-login.php HTTP/1.1") == "POST /wp-login.php"
+    assert mod.sanitize_req("GET /.env HTTP/1.1") == "GET /.env"
+    assert mod.sanitize_req("GET / HTTP/1.1") == "GET /"
+
+
+def test_sanitize_req_first_segment_hides_pii():
+    out = mod.sanitize_req("GET /account/user@example.com/reset/deadbeef HTTP/1.1")
+    assert out == "GET /account"
+    assert "@" not in out
+    assert "deadbeef" not in out
+
+
+def test_sanitize_req_absolute_form_drops_internal_host():
+    # absolute-form request line leaks the internal host in the authority.
+    out = mod.sanitize_req("GET http://internal.corp:8080/admin/secret HTTP/1.1")
+    assert out == "GET /admin"
+    assert "internal.corp" not in out
 
 
 def test_sanitize_req_length_caps():
-    long_path = "/" + "a" * 5000
-    out = mod.sanitize_req("GET " + long_path + "?x=1")
+    long_seg = "/" + "a" * 5000
+    out = mod.sanitize_req("GET " + long_seg + "?x=1")
     method, path = out.split(" ", 1)
-    assert len(path) <= 256
+    assert len(path) <= 128
 
 
 # --------------------------------------------------------------------------- #
@@ -222,8 +245,8 @@ def test_suppressor_prune_bounds_map():
 # --------------------------------------------------------------------------- #
 def test_reporter_dry_run_sends_nothing():
     r = mod.Reporter(api_key="", timeout=1.0, dry_run=True)
-    ok, detail = r.report("8.8.8.8", [21], "c", "2026-01-01T00:00:00+00:00", now=0.0)
-    assert ok
+    outcome, detail = r.report("8.8.8.8", [21], "c", "2026-01-01T00:00:00+00:00", now=0.0)
+    assert outcome == mod.Reporter.OK
     assert detail.startswith("dry-run ")
     payload = json.loads(detail[len("dry-run "):])
     assert payload["ip"] == "8.8.8.8"
@@ -270,7 +293,7 @@ def test_reporter_retry_after_honoured():
     assert r.in_cooldown(now=100.0 + 42.0) == 0.0
 
 
-def test_reporter_http_error_sets_cooldown(monkeypatch):
+def test_reporter_429_is_retry_with_cooldown(monkeypatch):
     import urllib.error
 
     def boom(req, timeout):
@@ -279,13 +302,51 @@ def test_reporter_http_error_sets_cooldown(monkeypatch):
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
-    ok, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
-    assert not ok
+    outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
+    assert outcome == mod.Reporter.RETRY
     assert "HTTP 429" in detail
     assert r.in_cooldown(now=0.0) == 30.0
 
 
-def test_reporter_network_error_sets_cooldown(monkeypatch):
+def test_reporter_permanent_4xx_is_dropped(monkeypatch):
+    # A 4xx that is not 429 (bad key, malformed, report too old) can never
+    # succeed on replay -> DROP, no cooldown, no backoff-streak bump. Otherwise
+    # a single poison record would wedge the whole queue forever (S27-3).
+    import urllib.error
+
+    for code in (400, 401, 403, 422):
+        def boom(req, timeout, _code=code):
+            raise urllib.error.HTTPError(mod.API_URL, _code, "Bad", {},
+                                         _FakeBody(b'{"errors":[]}'))
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+        r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+        outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
+        assert outcome == mod.Reporter.DROP, code
+        assert f"HTTP {code}" in detail
+        assert "permanent" in detail
+        # No cooldown and no streak: a bad record must not stall the queue.
+        assert r.in_cooldown(now=0.0) == 0.0
+        assert r._fail_streak == 0
+
+
+def test_reporter_5xx_is_retry(monkeypatch):
+    # Server-side errors are transient -> RETRY with backoff.
+    import urllib.error
+
+    def boom(req, timeout):
+        raise urllib.error.HTTPError(mod.API_URL, 503, "Down", {},
+                                     _FakeBody(b'{"errors":[]}'))
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
+    assert outcome == mod.Reporter.RETRY
+    assert "HTTP 503" in detail
+    assert r.in_cooldown(now=0.0) == mod.Reporter.BACKOFF_BASE
+
+
+def test_reporter_network_error_is_retry(monkeypatch):
     import urllib.error
 
     def boom(req, timeout):
@@ -293,8 +354,8 @@ def test_reporter_network_error_sets_cooldown(monkeypatch):
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
-    ok, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
-    assert not ok
+    outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
+    assert outcome == mod.Reporter.RETRY
     assert "network:" in detail
     assert r.in_cooldown(now=0.0) == mod.Reporter.BACKOFF_BASE
 
@@ -306,8 +367,8 @@ def test_reporter_success_clears_cooldown(monkeypatch):
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     r._note_failure(now=0.0, retry_after=None)          # arm a cooldown
     monkeypatch.setattr(mod.urllib.request, "urlopen", okresp)
-    ok, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
-    assert ok
+    outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
+    assert outcome == mod.Reporter.OK
     assert "abuseConfidenceScore" in detail
     assert r.in_cooldown(now=0.0) == 0.0
 
@@ -407,6 +468,27 @@ def test_process_line_send_failure_retried(monkeypatch):
     assert done is False            # must be retried -> offset kept
     assert sup._count == 0          # NOT recorded (at-least-once delivery)
     assert any("FAILED" in m for m in logs)
+
+
+def test_process_line_permanent_4xx_advances(monkeypatch):
+    # A permanent 4xx must advance the offset (return True) so the daemon does
+    # not wedge on a poison record -- but must NOT record it as a sent report.
+    import urllib.error
+    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+
+    def boom(req, timeout):
+        raise urllib.error.HTTPError(mod.API_URL, 422, "Unprocessable", {},
+                                     _FakeBody(b'{"errors":[]}'))
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    logs = []
+    entry = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"})
+    done = mod.process_line(entry, sup, r, now=1000.0, log=logs.append)
+    assert done is True             # advance past the poison record
+    assert sup._count == 0          # not counted as a real report
+    assert r.in_cooldown(now=1000.0) == 0.0     # no queue-wide stall
+    assert any("DROP" in m for m in logs)
 
 
 # --------------------------------------------------------------------------- #
@@ -531,7 +613,7 @@ def test_follow_rewinds_on_failed_send(tmp_path, monkeypatch):
     rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     # force report() to fail -> process_line returns False -> follow rewinds
     monkeypatch.setattr(rep, "report",
-                        lambda *a, **k: (False, "boom"))
+                        lambda *a, **k: (mod.Reporter.RETRY, "boom"))
     sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
     _stopping_sleep(monkeypatch, after=1)
     try:
@@ -559,7 +641,7 @@ def test_follow_respects_cooldown(tmp_path, monkeypatch):
     monkeypatch.setattr(rep, "in_cooldown", lambda now: 5.0)
     called = []
     monkeypatch.setattr(rep, "report",
-                        lambda *a, **k: called.append(a) or (True, "ok"))
+                        lambda *a, **k: called.append(a) or (mod.Reporter.OK, "ok"))
     sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
     _stopping_sleep(monkeypatch, after=1)
     try:
@@ -670,3 +752,57 @@ def test_follow_detects_rotation(tmp_path, monkeypatch):
         mod._stop = False
         monkeypatch.setattr(os, "stat", real_stat)
     assert any("rotation/truncation detected" in m for m in logs)
+
+
+def test_follow_drains_late_lines_before_rotating(tmp_path, monkeypatch):
+    # S27-8 grace drain: nginx can append to the renamed inode between our last
+    # read and its SIGUSR1 reopen. follow() must read those late lines from the
+    # OLD fd before switching to the new file, or they are lost. We model this by
+    # appending a line to the file exactly when rotation is first detected, so it
+    # is only visible to the drain readline (not the normal read).
+    args = _mk_args(tmp_path, dry_run=True)
+    logfile = Path(args.logfile)
+    logfile.write_text("")   # empty: open ok, first readline is EOF
+
+    mod._stop = False
+    logs = []
+    rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
+    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+
+    late = json.dumps({"ts": "2026-07-17T00:00:00Z", "ip": "8.8.8.8",
+                       "cat": "sqli", "src": "uri",
+                       "req": "GET /x HTTP/1.1", "mode": "block",
+                       "status": 403}) + "\n"
+
+    real_stat = os.stat
+    calls = {"n": 0}
+
+    def fake_stat(p, *a, **k):
+        st = real_stat(p, *a, **k)
+        if str(p) == args.logfile:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Append the late line NOW so the drain readline sees it, then
+                # report a new inode so follow() enters the drain branch.
+                with open(args.logfile, "a", encoding="utf-8") as fh:
+                    fh.write(late)
+                new_size = real_stat(args.logfile).st_size
+
+                class S:
+                    st_ino = st.st_ino + 12345
+                    st_size = new_size
+                    st_mode = st.st_mode
+                return S()
+        return st
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    _stopping_sleep(monkeypatch, after=1)
+    try:
+        mod.follow(args, rep, sup, logs.append)
+    finally:
+        mod._stop = False
+        monkeypatch.setattr(os, "stat", real_stat)
+
+    # The late line was drained from the old fd (reported) before reopening.
+    assert any("drained 1 late line" in m for m in logs)
+    assert any("reported 8.8.8.8" in m or "dry-run" in m for m in logs)

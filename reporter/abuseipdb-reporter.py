@@ -108,20 +108,44 @@ def categories_for(cat: str) -> list[int]:
 
 
 def sanitize_req(req: str) -> str:
-    """Reduce a request line to `METHOD /path` for a PUBLIC report.
+    """Reduce a request line to `METHOD /first-segment` for a PUBLIC report.
 
-    The raw request line is sent to a third party (AbuseIPDB), so the query
-    string is dropped entirely: URLs routinely carry session tokens, API keys,
-    e-mail addresses and other PII in query params. We keep only the method and
-    the path, which is what identifies the attack pattern. The path may still be
-    hostile bytes, so control/newline chars are stripped.
+    The raw request line is sent to a third party (AbuseIPDB), whose TOS
+    requires stripping PII. Two layers of reduction:
+
+    * the query string is dropped entirely -- URLs routinely carry session
+      tokens, API keys, e-mail addresses and other PII in query params;
+    * only the FIRST path segment is kept. Deeper segments routinely carry
+      per-request PII -- password-reset tokens (/reset/<token>), e-mail
+      addresses, tenant/customer IDs (/u/<id>/...), and absolute-form requests
+      leak the internal host (GET http://internal.host/...). The first segment
+      is enough to identify the attack pattern (/wp-login.php, /.env,
+      /cgi-bin) without shipping the sensitive tail.
+
+    The path may still be hostile bytes, so control/newline chars are stripped.
     """
     parts = req.split(" ", 2)
     method = parts[0] if parts else ""
     target = parts[1] if len(parts) > 1 else ""
     path = target.split("?", 1)[0]          # drop the query string (PII)
+
+    # Absolute-form (GET http://host/path): drop the scheme+authority, which
+    # would leak an internal hostname, and keep only the path.
+    scheme = path.find("://")
+    if scheme != -1:
+        rest = path[scheme + 3:]
+        slash = rest.find("/")
+        path = rest[slash:] if slash != -1 else "/"
+
+    # Keep the leading slash and the first path segment only.
+    if path.startswith("/"):
+        seg = path[1:].split("/", 1)[0]
+        path = "/" + seg
+    else:
+        path = path.split("/", 1)[0]
+
     method = "".join(ch for ch in method if ch.isalnum())[:16]
-    path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7f)[:256]
+    path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7f)[:128]
     out = (method + " " + path).strip()
     return out
 
@@ -247,8 +271,23 @@ class Reporter:
                         self.BACKOFF_BASE * (2 ** exp))
         self.cooldown_until = now + delay
 
+    # report() outcomes.
+    OK = "ok"          # accepted; record + advance offset
+    RETRY = "retry"    # transient (429/5xx/network); keep offset, retry after cooldown
+    DROP = "drop"      # permanent (4xx != 429); log + advance, never retryable
+
     def report(self, ip: str, cats: list[int], comment: str, ts: str,
-               now: float) -> tuple[bool, str]:
+               now: float) -> tuple[str, str]:
+        """POST one report. Returns (outcome, detail) where outcome is one of
+        OK / RETRY / DROP.
+
+        A permanent client error -- 400/401/403/422 etc. (a bad API key, a
+        report older than AbuseIPDB's 60-day policy, a malformed payload) -- can
+        never succeed on replay, so it is classified DROP: the caller advances
+        past the record instead of rewinding to it forever (which would wedge
+        the daemon and process no later line). Only 429 (rate limit, honours
+        Retry-After), 5xx (server-side, transient) and network errors are
+        RETRY. 429 is NOT a 4xx-drop: it clears once the window resets."""
         payload = {
             "ip": ip,
             "categories": ",".join(str(c) for c in cats),
@@ -257,7 +296,7 @@ class Reporter:
         if ts:
             payload["timestamp"] = ts
         if self.dry_run:
-            return True, "dry-run " + json.dumps(payload)
+            return self.OK, "dry-run " + json.dumps(payload)
 
         data = urllib.parse.urlencode(payload).encode()
         req = urllib.request.Request(
@@ -273,19 +312,27 @@ class Reporter:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read().decode("utf-8", "replace")
             self._note_success()
-            return True, body
+            return self.OK, body
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
-            retry_after = None
             if e.code == 429:
+                retry_after = None
                 ra = e.headers.get("Retry-After")
                 if ra and ra.isdigit():
                     retry_after = float(ra)
-            self._note_failure(now, retry_after)
-            return False, f"HTTP {e.code}: {body}"
+                self._note_failure(now, retry_after)
+                return self.RETRY, f"HTTP 429: {body}"
+            if 400 <= e.code < 500:
+                # Permanent client error: retrying never helps. Do NOT set a
+                # cooldown (a bad single record must not stall the whole queue)
+                # and do NOT count it toward the backoff streak.
+                return self.DROP, f"HTTP {e.code} (permanent, dropped): {body}"
+            # 5xx (or anything else): server-side / transient -> retry.
+            self._note_failure(now, None)
+            return self.RETRY, f"HTTP {e.code}: {body}"
         except (urllib.error.URLError, OSError) as e:
             self._note_failure(now, None)
-            return False, f"network: {e}"
+            return self.RETRY, f"network: {e}"
 
 
 def load_offset(state_path: str, log_path: str) -> tuple[int, int]:
@@ -335,14 +382,20 @@ def process_line(line: str, sup: Suppressor, reporter: Reporter, now: float, log
     comment = build_comment(entry)
     ts = str(entry.get("ts", ""))
 
-    sent, detail = reporter.report(ip, cats, comment, ts, now)
-    if sent:
+    outcome, detail = reporter.report(ip, cats, comment, ts, now)
+    if outcome == Reporter.OK:
         # Record (and durably checkpoint suppression) only on a confirmed send.
         sup.record(ip, now)
         log(f"reported {ip} cats={cats}: {detail[:200]}")
         return True
 
-    # Failed: reporter has set a cooldown. Do NOT advance past this line -- it is
+    if outcome == Reporter.DROP:
+        # Permanent client error (4xx != 429). Retrying can never succeed, so
+        # advance past this record rather than wedging the queue on it forever.
+        log(f"DROP    {ip} cats={cats}: {detail[:200]}")
+        return True
+
+    # RETRY: reporter has set a cooldown. Do NOT advance past this line -- it is
     # retried once the cooldown clears, giving at-least-once delivery.
     log(f"FAILED  {ip} cats={cats} (retry after cooldown): {detail[:200]}")
     return False
@@ -387,6 +440,15 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
         if line:
             if process_line(line, sup, reporter, time.time(), log):
                 offset = fh.tell()
+                # Checkpoint the offset periodically DURING a backlog, not only
+                # at EOF. A sustained flood can keep us in this branch for hours;
+                # without a mid-stream checkpoint a crash would replay everything
+                # since the last EOF and re-POST already-sent reports (quota
+                # waste). Cheap: a small JSON write at most every 2s.
+                now = time.time()
+                if now - last_save >= 2.0:
+                    save_offset(args.state, log_path, offset, cur_inode)
+                    last_save = now
             else:
                 # Send failed: rewind to retry this exact line after cooldown.
                 fh.seek(pos)
@@ -401,6 +463,27 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
         try:
             disk = os.stat(log_path)
             if disk.st_ino != cur_inode or disk.st_size < offset:
+                # Rotation (new inode) or truncation. Before switching to the
+                # new file, drain any lines nginx appended to the OLD (renamed)
+                # inode between our last read and its SIGUSR1 reopen -- our fh
+                # still points at that inode, so read it to EOF first. Without
+                # this grace drain those late-written records are lost.
+                if disk.st_ino != cur_inode:
+                    drained = 0
+                    while not _stop and reporter.in_cooldown(time.time()) == 0:
+                        pos = fh.tell()
+                        tail = fh.readline()
+                        if not tail:
+                            break
+                        if process_line(tail, sup, reporter, time.time(), log):
+                            offset = fh.tell()
+                            drained += 1
+                        else:
+                            fh.seek(pos)
+                            break
+                    if drained:
+                        log(f"drained {drained} late line(s) from rotated file")
+                        save_offset(args.state, log_path, offset, cur_inode)
                 log("rotation/truncation detected; reopening")
                 fh.close()
                 fh = None

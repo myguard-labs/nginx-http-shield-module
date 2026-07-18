@@ -5,6 +5,9 @@
 t/servroot/
 t/*.t.tmp
 
+# Ban unit harness binary (built by t/run-ban-unit.sh)
+t/ban_unit
+
 # Fuzz build outputs (keep sources, corpus seeds, and fuzz.dict)
 fuzz/fuzz_scan
 fuzz/crash-*

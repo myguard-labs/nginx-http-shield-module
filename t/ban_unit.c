@@ -1,0 +1,393 @@
+/*
+ * Copyright (C) 2026 Thijs Eilander
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * ban_unit.c -- direct-call unit harness for the shield_ban state engine.
+ *
+ * Test::Nginx cannot reach the interesting ban paths: it drives a single
+ * loopback client (one node per zone -> the rbtree never grows past its root,
+ * so the comparator and multi-node lookup never run) with no clock control (so
+ * window elapse, ban expiry, and LRU eviction never fire). This harness calls
+ * ngx_http_shield_ban_{lookup,record_locked,expire,is_banned_locked} directly
+ * with SYNTHETIC addresses and a SYNTHETIC clock, exercising exactly those
+ * paths -- most importantly the S27-1 invariant that a below-threshold node
+ * with a LIVE counting window is never evicted to make room for another.
+ *
+ * The state engine lives in src/ngx_http_shield_ban.c (only <ngx_core.h>), so
+ * we link it against nginx's real ngx_rbtree.c plus a malloc-backed fake slab
+ * pool. No network, no nginx runtime, deterministic clock passed in per call.
+ *
+ * Build/run: bash t/run-ban-unit.sh   (needs a configured nginx tree in .build)
+ */
+
+#include <ngx_config.h>
+#include <ngx_core.h>
+
+#include "../src/ngx_http_shield_ban.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ------------------------------------------------------------------ *
+ * nginx runtime stubs. rbtree.c needs none of these at link time for
+ * the symbols we call, but <ngx_core.h> declares ngx_cycle; provide it
+ * so a future refactor that reaches for it is caught, not silently
+ * mislinked.
+ * ------------------------------------------------------------------ */
+volatile ngx_cycle_t  *ngx_cycle;
+
+/* ------------------------------------------------------------------ *
+ * Fake slab pool. ngx_http_shield_ban_record_locked/expire call only
+ * ngx_slab_alloc_locked and ngx_slab_free_locked; back them with plain
+ * malloc/free. `fail_alloc` lets a test force the slab-full path.
+ * ------------------------------------------------------------------ */
+static int      fail_alloc = 0;
+static size_t   live_allocs = 0;
+
+void *
+ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
+{
+    (void) pool;
+    if (fail_alloc) {
+        return NULL;
+    }
+    live_allocs++;
+    return malloc(size);
+}
+
+void
+ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
+{
+    (void) pool;
+    if (p) {
+        live_allocs--;
+        free(p);
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * Test scaffolding.
+ * ------------------------------------------------------------------ */
+static int tests_run = 0;
+static int tests_failed = 0;
+
+#define OK(cond, msg)                                                        \
+    do {                                                                     \
+        tests_run++;                                                         \
+        if (cond) {                                                         \
+            printf("ok %d - %s\n", tests_run, msg);                          \
+        } else {                                                            \
+            tests_failed++;                                                  \
+            printf("not ok %d - %s\n", tests_run, msg);                      \
+        }                                                                    \
+    } while (0)
+
+static ngx_http_shield_ban_shctx_t  g_sh;
+static ngx_http_shield_ban_ctx_t    g_ctx;
+
+static void
+ctx_reset(void)
+{
+    ngx_rbtree_init(&g_sh.rbtree, &g_sh.sentinel,
+                    ngx_http_shield_ban_rbtree_insert);
+    ngx_queue_init(&g_sh.queue);
+    g_ctx.sh = &g_sh;
+    g_ctx.shpool = NULL;     /* fake slab ignores the pool arg */
+    fail_alloc = 0;
+    live_allocs = 0;
+}
+
+/* Free every node still in the tree (via the LRU queue) so a test does not
+ * leak into the next. Uses the same offset trick the engine does. */
+static void
+ctx_free_all(void)
+{
+    ngx_queue_t                 *q;
+    ngx_http_shield_ban_node_t  *bn;
+    ngx_rbtree_node_t           *node;
+
+    while (!ngx_queue_empty(&g_sh.queue)) {
+        q = ngx_queue_head(&g_sh.queue);
+        bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
+        node = (ngx_rbtree_node_t *)
+                   ((u_char *) bn - offsetof(ngx_rbtree_node_t, color));
+        ngx_queue_remove(q);
+        ngx_rbtree_delete(&g_sh.rbtree, node);
+        ngx_slab_free_locked(NULL, node);
+    }
+}
+
+/* Convenience: record one hit for a synthetic (hash, addr) with a policy. */
+static ngx_int_t
+hit(ngx_uint_t hash, u_char *addr, u_char len, time_t now,
+    ngx_uint_t count, time_t window, time_t ban_time)
+{
+    return ngx_http_shield_ban_record_locked(&g_ctx, hash, addr, len, now,
+                                             count, window, ban_time);
+}
+
+static ngx_int_t
+banned(ngx_uint_t hash, u_char *addr, u_char len, time_t now)
+{
+    return ngx_http_shield_ban_is_banned_locked(&g_ctx, hash, addr, len, now);
+}
+
+
+/* ================================================================== *
+ * Tests
+ * ================================================================== */
+
+/* A single address reaches the threshold and is banned; the ban holds until
+ * banned_until and lapses after. */
+static void
+test_ban_arms_and_expires(void)
+{
+    u_char a4[4] = { 10, 0, 0, 1 };
+
+    ctx_reset();
+
+    OK(hit(0x1111, a4, 4, 100, 3, 60, 600) == NGX_OK, "hit1 ok");
+    OK(!banned(0x1111, a4, 4, 100), "not banned after 1 hit");
+    hit(0x1111, a4, 4, 101, 3, 60, 600);
+    OK(!banned(0x1111, a4, 4, 101), "not banned after 2 hits");
+    hit(0x1111, a4, 4, 102, 3, 60, 600);
+    OK(banned(0x1111, a4, 4, 102), "banned after 3rd hit");
+    OK(banned(0x1111, a4, 4, 700), "ban still holds just before expiry");
+    OK(!banned(0x1111, a4, 4, 703), "ban lapses after banned_until");
+
+    ctx_free_all();
+}
+
+/* Hits spread past the window never accumulate to a ban (window slides). */
+static void
+test_window_slides(void)
+{
+    u_char a4[4] = { 10, 0, 0, 2 };
+
+    ctx_reset();
+
+    hit(0x2222, a4, 4, 100, 3, 60, 600);   /* hits=1 */
+    hit(0x2222, a4, 4, 130, 3, 60, 600);   /* hits=2 */
+    /* 70s after window_start -> window resets, hits back to 1 */
+    hit(0x2222, a4, 4, 170, 3, 60, 600);   /* hits=1 */
+    hit(0x2222, a4, 4, 175, 3, 60, 600);   /* hits=2 */
+    OK(!banned(0x2222, a4, 4, 175), "no ban when hits straddle a window reset");
+
+    ctx_free_all();
+}
+
+/* Backward clock step resets the window rather than widening leniency. */
+static void
+test_backward_clock_resets_window(void)
+{
+    u_char a4[4] = { 10, 0, 0, 3 };
+
+    ctx_reset();
+
+    hit(0x3333, a4, 4, 1000, 3, 60, 600);      /* window_start=1000 hits=1 */
+    hit(0x3333, a4, 4,  500, 3, 60, 600);      /* now<window_start -> reset, hits=1 */
+    hit(0x3333, a4, 4,  501, 3, 60, 600);      /* hits=2 */
+    OK(!banned(0x3333, a4, 4, 501), "backward clock reset kept count low");
+
+    ctx_free_all();
+}
+
+/*
+ * S27-1 core: two DISTINCT addresses in a zone under eviction pressure. The
+ * expire walk must not drop addr A's live below-threshold window to make room
+ * for addr B -- otherwise alternating sources defeat the ban.
+ *
+ * We force eviction by failing the slab alloc only when we WANT to prove a node
+ * survived: instead, we call expire() directly with a `now` inside both windows
+ * and assert both nodes remain. A stale node (window+ban both elapsed) IS
+ * evicted.
+ */
+static void
+test_expire_preserves_live_window(void)
+{
+    u_char a[4] = { 10, 0, 0, 10 };
+    u_char b[4] = { 10, 0, 0, 11 };
+
+    ctx_reset();
+
+    /* Two below-threshold nodes, distinct hashes so both live in the tree. */
+    hit(0xAAAA, a, 4, 100, 5, 60, 600);   /* A: window [100,160) */
+    hit(0xBBBB, b, 4, 105, 5, 60, 600);   /* B: window [105,165) */
+
+    /* Expire at t=150: both windows still live -> nothing evicted. */
+    ngx_http_shield_ban_expire(&g_ctx, 150);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xAAAA, a, 4) != NULL,
+       "A survives expire while its window is live");
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xBBBB, b, 4) != NULL,
+       "B survives expire while its window is live");
+    OK(live_allocs == 2, "both nodes still allocated");
+
+    ctx_free_all();
+}
+
+/* A genuinely stale node (window + ban both elapsed) IS reclaimed by expire. */
+static void
+test_expire_reclaims_stale(void)
+{
+    u_char a[4] = { 10, 0, 0, 20 };
+
+    ctx_reset();
+
+    hit(0xCCCC, a, 4, 100, 5, 60, 600);   /* window [100,160), not banned */
+
+    /* At t=200 the window has lapsed and it was never banned -> stale. */
+    ngx_http_shield_ban_expire(&g_ctx, 200);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xCCCC, a, 4) == NULL,
+       "stale node reclaimed by expire");
+    OK(live_allocs == 0, "slab freed");
+
+    ctx_free_all();
+}
+
+/*
+ * S27-1 end to end: an attacker rotates source addresses to keep the zone at
+ * the eviction margin. Each new address triggers ban_expire (via the create
+ * path) but must NOT evict a previously-seen address whose window is still
+ * live, so a repeat visitor still accumulates hits toward a ban.
+ */
+static void
+test_rotation_does_not_defeat_ban(void)
+{
+    u_char victim[4] = { 10, 0, 0, 30 };
+    u_char rot[4]    = { 10, 0, 0, 0 };
+    int    i;
+
+    ctx_reset();
+
+    /* Victim hits twice (threshold 3) within its window. */
+    hit(0xD000, victim, 4, 100, 3, 300, 600);
+    hit(0xD000, victim, 4, 101, 3, 300, 600);
+
+    /* Attacker rotates 8 fresh addresses; each create runs expire(). If expire
+     * dropped the victim's live below-threshold node, the 3rd victim hit would
+     * start a fresh node at hits=1 and never ban. */
+    for (i = 0; i < 8; i++) {
+        rot[3] = (u_char) (100 + i);
+        hit((ngx_uint_t) (0xE000 + i), rot, 4, 102 + i, 3, 300, 600);
+    }
+
+    /* Victim's 3rd hit inside the same window -> must arm the ban. */
+    hit(0xD000, victim, 4, 150, 3, 300, 600);
+    OK(banned(0xD000, victim, 4, 150),
+       "victim still bans despite address rotation (S27-1)");
+
+    ctx_free_all();
+}
+
+/* Hash collision: two different addresses sharing one hash must stay distinct
+ * (exercises the comparator + exact-address resolution in lookup). */
+static void
+test_hash_collision_distinct(void)
+{
+    u_char a[4] = { 10, 0, 0, 40 };
+    u_char b[4] = { 10, 0, 0, 41 };
+
+    ctx_reset();
+
+    hit(0x5555, a, 4, 100, 3, 60, 600);
+    hit(0x5555, b, 4, 100, 3, 60, 600);   /* same hash, different addr */
+
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0x5555, a, 4) != NULL, "collision A present");
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0x5555, b, 4) != NULL, "collision B present");
+    OK(live_allocs == 2, "two distinct nodes for one hash");
+
+    /* Ban A only; B must stay unbanned. */
+    hit(0x5555, a, 4, 101, 3, 60, 600);
+    hit(0x5555, a, 4, 102, 3, 60, 600);
+    OK(banned(0x5555, a, 4, 102), "collision A banned");
+    OK(!banned(0x5555, b, 4, 102), "collision B not banned (distinct state)");
+
+    ctx_free_all();
+}
+
+/* IPv4 (4-byte) and IPv6 (16-byte) keys coexist and stay distinct. */
+static void
+test_ipv4_ipv6_distinct(void)
+{
+    u_char v4[4]  = { 10, 0, 0, 50 };
+    u_char v6[16] = { 0x20, 0x01, 0xd, 0xb8, 0,0,0,0, 0,0,0,0, 0,0,0, 0x50 };
+
+    ctx_reset();
+
+    hit(0x6060, v4, 4, 100, 3, 60, 600);
+    hit(0x6060, v6, 16, 100, 3, 60, 600);   /* same hash, different length */
+
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0x6060, v4, 4) != NULL, "v4 present");
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0x6060, v6, 16) != NULL, "v6 present");
+    OK(live_allocs == 2, "v4 and v6 are distinct nodes");
+
+    ctx_free_all();
+}
+
+/* Slab full and nothing reclaimable -> record returns NGX_ERROR, no crash. */
+static void
+test_slab_full(void)
+{
+    u_char a[4] = { 10, 0, 0, 60 };
+
+    ctx_reset();
+    fail_alloc = 1;
+
+    OK(hit(0x7070, a, 4, 100, 3, 60, 600) == NGX_ERROR,
+       "record reports NGX_ERROR when slab is full");
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0x7070, a, 4) == NULL,
+       "no node created on slab-full");
+
+    fail_alloc = 0;
+    ctx_free_all();
+}
+
+/* time_add_clamp saturates instead of overflowing. */
+static void
+test_time_clamp(void)
+{
+    time_t tmax = (time_t) (((uint64_t) 1 << (sizeof(time_t) * 8 - 1)) - 1);
+
+    OK(ngx_http_shield_time_add_clamp(100, 50) == 150, "clamp: normal add");
+    OK(ngx_http_shield_time_add_clamp(tmax - 10, 5) == tmax - 5,
+       "clamp: near-max add still exact");
+    OK(ngx_http_shield_time_add_clamp(tmax - 10, 100) == tmax,
+       "clamp: overflow saturates at time_t max");
+
+    /* A ban armed with a huge ban_time saturates rather than wrapping. */
+    {
+        u_char a[4] = { 10, 0, 0, 70 };
+        ctx_reset();
+        hit(0x8080, a, 4, tmax - 5, 1, 60, 1000000);   /* count=1 -> arms now */
+        OK(banned(0x8080, a, 4, tmax - 1),
+           "ban with overflowing bantime is effectively forever");
+        ctx_free_all();
+    }
+}
+
+
+int
+main(void)
+{
+    printf("TAP version 13\n");
+
+    test_ban_arms_and_expires();
+    test_window_slides();
+    test_backward_clock_resets_window();
+    test_expire_preserves_live_window();
+    test_expire_reclaims_stale();
+    test_rotation_does_not_defeat_ban();
+    test_hash_collision_distinct();
+    test_ipv4_ipv6_distinct();
+    test_slab_full();
+    test_time_clamp();
+
+    printf("1..%d\n", tests_run);
+    if (tests_failed) {
+        printf("# FAILED %d of %d\n", tests_failed, tests_run);
+        return 1;
+    }
+    printf("# all %d passed\n", tests_run);
+    return 0;
+}

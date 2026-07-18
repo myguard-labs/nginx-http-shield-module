@@ -246,6 +246,37 @@ jobs:
           python3 -m pytest -q reporter/test_abuseipdb_reporter.py \
             --cov=. --cov-report=term-missing --cov-fail-under=95
 
+  ban-unit:
+    name: Ban unit harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang curl libpcre2-dev zlib1g-dev
+
+      # The ban shared-memory state engine (src/ngx_http_shield_ban.c) is driven
+      # by a direct-call harness with synthetic addresses + a synthetic clock --
+      # the multi-node rbtree, LRU eviction, window-slide and ban-expiry paths
+      # Test::Nginx cannot reach (single loopback client, no clock control).
+      # Run it under ASan/UBSan so the eviction pointer walk is fault-checked.
+      - name: Configure nginx tree (headers + ngx_rbtree.c)
+        run: bash tools/ci-build.sh nginx "$NGINX_VERSION"
+
+      - name: Build and run ban unit harness (ASan/UBSan)
+        env:
+          CC: clang
+          EXTRA_CFLAGS: "-fsanitize=address,undefined -fno-sanitize-recover=all"
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: bash t/run-ban-unit.sh
+
   coverage:
     name: C line coverage
     runs-on: ubuntu-latest
@@ -276,12 +307,24 @@ jobs:
           TEST_NGINX_TIMEOUT: "30"
         run: prove t/
 
+      # The ban state engine's multi-node / eviction / window-slide / expiry
+      # paths are unreachable from Test::Nginx (single loopback client, no clock
+      # control). Build+run the direct-call harness under gcov too so those lines
+      # are genuinely covered rather than LCOV_EXCL'd away. Its .gcda lands next
+      # to t/ban_unit.c and is captured alongside the module's below.
+      - name: Build and run ban unit harness (gcov)
+        env:
+          EXTRA_CFLAGS: "--coverage -fprofile-arcs -ftest-coverage"
+        run: bash t/run-ban-unit.sh
+
       # Harvest coverage for our translation unit only; upstream nginx .gcda is
       # captured (core is instrumented too) but discarded by the --extract filter.
+      # Two --directory args: the module TU built into nginx, and the harness's
+      # ban.c object under t/.
       - name: Collect and gate module coverage
         run: |
           build=.build/nginx-${NGINX_VERSION}
-          lcov --capture --directory "$build/objs/addon/src" \
+          lcov --capture --directory "$build/objs/addon/src" --directory t \
             --output-file cov.info --rc geninfo_unexecuted_blocks=1
           lcov --extract cov.info '*ngx_http_shield*' --output-file cov-mod.info
           lcov --list cov-mod.info
