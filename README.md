@@ -287,15 +287,19 @@ shell script in an editor, a snippet in a docs API. The same is true of
 post *about* Log4Shell, and of `<?php system(` in a code-review tool.
 
 So each category declares whether its tokens are attack-only in *any* position,
-or only in a request target. Nine are request-target-and-header only:
+or only in a request target. Ten are request-target-and-header only:
 
-`cmdi` · `xss` · `template` · `lfi` · `php_rce` · `java_rce` · `java_eval` · `sensitive_file` · `exploit_path`
+`cmdi` · `xss` · `template` · `lfi` · `php_rce` · `java_rce` · `java_eval` · `sensitive_file` · `exploit_path` · `traversal`
+
+`traversal` is on that list because its signatures are pure gadgets (`../`,
+`..\`, `..;/`) that legitimately appear in bodies — a JSON source map or an
+asset manifest carrying `{"path":"../logo.png"}` is not an attack. In a request
+target the same token has no benign reading.
 
 Every other category is scanned in the body too, and that is where the body scan
-earns its keep — SQL injection and path traversal in a form POST, the Java
-deserialization gadget classes, SSI injection, webshell names, and the
-encoding-evasion categories. None of those have a benign reading in a body
-either.
+earns its keep — SQL injection in a form POST, the Java deserialization gadget
+classes, SSI injection, webshell names, and the encoding-evasion categories.
+None of those have a benign reading in a body either.
 
 This narrows *where* a category applies, never *whether* it matches: a
 body-exempt category still blocks at full strength in the request target and in
