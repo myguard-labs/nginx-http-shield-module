@@ -390,6 +390,7 @@ load_rules(const char *file, test_case *cases, size_t max)
         } else if (strcmp(directive, "repeat") == 0) {
             char   *count_s = strtok(arg, " \t");
             char   *text = strtok(NULL, "");
+            char   *stop;
             long    count;
             long    k;
 
@@ -397,7 +398,16 @@ load_rules(const char *file, test_case *cases, size_t max)
                 die("%s:%d: repeat needs <count> <text>", file, lineno);
             }
 
-            count = strtol(count_s, NULL, 10);
+            count = strtol(count_s, &stop, 10);
+
+            /* The whole token has to be the number. "10junk" parsing as 10
+             * would build a different request than the file describes, and a
+             * size-driven case that silently changes size is exactly the way a
+             * limit test stops reaching its limit. */
+            if (stop == count_s || *stop != '\0') {
+                die("%s:%d: repeat count \"%s\" is not a number",
+                    file, lineno, count_s);
+            }
 
             if (count < 1 || count > 100000) {
                 die("%s:%d: repeat count %ld out of range (1..100000)",
