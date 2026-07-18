@@ -1,0 +1,66 @@
+# Malformed and hostile request framing. These are the cases a client library
+# will not emit -- libcurl normalizes away exactly the malformation under test,
+# which is why the prober writes raw bytes.
+#
+# The assertion for most of these is deliberately weak: what matters is that
+# the worker SURVIVES and keeps serving, which the following case proves by
+# getting a valid probe response. A crash here shows up as a connection error
+# on the next case, not as a wrong status code.
+
+name    request with no Host header
+send    GET /guarded?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Connection: close\r\n\r\n
+expect  status=400
+
+name    absolute-form request target
+send    GET http://prober/guarded?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+
+name    duplicate Content-Type headers, payload in the body
+send    POST /body HTTP/1.1\r\n
+send    Host: prober\r\n
+send    Content-Type: application/octet-stream\r\n
+send    Content-Type: text/plain\r\n
+send    Content-Length: 34\r\n
+send    Connection: close\r\n\r\n
+send    id=1+union+select+1,2,3--&x=1234567
+expect  status=403
+
+name    percent-encoded payload is decoded before matching
+send    GET /guarded?id=1+%75nion+%73elect+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+
+name    double-encoded payload does NOT match, decode happens once only
+send    GET /guarded?id=1+%2575nion+%2573elect+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=502
+
+name    NUL byte inside the query string
+send    GET /guarded?id=1\x00union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=400
+
+name    bare LF line endings instead of CRLF
+send    GET /guarded?id=1+union+select+1,2,3-- HTTP/1.1\n
+send    Host: prober\nConnection: close\n\n
+expect  status=403
+
+name    oversized header value does not take the worker down
+send    GET /guarded HTTP/1.1\r\n
+send    Host: prober\r\n
+send    X-Filler: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+send    AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+send    AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+send    \r\nConnection: close\r\n\r\n
+expect  status=502
+
+# The worker must still be alive and the zone still coherent after everything
+# above. If any earlier case killed it, this one fails on connect.
+name    worker survives the malformed batch and the zone is still coherent
+send    GET /__probe HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.present == true
+probe   flavor ~ ngi

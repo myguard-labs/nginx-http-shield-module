@@ -1,0 +1,50 @@
+# Assertions on IN-WORKER state. This is the half Test::Nginx structurally
+# cannot do: the response to a blocked request looks identical whether or not
+# the ban zone actually recorded anything.
+#
+# Rules run in file order against one server instance, so the ban counters
+# accumulate down the file. Each case states the absolute expected value rather
+# than a delta -- deltas arrive in P4 along with leak assertions.
+
+name    probe reports the running server flavor and a live zone
+send    GET /__probe HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+expect  header~Content-Type: application/json
+probe   zone.present == true
+probe   zone.name == "probezone"
+probe   zone.nodes >= 0
+probe   connections.total > 0
+
+# The ban policy in prober.conf is count=2, so the first hit records a node
+# without arming the ban.
+name    first ban-zone hit records a node but does not arm the ban
+send    GET /banned?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+probe   zone.nodes == 1
+probe   zone.banned == 0
+
+name    second hit reaches the count and arms the ban
+send    GET /banned?id=1+union+select+1,2,3-- HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+probe   zone.nodes == 1
+probe   zone.banned == 1
+
+# Once armed, even a BENIGN request from the same peer is refused -- proof the
+# ban is keyed on the peer and not re-derived from the current request.
+name    an armed ban blocks a subsequent benign request from the same peer
+send    GET /banned?q=hello HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=403
+probe   zone.banned == 1
+
+# The zone must not leak pages while doing all of the above. This is a weak
+# form of the P4 delta assertion: an absolute floor rather than a before/after
+# comparison, but it still fails loudly if node churn burns the slab.
+name    ban bookkeeping did not exhaust the slab
+send    GET /__probe HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+expect  status=200
+probe   zone.slab_pages_free > 200
