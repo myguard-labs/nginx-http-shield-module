@@ -282,7 +282,7 @@ jobs:
         run: bash t/run-ban-unit.sh
 
   prober:
-    name: Prober rules (${{ matrix.flavor }})
+    name: Prober rules (${{ matrix.flavor }}, ${{ matrix.mode }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -291,8 +291,18 @@ jobs:
         include:
           - flavor: nginx
             version_key: NGINX_VERSION
+            mode: debug
           - flavor: angie
             version_key: ANGIE_VERSION
+            mode: debug
+          # The fault injector drives allocation-failure paths, which is exactly
+          # where a missed cleanup turns into a use-after-free -- so one leg runs
+          # the whole rule set against an ASan/UBSan build. run.sh disables leak
+          # detection only (nginx never frees its config pool), everything else
+          # ASan reports still fails the job.
+          - flavor: nginx
+            version_key: NGINX_VERSION
+            mode: asan
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -320,10 +330,13 @@ jobs:
       # build-and-load only. The prober reads no banner, so angie gets the same
       # functional coverage nginx does.
       - name: Build server with the test harness
-        run: TEST_HARNESS=1 bash tools/ci-build.sh "${{ matrix.flavor }}" "$VER" debug
+        run: TEST_HARNESS=1 bash tools/ci-build.sh "${{ matrix.flavor }}" "$VER" "${{ matrix.mode }}"
 
+      # SAN=1 puts the prober itself under ASan/UBSan on the sanitized leg: it
+      # parses rule files and raw socket bytes, so it gets the same treatment as
+      # the module it is testing.
       - name: Build the prober
-        run: bash t/prober/build.sh
+        run: SAN=$([ "${{ matrix.mode }}" = asan ] && echo 1 || echo 0) bash t/prober/build.sh
 
       - name: Run prober rules
         run: bash t/prober/run.sh "${{ matrix.flavor }}" "$VER"

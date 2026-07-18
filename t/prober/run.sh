@@ -50,6 +50,31 @@ else
     exit 1
 fi
 
+# nginx never frees its configuration pool, so LeakSanitizer reports the whole
+# config parse as leaked on `nginx -t` and on every clean shutdown -- against an
+# ASan build that turns the config test into a "Bail out!" before a single case
+# runs. build-test.yml's ASan job disables leak detection for the same reason.
+# Everything else ASan catches (use-after-free, overflow) stays on, which is the
+# part worth having while the fault injector drives allocation-failure paths.
+export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1${ASAN_OPTIONS:+:$ASAN_OPTIONS}"
+
+# The prober and json_test binaries are gitignored build products and run.sh
+# does NOT build them. An edit to prober.c that was never compiled would
+# otherwise be "verified" by the binary from before the edit: a green run that
+# proves nothing about the change in hand. Same failure mode as a dead harness.
+for ARTIFACT in ./prober ./json_test; do
+    if [ -x "$ARTIFACT" ]; then
+        STALE="$(find ./*.c ./*.h -newer "$ARTIFACT" 2>/dev/null || true)"
+
+        if [ -n "$STALE" ]; then
+            echo "Bail out! $ARTIFACT is older than its sources --" \
+                 "run t/prober/build.sh:"
+            printf '%s\n' "$STALE" | sed 's/^/# /'
+            exit 1
+        fi
+    fi
+done
+
 # Check the oracle before trusting anything it says. Every rule assertion is
 # evaluated against the JSON reader, so if that is broken the rules can all pass
 # while proving nothing. Emitted as a bail-out rather than as extra TAP lines,
