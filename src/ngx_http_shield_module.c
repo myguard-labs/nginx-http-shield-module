@@ -1582,11 +1582,21 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
      * own shield_ban (all four fields together, enforced by the directive) or
      * inherits the parent's. NGX_CONF_UNSET_PTR ban_zone => never set here. */
     if (conf->ban_zone == NGX_CONF_UNSET_PTR) {
-        conf->ban_zone = (prev->ban_zone == NGX_CONF_UNSET_PTR)
-                             ? NULL : prev->ban_zone;
-        conf->ban_count = prev->ban_count;
-        conf->ban_window = prev->ban_window;
-        conf->ban_time = prev->ban_time;
+        if (prev->ban_zone == NGX_CONF_UNSET_PTR) {
+            /* Nobody up the chain set shield_ban. Leave banning off and give
+             * the policy fields defined values -- copying the parent's here
+             * would propagate NGX_CONF_UNSET* sentinels into a live conf. */
+            conf->ban_zone = NULL;
+            conf->ban_count = 0;
+            conf->ban_window = 0;
+            conf->ban_time = 0;
+
+        } else {
+            conf->ban_zone = prev->ban_zone;
+            conf->ban_count = prev->ban_count;
+            conf->ban_window = prev->ban_window;
+            conf->ban_time = prev->ban_time;
+        }
     }
 
     return NGX_CONF_OK;
