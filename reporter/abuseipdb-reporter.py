@@ -128,7 +128,9 @@ def sanitize_req(req: str) -> str:
       addresses, tenant/customer IDs (/u/<id>/...), and absolute-form requests
       leak the internal host (GET http://internal.host/...). The first segment
       is enough to identify the attack pattern (/wp-login.php, /.env,
-      /cgi-bin) without shipping the sensitive tail.
+      /cgi-bin) without shipping the sensitive tail;
+    * non-origin-form targets are reduced to the method alone -- authority-form
+      (CONNECT internal.corp:443) is nothing but an internal hostname.
 
     The path may still be hostile bytes, so control/newline chars are stripped.
     """
@@ -150,7 +152,12 @@ def sanitize_req(req: str) -> str:
         seg = path[1:].split("/", 1)[0]
         path = "/" + seg
     else:
-        path = path.split("/", 1)[0]
+        # Not origin-form. After the absolute-form strip above, anything left
+        # without a leading "/" is authority-form (CONNECT internal.corp:443),
+        # asterisk-form (OPTIONS *), or junk -- none of which carry a path
+        # worth reporting, and the authority form leaks an internal hostname.
+        # Report the method alone.
+        path = ""
 
     method = "".join(ch for ch in method if ch.isalnum())[:16]
     path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7f)[:128]
