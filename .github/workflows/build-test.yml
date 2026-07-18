@@ -304,8 +304,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential curl libpcre2-dev zlib1g-dev
 
+      # The expansion goes through a step env var rather than straight into the
+      # run block: an inline ${{ }} is substituted into the script text before
+      # the shell ever sees it, which is the template-injection shape zizmor
+      # fails the Validation job on.
       - name: Resolve version
-        run: echo "VER=${{ env[matrix.version_key] }}" >> "$GITHUB_ENV"
+        env:
+          RESOLVED_VERSION: ${{ env[matrix.version_key] }}
+        run: echo "VER=$RESOLVED_VERSION" >> "$GITHUB_ENV"
 
       # This is the angie leg's whole point. Stock Test::Nginx::Socket refuses to
       # run against angie: it probes the version banner and requires
