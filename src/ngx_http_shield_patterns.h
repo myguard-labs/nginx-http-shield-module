@@ -1283,16 +1283,29 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ofbiz[] = {
  * "INIT=RUNSCRIPT FROM ..." -- which runs SQL at connect and is the RCE
  * primitive. That INIT clause is the part no installer sends.
  *
- * The gadget term is "init=", NOT a bare "jdbc:h2:" DSN. Requiring only the
- * endpoint plus any H2 DSN blocked every benign shape that reaches this endpoint
- * with an in-memory H2 connection string -- a legitimate first-run install, a
- * health probe, the DSN quoted in documentation ("jdbc:h2:mem:test" with no
- * INIT script, t/05 TEST 73). The endpoint is kept as a term so "init=" (an
- * ordinary query/JSON key elsewhere) is attack-only only in combination; the
- * H2 DSN term stays so an INIT clause against a non-H2 engine (where it is not
- * this RCE) does not match. */
+ * The gadget term is "init=", NOT a bare "jdbc:h2:" DSN. Requiring any H2 DSN
+ * on its own blocked every benign shape carrying an in-memory H2 connection
+ * string -- a legitimate first-run install, a health probe, the DSN quoted in
+ * documentation ("jdbc:h2:mem:test" with no INIT script, t/05 TEST 73). The H2
+ * DSN term stays so an INIT clause against a non-H2 engine (where it is not
+ * this RCE) does not match.
+ *
+ * The Metabase endpoint is deliberately NOT a term (S32-2). AND-rule terms must
+ * all land in ONE scan buffer: the URI and the body are scanned independently,
+ * with no cross-buffer term state. A real CVE-2023-38646 request puts the
+ * endpoint in the request line and the H2 INIT gadget in the JSON body, so an
+ * endpoint term made the rule unfireable on the actual exploit while it still
+ * matched a contrived request that repeated the endpoint INSIDE the body --
+ * which is exactly what the old t/07 positive did, and why this survived six
+ * audits behind a green test.
+ *
+ * Dropping it does not widen the rule in practice: "jdbc:h2:" + "init=" is
+ * already attack-only. A benign DSN carries no INIT clause (that is what TEST
+ * 73 asserts), and an INIT clause on an H2 connection string IS the RCE
+ * primitive regardless of which endpoint receives it -- the H2 SQL-injection
+ * shape (CVE-2021-42392 and friends) is the same gadget. Keying on the gadget
+ * rather than one product's path also covers the non-Metabase consumers of it. */
 static const ngx_http_shield_sig_t  ngx_http_shield_rule_metabase[] = {
-    NGX_HTTP_SHIELD_SIG("/api/setup/validate"),
     NGX_HTTP_SHIELD_SIG("jdbc:h2:"),
     NGX_HTTP_SHIELD_SIG("init="),
 };
