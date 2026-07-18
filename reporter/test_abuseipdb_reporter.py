@@ -9,6 +9,7 @@ takes `now` as a parameter everywhere), so the tests are deterministic.
 
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -291,6 +292,61 @@ def test_reporter_retry_after_honoured():
     r._note_failure(now=100.0, retry_after=42.0)
     assert r.in_cooldown(now=100.0) == 42.0
     assert r.in_cooldown(now=100.0 + 42.0) == 0.0
+
+
+def test_reporter_retry_after_is_clamped():
+    """A hostile/buggy Retry-After must not park the reporter for years."""
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    r._note_failure(now=0.0, retry_after=99999999.0)
+    assert r.in_cooldown(now=0.0) == mod.Reporter.RETRY_AFTER_MAX
+
+
+def test_reporter_retry_after_negative_is_floored():
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    r._note_failure(now=0.0, retry_after=-5.0)
+    assert r.in_cooldown(now=0.0) == 0.0
+
+
+def test_parse_retry_after_delta_seconds():
+    assert mod._parse_retry_after("120", now=0.0) == 120.0
+    assert mod._parse_retry_after("  120  ", now=0.0) == 120.0
+
+
+def test_parse_retry_after_http_date():
+    # 60s in the future relative to the supplied `now`.
+    when = "Wed, 21 Oct 2015 07:29:00 GMT"
+    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.timezone.utc).timestamp()
+    assert mod._parse_retry_after(when, now=now) == 60.0
+
+
+def test_parse_retry_after_past_http_date_is_zero():
+    when = "Wed, 21 Oct 2015 07:00:00 GMT"
+    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.timezone.utc).timestamp()
+    assert mod._parse_retry_after(when, now=now) == 0.0
+
+
+def test_parse_retry_after_unparseable_is_none():
+    for bad in (None, "", "   ", "soon", "-30", "12.5", "Wed, 99 Xxx 9999"):
+        assert mod._parse_retry_after(bad, now=0.0) is None
+
+
+def test_reporter_429_http_date_retry_after(monkeypatch):
+    """The HTTP-date form is honoured, not silently downgraded to backoff."""
+    import urllib.error
+
+    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.timezone.utc).timestamp()
+
+    def boom(req, timeout):
+        raise urllib.error.HTTPError(
+            mod.API_URL, 429, "Too Many",
+            {"Retry-After": "Wed, 21 Oct 2015 07:29:00 GMT"},
+            _FakeBody(b'{"errors":[]}'))
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    outcome, _ = r.report("8.8.8.8", [21], "c", "", now=now)
+    assert outcome == mod.Reporter.RETRY
+    assert r.in_cooldown(now=now) == 60.0
 
 
 def test_reporter_429_is_retry_with_cooldown(monkeypatch):

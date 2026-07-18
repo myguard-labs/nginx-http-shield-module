@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import email.utils
 import ipaddress
 import json
 import os
@@ -166,6 +167,33 @@ def build_comment(entry: dict) -> str:
     return comment[:COMMENT_MAX]
 
 
+def _parse_retry_after(value: str | None, now: float) -> float | None:
+    """Parse a Retry-After header into a delay in seconds.
+
+    RFC 9110 allows both forms: delta-seconds ("120") and an HTTP-date
+    ("Wed, 21 Oct 2015 07:28:00 GMT"). Returns None when the header is
+    absent or unparseable, which leaves the caller on exponential backoff.
+
+    The result is NOT clamped here -- Reporter._note_failure applies
+    RETRY_AFTER_MAX, so every path into the cooldown shares one bound.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    # A date without a timezone is GMT per RFC 9110.
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    return max(0.0, when.timestamp() - now)
+
+
 class Suppressor:
     """Local quota protection: private-IP skip, per-IP window, daily cap.
 
@@ -248,6 +276,12 @@ class Reporter:
 
     BACKOFF_BASE = 5.0
     BACKOFF_MAX = 300.0
+    # Upper bound on a server-supplied Retry-After. The value is remote input:
+    # a buggy or hostile intermediary answering "Retry-After: 99999999" would
+    # otherwise park the reporter for years, silently dropping every hit for
+    # the lifetime of the process. An hour is well past any real rate-limit
+    # window AbuseIPDB applies.
+    RETRY_AFTER_MAX = 3600.0
 
     def __init__(self, api_key: str, timeout: float, dry_run: bool) -> None:
         self.api_key = api_key
@@ -267,7 +301,9 @@ class Reporter:
     def _note_failure(self, now: float, retry_after: float | None) -> None:
         self._fail_streak += 1
         if retry_after is not None:
-            delay = retry_after
+            # Clamp: remote-supplied, see RETRY_AFTER_MAX. Negative values
+            # (a past HTTP-date, or a malformed negative int) mean "now".
+            delay = max(0.0, min(retry_after, self.RETRY_AFTER_MAX))
         else:
             # Cap the exponent: without this an unbounded fail streak computes a
             # huge int in 2**(streak-1) and eventually raises OverflowError in
@@ -323,11 +359,7 @@ class Reporter:
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
             if e.code == 429:
-                retry_after = None
-                ra = e.headers.get("Retry-After")
-                if ra and ra.isdigit():
-                    retry_after = float(ra)
-                self._note_failure(now, retry_after)
+                self._note_failure(now, _parse_retry_after(e.headers.get("Retry-After"), now))
                 return self.RETRY, f"HTTP 429: {body}"
             if 500 <= e.code < 600:
                 # Server-side error: transient -> retry with backoff.
