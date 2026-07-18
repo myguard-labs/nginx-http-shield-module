@@ -216,12 +216,63 @@ test_expire_preserves_live_window(void)
     hit(0xBBBB, b, 4, 105, 5, 60, 600);   /* B: window [105,165) */
 
     /* Expire at t=150: both windows still live -> nothing evicted. */
-    ngx_http_shield_ban_expire(&g_ctx, 150);
+    ngx_http_shield_ban_expire(&g_ctx, 150, 60);
     OK(ngx_http_shield_ban_lookup(&g_ctx, 0xAAAA, a, 4) != NULL,
        "A survives expire while its window is live");
     OK(ngx_http_shield_ban_lookup(&g_ctx, 0xBBBB, b, 4) != NULL,
        "B survives expire while its window is live");
     OK(live_allocs == 2, "both nodes still allocated");
+
+    ctx_free_all();
+}
+
+/*
+ * S30-5: a reload that SHORTENS ban_window must take effect immediately.
+ * The window deadline is derived from window_start + the caller's current
+ * window, never stamped into the node, so a node recorded under a long window
+ * becomes reclaimable as soon as the shorter policy says its window lapsed.
+ * Stamping the deadline at write time left such nodes reading "live" -- and
+ * holding slab space -- long past what the running config allowed.
+ */
+static void
+test_expire_honours_shortened_window_after_reload(void)
+{
+    u_char a[4] = { 10, 0, 0, 30 };
+
+    ctx_reset();
+
+    /* Recorded under a 600s window: under the OLD policy live until t=700. */
+    hit(0xD001, a, 4, 100, 5, 600, 600);
+
+    /* Reload shrinks ban_window to 60s. At t=200 the node's window
+     * (100 + 60 = 160) has lapsed under the NEW policy -> reclaimable. */
+    ngx_http_shield_ban_expire(&g_ctx, 200, 60);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xD001, a, 4) == NULL,
+       "shortened window after reload makes the node reclaimable at once");
+    OK(live_allocs == 0, "slab freed under the new policy");
+
+    ctx_free_all();
+}
+
+/*
+ * The mirror case: a reload that LENGTHENS ban_window protects a node that the
+ * old, shorter policy would have reclaimed. Same derivation, opposite sign.
+ */
+static void
+test_expire_honours_lengthened_window_after_reload(void)
+{
+    u_char a[4] = { 10, 0, 0, 31 };
+
+    ctx_reset();
+
+    /* Recorded under a 60s window: under the OLD policy stale from t=160. */
+    hit(0xD002, a, 4, 100, 5, 60, 600);
+
+    /* Reload grows ban_window to 600s -> at t=200 the node is live again. */
+    ngx_http_shield_ban_expire(&g_ctx, 200, 600);
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xD002, a, 4) != NULL,
+       "lengthened window after reload keeps the node live");
+    OK(live_allocs == 1, "node retained under the new policy");
 
     ctx_free_all();
 }
@@ -237,7 +288,7 @@ test_expire_reclaims_stale(void)
     hit(0xCCCC, a, 4, 100, 5, 60, 600);   /* window [100,160), not banned */
 
     /* At t=200 the window has lapsed and it was never banned -> stale. */
-    ngx_http_shield_ban_expire(&g_ctx, 200);
+    ngx_http_shield_ban_expire(&g_ctx, 200, 60);
     OK(ngx_http_shield_ban_lookup(&g_ctx, 0xCCCC, a, 4) == NULL,
        "stale node reclaimed by expire");
     OK(live_allocs == 0, "slab freed");
@@ -309,12 +360,15 @@ test_expire_progresses_past_live_cluster(void)
         live[3] = (u_char) (1 + i);
         hit((ngx_uint_t) (0xF100 + i), live, 4, 500, 5, 3600, 600);
     }
-    /* Stale node last -> at the head. Short window, long elapsed, never banned. */
-    hit(0xF000, stale, 4, 100, 5, 10, 600);   /* window [100,110), stale @600 */
+    /* Stale node last -> at the head. Its window_start is far enough back that
+     * the (single, derived) window used below leaves it lapsed, while the
+     * cluster above -- touched at 500 -- is still live. */
+    hit(0xF000, stale, 4, 100, 5, 10, 600);
 
     /* The walk starts at the tail (first live node), must skip all n_live live
-     * nodes (> EVICT) and still reach the stale head node and free it. */
-    ngx_http_shield_ban_expire(&g_ctx, 600);
+     * nodes (> EVICT) and still reach the stale head node and free it.
+     * window=2000: cluster [500,2500) live @2400, stale [100,2100) lapsed. */
+    ngx_http_shield_ban_expire(&g_ctx, 2400, 2000);
     OK(ngx_http_shield_ban_lookup(&g_ctx, 0xF000, stale, 4) == NULL,
        "eviction makes progress: stale node freed past a live tail cluster");
     OK(live_allocs == (size_t) n_live, "all live cluster nodes retained");
@@ -418,6 +472,8 @@ main(void)
     test_window_slides();
     test_backward_clock_resets_window();
     test_expire_preserves_live_window();
+    test_expire_honours_shortened_window_after_reload();
+    test_expire_honours_lengthened_window_after_reload();
     test_expire_reclaims_stale();
     test_expire_progresses_past_live_cluster();
     test_rotation_does_not_defeat_ban();

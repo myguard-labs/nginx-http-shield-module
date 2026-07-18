@@ -109,7 +109,8 @@ ngx_http_shield_ban_lookup(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t hash,
 
 
 void
-ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now)
+ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
+    time_t window)
 {
     ngx_uint_t                   scanned, evicted;
     ngx_queue_t                 *q, *prev;
@@ -150,7 +151,16 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now)
         prev = ngx_queue_prev(q);
         bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
 
-        if (bn->banned_until > now || bn->window_end > now) {
+        /* The window deadline is DERIVED from the caller's current `window`,
+         * not read from the node. A reload that shortens ban_window would
+         * otherwise leave already-touched nodes protected by a deadline
+         * stamped under the old, longer policy -- they would read as live
+         * past the point the running config says they lapse, and hold slab
+         * space the current policy considers reclaimable. Deriving means the
+         * live config always governs, and a reload takes effect at once. */
+        if (bn->banned_until > now
+            || ngx_http_shield_time_add_clamp(bn->window_start, window) > now)
+        {
             /* Live: keep it, look at the next-older node. */
             q = prev;
             continue;
@@ -199,7 +209,7 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
         size = offsetof(ngx_rbtree_node_t, color)
              + sizeof(ngx_http_shield_ban_node_t);
 
-        ngx_http_shield_ban_expire(ctx, now);
+        ngx_http_shield_ban_expire(ctx, now, window);
 
         node = ngx_slab_alloc_locked(ctx->shpool, size);
         if (node == NULL) {
@@ -214,7 +224,6 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
         bn->hits = 0;
         bn->banned_until = 0;
         bn->window_start = now;
-        bn->window_end = ngx_http_shield_time_add_clamp(now, window);
 
         ngx_rbtree_insert(&ctx->sh->rbtree, node);
         ngx_queue_insert_head(&ctx->sh->queue, &bn->queue);
@@ -232,7 +241,6 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
         || now - bn->window_start >= window)
     {
         bn->window_start = now;
-        bn->window_end = ngx_http_shield_time_add_clamp(now, window);
         bn->hits = 0;
     }
 
@@ -244,7 +252,6 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
          * extended after expiry, rather than tripping again on the next hit. */
         bn->hits = 0;
         bn->window_start = now;
-        bn->window_end = ngx_http_shield_time_add_clamp(now, window);
     }
 
     return NGX_OK;

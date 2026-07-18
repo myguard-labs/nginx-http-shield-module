@@ -40,12 +40,12 @@ typedef struct {
     u_char        len;            /* address length in bytes (4 v4, 16 v6)      */
     u_char        addr[16];       /* raw address bytes, for exact collision cmp */
     ngx_queue_t   queue;          /* LRU: most-recently-touched at head        */
-    time_t        window_start;   /* start of the current hit-counting window  */
-    time_t        window_end;     /* window_start + ban_window; when the live   */
-                                  /* counting window lapses. Stored per node so */
-                                  /* ban_expire can tell a below-threshold node */
-                                  /* with a LIVE window from a truly stale one  */
-                                  /* without needing the location's ban_window. */
+    time_t        window_start;   /* start of the current hit-counting window.   */
+                                  /* The window END is DERIVED (window_start +   */
+                                  /* the caller's current ban_window), never     */
+                                  /* stored: a reload that shortens `window`     */
+                                  /* must not leave nodes carrying a longer      */
+                                  /* deadline stamped under the old policy.      */
     time_t        banned_until;   /* 0 = not banned; else ban expiry (seconds) */
     ngx_uint_t    hits;           /* shield hits seen in the current window     */
 } ngx_http_shield_ban_node_t;
@@ -89,7 +89,8 @@ ngx_http_shield_ban_node_t *ngx_http_shield_ban_lookup(
 
 /* Reclaim slab space by evicting genuinely-stale LRU nodes (neither banned nor
  * inside a live counting window). Bounded. Caller holds the shm lock. */
-void ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now);
+void ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
+    time_t window);
 
 /* Is this address currently banned (banned_until > now)? Also refreshes LRU.
  * Caller holds the shm lock. */
