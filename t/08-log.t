@@ -226,3 +226,22 @@ GET /t?id=1%20union%20select%20pw
 # one object, req field opened and the record closed with "}\n -- not cut off.
 --- response_body_like eval
 [qr//, qr/^\{.*"req":".*"\}\n\z/s]
+
+=== TEST 13: a failing file sink (/dev/full, ENOSPC) still serves and alerts once
+# audit s43 F6: a write to a full disk must NOT change the request outcome (still
+# 403) but must NOT vanish silently either -- it emits one rate-limited [alert]
+# naming the sink. /dev/full always fails writes with ENOSPC while opening fine,
+# so ngx_conf_open_file succeeds at load and every hit's write_fd returns -1.
+--- config
+    location /t {
+        shield block;
+        shield_log /dev/full;
+        empty_gif;
+    }
+--- request
+GET /t?id=1%20union%20select%20pw
+--- error_code: 403
+--- error_log
+to shield_log "/dev/full" failed
+--- no_error_log
+[emerg]

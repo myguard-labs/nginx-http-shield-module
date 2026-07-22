@@ -33,7 +33,10 @@ export PROBER_MODULE="ngx_http_shield_module.so"
 export PROBER_DIRECTIVE="shield_probe"
 export PROBER_CONF="$HERE/conf/prober.conf"
 export PROBER_RULES="$HERE/rules/*.rule"
-export PROBER_ROOT="$(cd ../.. && pwd)"
+# SC2155: split declare from assign so a failed cd/pwd surfaces its exit status
+# instead of being masked by export's own success.
+PROBER_ROOT="$(cd ../.. && pwd)"
+export PROBER_ROOT
 
 # NOT setting PROBER_ALLOW_LOG on purpose. 04-fault.rule drives the slab
 # allocator to failure, which is the kind of thing that usually has to be

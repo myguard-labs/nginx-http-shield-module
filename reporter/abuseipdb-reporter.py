@@ -67,33 +67,16 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 
 # shield category -> AbuseIPDB category IDs.
 # https://www.abuseipdb.com/categories  (21 = Web App Attack, 16 = SQL Injection,
-# 15 = Hacking). Everything shield blocks is a web-app attack; the ones that map
-# to a more specific ID carry it in addition to 21.
+# 4 = DDoS Attack). EVERY shield category is a web-app attack, so 21 is the
+# correct answer for all of them and is the DEFAULT_CATS fallback below. This map
+# holds ONLY the categories that add a MORE-SPECIFIC id on top of 21 -- keeping
+# it exhaustive was pure drift risk (it went stale in both directions: dead names
+# the module never emits, plus emitted names it omitted). Anything not listed
+# here falls back to [21], which is exactly right. Add a row only when a category
+# earns a second AbuseIPDB id.
 CAT_MAP: dict[str, list[int]] = {
-    "sqli": [21, 16],
-    "xss": [21],
-    "cmdi": [21],
-    "lfi": [21],
-    "traversal": [21],
-    "rce": [21],
-    "php_rce": [21],
-    "java_rce": [21],
-    "java_eval": [21],
-    "template": [21],
-    "deserial": [21],
-    "ssrf_meta": [21],
-    "exploit_path": [21],
-    "sensitive_file": [21],
-    "webshell": [21],
-    "ctrl_char": [21],
-    "httpoxy": [21],
-    "range_dos": [21, 4],   # 4 = DDoS Attack
-    "shellshock": [21],
-    "log4shell": [21],
-    "nullbyte": [21],
-    "overlong": [21],
-    "crlf": [21],
-    "ssi": [21],
+    "sqli": [21, 16],       # 16 = SQL Injection
+    "range_dos": [21, 4],   # 4 = DDoS Attack (Apache-Killer Range)
 }
 DEFAULT_CATS = [21]
 
@@ -575,8 +558,25 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
                 rotation_eofs = 0
                 continue
         except FileNotFoundError:
+            # The path is temporarily gone: logrotate has renamed the file but
+            # nginx has not yet reopened a fresh one on SIGUSR1. Do NOT close the
+            # old fd -- nginx may still append late hits to the renamed inode in
+            # this gap, and closing now discards the exact descriptor needed to
+            # drain them. Apply the SAME stable-EOF grace as a new-inode rotation:
+            # keep reading the old fh (the read branch drains late writes and
+            # resets rotation_eofs) and only switch once we have counted
+            # ROTATION_EOF_GRACE consecutive empty reads with the path absent.
+            rotation_eofs += 1
+            if rotation_eofs < ROTATION_EOF_GRACE:
+                time.sleep(args.poll)
+                continue
+            log("rotation detected (path absent); old file drained, reopening")
+            save_offset(args.state, log_path, offset, cur_inode)
             fh.close()
             fh = None
+            offset = 0
+            saved_inode = -1
+            rotation_eofs = 0
             continue
         time.sleep(args.poll)
 

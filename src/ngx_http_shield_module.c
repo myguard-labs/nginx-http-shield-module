@@ -64,6 +64,8 @@ typedef struct {
     ngx_uint_t   status;      /* status returned in BLOCK mode              */
     uint64_t     skip;        /* bitmask of disabled categories             */
     ngx_open_file_t *log;     /* JSON hit log file; NULL = disabled         */
+    time_t       log_error_time;    /* last file-sink write-fail alert (rate-limit) */
+    time_t       log_disk_full_time;/* last second ENOSPC seen on the file sink     */
     ngx_syslog_peer_t *syslog_peer; /* JSON hit log to a syslog server; NULL off */
 
     ngx_shm_zone_t *ban_zone; /* shield_ban shm zone; NULL/UNSET = no banning */
@@ -500,10 +502,46 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
 
     line.len = p - line.data;
 
-    /* File sink: append a newline terminator and write the record. */
-    if (slcf->log != NULL) {
+    /* File sink: append a newline terminator and write the record. Best-effort
+     * for the REQUEST (a failed write never changes the response), but not
+     * silent: mirror nginx's access-log writer so a full disk or broken sink
+     * surfaces a rate-limited ALERT instead of records vanishing unnoticed. */
+    if (slcf->log != NULL && ngx_time() != slcf->log_disk_full_time) {
+        ssize_t  n;
+        time_t   now;
+
+        /* Skip the write for the rest of the second after an ENOSPC: on some
+         * filesystems writing to a full disk blocks far longer than a normal
+         * write, so back off exactly as nginx's access-log writer does. */
+
         *p = '\n';
-        (void) ngx_write_fd(slcf->log->fd, line.data, line.len + 1);
+        n = ngx_write_fd(slcf->log->fd, line.data, line.len + 1);
+
+        if (n != (ssize_t) (line.len + 1)) {
+            now = ngx_time();
+
+            if (n == -1) {
+                ngx_err_t  err = ngx_errno;
+
+                if (err == NGX_ENOSPC) {
+                    slcf->log_disk_full_time = now;
+                }
+
+                if (now - slcf->log_error_time > 59) {
+                    ngx_log_error(NGX_LOG_ALERT, r->connection->log, err,
+                                  ngx_write_fd_n " to shield_log \"%s\" failed",
+                                  slcf->log->name.data);
+                    slcf->log_error_time = now;
+                }
+
+            } else if (now - slcf->log_error_time > 59) {
+                ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                              ngx_write_fd_n " to shield_log \"%s\" was "
+                              "incomplete: %z of %uz",
+                              slcf->log->name.data, n, line.len + 1);
+                slcf->log_error_time = now;
+            }
+        }
     }
 
     /* Syslog sink: prepend the RFC 3164 header into its own buffer, then the
@@ -1678,7 +1716,12 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->max_body, prev->max_body, 8 * 1024);
     ngx_conf_merge_uint_value(conf->status, prev->status, NGX_HTTP_FORBIDDEN);
 
-    /* skip: inherit the parent mask only when this location set none. */
+    /* skip: a child that names ANY shield_skip token replaces the parent mask
+     * wholesale (masks do not union). A child that names none (conf->skip == 0)
+     * inherits the parent's mask. Consequence: an empty child CANNOT explicitly
+     * clear an inherited mask -- zero means "unset, inherit", not "skip nothing"
+     * -- so to disable inherited skips a child must re-state the categories it
+     * DOES want skipped, or none survives only if the parent had none. */
     if (conf->skip == 0) {
         conf->skip = prev->skip;
     }
@@ -1880,7 +1923,8 @@ ngx_http_shield_ban_addr(ngx_http_request_t *r, u_char *addr, u_char *len)
 
 
 /*
- * Is this client currently banned? Read-mostly fast path: a shared lock, one
+ * Is this client currently banned? Read-mostly fast path: takes the shm mutex
+ * (ngx_shmtx_lock is exclusive -- there is no shared/reader mode), one
  * rbtree lookup, compare banned_until against now. An expired ban is treated as
  * not-banned (and the node is left for ngx_http_shield_ban_expire/record to
  * reclaim or reset). Never allocates. The state lookup itself lives in

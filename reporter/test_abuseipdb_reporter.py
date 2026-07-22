@@ -1010,3 +1010,53 @@ def test_follow_drains_late_lines_before_rotating(tmp_path, monkeypatch):
     # The late line appended after rotation was still read from the old fd.
     assert any("reported 8.8.8.8" in m or "dry-run" in m for m in logs)
     assert any("rotation detected" in m for m in logs)
+
+
+def test_follow_drains_late_lines_when_path_absent(tmp_path, monkeypatch):
+    # F4 (audit s43): during the rename -> SIGUSR1-reopen gap, os.stat(log_path)
+    # raises FileNotFoundError. follow() must NOT close the old fd on that first
+    # absent-path poll -- it keeps reading the renamed inode across the same
+    # stable-EOF grace, so a late hit written to the old inode in the gap is
+    # still consumed before we switch to the (eventually recreated) path.
+    args = _mk_args(tmp_path, dry_run=True)
+    logfile = Path(args.logfile)
+    logfile.write_text("")   # empty: open ok, first readline is EOF
+
+    mod._stop = False
+    logs = []
+    rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
+    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+
+    late = json.dumps({"ts": "2026-07-17T00:00:00Z", "ip": "9.9.9.9",
+                       "cat": "sqli", "src": "uri",
+                       "req": "GET /y HTTP/1.1", "mode": "block",
+                       "status": 403}) + "\n"
+
+    real_stat = os.stat
+    calls = {"n": 0}
+
+    def fake_stat(p, *a, **k):
+        if str(p) == args.logfile:
+            calls["n"] += 1
+            # First absent-path poll: nginx appends a late hit to the renamed
+            # (still-open) inode before the new path exists. The read branch must
+            # pick it up during the grace window rather than losing it.
+            if calls["n"] == 1:
+                with open(args.logfile, "a", encoding="utf-8") as fh:
+                    fh.write(late)
+            # Path is gone for the whole gap -> stat keeps raising.
+            raise FileNotFoundError(args.logfile)
+        return real_stat(p, *a, **k)
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    _stopping_sleep(monkeypatch, after=mod.ROTATION_EOF_GRACE + 4)
+    try:
+        mod.follow(args, rep, sup, logs.append)
+    finally:
+        mod._stop = False
+        monkeypatch.setattr(os, "stat", real_stat)
+
+    # The late line written to the old inode during the absent-path gap was
+    # still drained, and only then did follow() switch on the stable EOF.
+    assert any("reported 9.9.9.9" in m or "dry-run" in m for m in logs)
+    assert any("path absent" in m for m in logs)
