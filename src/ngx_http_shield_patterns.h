@@ -491,6 +491,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_template[] = {
     NGX_HTTP_SHIELD_SIG("${date:"),
     NGX_HTTP_SHIELD_SIG("${ctx:"),
     NGX_HTTP_SHIELD_SIG("${main:"),
+    NGX_HTTP_SHIELD_SIG("${base64:"),     /* Log4j Base64Lookup jndi reconstruction */
+    NGX_HTTP_SHIELD_SIG("${marker:"),     /* Log4j MarkerLookup nesting gadget      */
     NGX_HTTP_SHIELD_SIG("${::-"),         /* Log4Shell defanging bypass     */
     NGX_HTTP_SHIELD_SIG("${${"),          /* nested obfuscation             */
     NGX_HTTP_SHIELD_SIG("${${lower:"),
@@ -502,6 +504,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
     NGX_HTTP_SHIELD_SIG("ro0ab"),         /* base64 of Java stream header    */
     NGX_HTTP_SHIELD_SIG("aced0005"),      /* hex of Java stream header       */
     NGX_HTTP_SHIELD_SIG("o:21:\"jdatabasedrivermysqli\""), /* Joomla 2015-8562 */
+    NGX_HTTP_SHIELD_SIG("o:24:\"guzzlehttp"), /* phpggc Guzzle PSR7 POP chain -- length+ns bound */
     /* Well-known Java deserialization gadget classes -- no legitimate request
      * carries these by name. */
     NGX_HTTP_SHIELD_SIG("jdbcrowsetimpl"),
@@ -1044,6 +1047,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/databases/upgrademysqlstatus"), /* CyberPanel 2024-51567 */
     NGX_HTTP_SHIELD_SIG("/developmentserver/metadatauploader"), /* SAP NetWeaver 2025-31324 */
     NGX_HTTP_SHIELD_SIG("/_layouts/15/toolpane.aspx"), /* SharePoint ToolShell 2025-53770 */
+    NGX_HTTP_SHIELD_SIG("/apps/graphapi/vendor/microsoft/"), /* ownCloud graphapi phpinfo 2023-49103 */
+    NGX_HTTP_SHIELD_SIG("/nmapi/recurringreport"),   /* WhatsUp Gold 2024-4885 */
 };
 
 /* One row per signature-table category. Structural categories (httpoxy,
@@ -1380,6 +1385,21 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ssrf_wildcard_dns[] = {
  * signature and stays blocked. Left out until there is a term that actually
  * separates the two. */
 
+/* Adobe ColdFusion CVE-2023-26360: deserialization RCE through the CKEditor
+ * filemanager. The filemanager path is a real bundled asset route, hit by the
+ * admin UI; on its own it is not an attack. The exploit steers it with the
+ * "_cfclient=true" parameter, which switches the endpoint into the vulnerable
+ * cfclient code path -- a switch no legitimate filemanager fetch sends.
+ *
+ * Both terms land in the request target (path + query), so they are same-buffer.
+ * "iedit.cfc" is only the display anchor of the writeups, NOT a term: a bare
+ * component fetch is legitimate. Requiring the path AND the _cfclient switch is
+ * attack-only. */
+static const ngx_http_shield_sig_t  ngx_http_shield_rule_coldfusion_cfclient[] = {
+    NGX_HTTP_SHIELD_SIG("/cf_scripts/scripts/ajax/ckeditor/plugins/filemanager/"),
+    NGX_HTTP_SHIELD_SIG("_cfclient=true"),
+};
+
 #define NGX_HTTP_SHIELD_RULE(c, nm, arr, m)                                   \
     { (c), (nm), (arr), sizeof(arr) / sizeof((arr)[0]), (m) }
 
@@ -1402,6 +1422,8 @@ static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
         ngx_http_shield_rule_vmware_ssti, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_SSRF_META, "ssrf_wildcard_dns",
         ngx_http_shield_rule_ssrf_wildcard_dns, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "coldfusion_cfclient",
+        ngx_http_shield_rule_coldfusion_cfclient, NGX_HTTP_SHIELD_MATCH_DECODED),
 };
 
 #define NGX_HTTP_SHIELD_NRULES                                                \
