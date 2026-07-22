@@ -285,8 +285,11 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
      * documented trade-off (README "Repeat-offender banning"): a true sliding
      * window needs per-hit timestamps, which this fixed-size node cannot hold.
      *
-     * A still-active ban does not reset the window -- it just keeps extending
-     * while the attacker keeps hitting, which is the intended behavior.
+     * A still-active ban is never re-recorded in practice: the request handler
+     * short-circuits banned clients (is_banned -> 403) BEFORE it ever calls
+     * record, so this window bookkeeping only runs for a not-currently-banned
+     * client. Were record reached with a live ban, it would extend rather than
+     * reset the window; that path is defensive, not the hot path.
      *
      * `now < window_start` can only happen if the wall clock was stepped
      * backward (ngx_time() is wall-clock based). Treat that as a window reset
