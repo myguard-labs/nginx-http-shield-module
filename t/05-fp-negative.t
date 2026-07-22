@@ -730,3 +730,34 @@ Content-Type: application/xml
 --- more_headers
 Content-Type: application/json
 --- error_code: 405
+
+=== TEST 78: a graphapi JS asset (not the vendor/ tree) is a legit ownCloud fetch
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/apps/graphapi/js/graphapi-main.js
+--- error_code: 200
+
+=== TEST 79: an unrelated REST report path is not the WhatsUp nmapi RCE route
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/api/v1/reports/recurring
+--- error_code: 200
+
+=== TEST 80: prose naming a log4j lookup by name (no ${...:} interpolation) passes
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?q=how+does+the+log4j+base64+lookup+work
+--- error_code: 200
+
+=== TEST 81: a 24-char class name that is not GuzzleHttp is not the POP gadget
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+a=O:24:"MyApplicationDataObjectX":0:{}
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 405

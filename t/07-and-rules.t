@@ -176,3 +176,18 @@ category=ssrf_meta
 --- request
 GET /t?callback=http://10.0.0.5.nip.io/webhook
 --- error_code: 200
+
+=== TEST 16: ColdFusion cfclient filemanager RCE (CVE-2023-26360)
+# The filemanager path AND the _cfclient=true switch, both in the target.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/cf_scripts/scripts/ajax/ckeditor/plugins/filemanager/iedit.cfc?_cfclient=true&method=getComponentMetaData
+--- error_code: 403
+
+=== TEST 17: filemanager path WITHOUT the _cfclient switch is a benign asset fetch
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/cf_scripts/scripts/ajax/ckeditor/plugins/filemanager/edit.html
+--- error_code: 200

@@ -528,3 +528,31 @@ GET /t/.qwen_code/settings.json
 --- request
 GET /t?f=..%2f..%2f..%2fetc%2fpasswd
 --- error_code: 403
+
+=== TEST 70: ownCloud graphapi phpinfo path (CVE-2023-49103)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/apps/graphapi/vendor/microsoft/office365/openid-connect
+--- error_code: 403
+
+=== TEST 71: WhatsUp Gold recurringreport RCE endpoint (CVE-2024-4885)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/NmApi/recurringreport
+--- error_code: 403
+
+=== TEST 72: Log4j Base64Lookup jndi reconstruction gadget
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?x=${base64:am5kaTpsZGFwOi8v}
+--- error_code: 403
+
+=== TEST 73: Log4j MarkerLookup nesting gadget
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t?x=${marker:${lower:j}ndi}
+--- error_code: 403

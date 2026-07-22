@@ -269,3 +269,13 @@ POST /t
 Content-Type: application/octet-stream
 Content-Type: application/json
 --- error_code: 403
+
+=== TEST 24: phpggc Guzzle PSR7 POP-chain serialized object in body (CVE-class)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+a=O:24:"GuzzleHttp\Psr7\FnStream":2:{}
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- error_code: 403
