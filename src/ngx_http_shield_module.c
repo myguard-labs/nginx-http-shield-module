@@ -100,6 +100,8 @@ static ngx_int_t ngx_http_shield_act(ngx_http_request_t *r,
 static ngx_int_t ngx_http_shield_fail(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, const char *what);
 
+static ngx_int_t ngx_http_shield_check_dotfile(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit);
 static ngx_int_t ngx_http_shield_scan_input(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, u_char *data, size_t len,
     const char *source, uint64_t skip, ngx_http_shield_hit_t *hit);
@@ -684,6 +686,70 @@ ngx_http_shield_check_ctrl_char(ngx_http_request_t *r,
 }
 
 
+/*
+ * Any path segment starting with '.' -- dotfiles and dotdirs (.git, .env,
+ * .htaccess, .ssh, .well-known included: no exception carved out, per the
+ * directive this is scanned against).
+ *
+ * A structural check like ctrl_char: the SHAPE of the segment is wrong, not
+ * its content, so it needs no signature list and cannot be evaded by a name
+ * the list doesn't happen to carry yet.
+ *
+ * "." and ".." themselves are excluded -- they are relative-path tokens, not
+ * named dotfiles, and ".." is already the traversal category's job.
+ */
+static ngx_int_t
+ngx_http_shield_check_dotfile(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
+{
+    size_t   i;
+    u_char   c;
+    ngx_int_t  at_segment_start;
+
+    if (slcf->skip & ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_DOTFILE)) {
+        return NGX_DECLINED;
+    }
+
+    at_segment_start = 1;
+
+    for (i = 0; i < r->uri.len; i++) {
+        c = r->uri.data[i];
+
+        if (c == '/') {
+            at_segment_start = 1;
+            continue;
+        }
+
+        if (at_segment_start && c == '.') {
+            size_t  rest = r->uri.len - i;
+
+            if ((rest == 1)
+                || (rest >= 2 && r->uri.data[i + 1] == '/'))
+            {
+                at_segment_start = 0;
+                continue;   /* lone "." segment */
+            }
+
+            if ((rest == 2 && r->uri.data[i + 1] == '.')
+                || (rest >= 3 && r->uri.data[i + 1] == '.'
+                    && r->uri.data[i + 2] == '/'))
+            {
+                at_segment_start = 0;
+                continue;   /* ".." segment -- owned by traversal */
+            }
+
+            hit->category = NGX_HTTP_SHIELD_NAME_DOTFILE;
+            hit->source = "uri";
+            return NGX_OK;
+        }
+
+        at_segment_start = 0;
+    }
+
+    return NGX_DECLINED;
+}
+
+
 /* ---- pre-body inspection (request target + headers) -------------------- */
 
 static ngx_int_t
@@ -710,6 +776,10 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     }
 
     if (ngx_http_shield_check_ctrl_char(r, slcf, hit) == NGX_OK) {
+        return NGX_OK;
+    }
+
+    if (ngx_http_shield_check_dotfile(r, slcf, hit) == NGX_OK) {
         return NGX_OK;
     }
 
@@ -1734,6 +1804,13 @@ ngx_http_shield_cat_by_name(ngx_str_t *name)
            == 0)
     {
         return NGX_HTTP_SHIELD_CAT_CTRL_CHAR;
+    }
+
+    if (name->len == sizeof(NGX_HTTP_SHIELD_NAME_DOTFILE) - 1
+        && ngx_strncmp(name->data, NGX_HTTP_SHIELD_NAME_DOTFILE, name->len)
+           == 0)
+    {
+        return NGX_HTTP_SHIELD_CAT_DOTFILE;
     }
 
     return -1;
