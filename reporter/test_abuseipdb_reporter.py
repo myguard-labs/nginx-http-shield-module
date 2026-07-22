@@ -346,6 +346,71 @@ def test_parse_retry_after_unparseable_is_none():
         assert mod._parse_retry_after(bad, now=0.0) is None
 
 
+def test_parse_retry_after_unicode_digits_are_none_not_crash():
+    """str.isdigit() accepts these; float() would raise outside the guard (F2).
+
+    A hostile/buggy Retry-After must degrade to None (fall back to backoff),
+    never propagate a ValueError that restart-loops the daemon.
+    """
+    for bad in ("²", "②", "½", "１２３"):
+        assert mod._parse_retry_after(bad, now=0.0) is None
+
+
+def test_reporter_429_unicode_retry_after_does_not_crash(monkeypatch):
+    """Full 429 path with a Unicode-digit Retry-After: RETRY, not a crash (F2)."""
+    import urllib.error
+
+    def boom(req, timeout):
+        raise urllib.error.HTTPError(
+            mod.API_URL, 429, "Too Many",
+            {"Retry-After": "²"}, _FakeBody(b'{"errors":[]}'))
+
+    monkeypatch.setattr(mod._OPENER, "open", boom)
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    outcome, _ = r.report("8.8.8.8", [21], "c", "", now=0.0)
+    assert outcome == mod.Reporter.RETRY
+    # Unparseable Retry-After -> exponential backoff base, not a stall/crash.
+    assert r.in_cooldown(now=0.0) == mod.Reporter.BACKOFF_BASE
+
+
+def test_noredirect_refuses_every_3xx():
+    """The credential-bearing opener must not follow any redirect (F1).
+
+    redirect_request returning None makes urllib raise the 3xx as an HTTPError
+    instead of re-issuing the request (with the Key header) to the target.
+    """
+    h = mod._NoRedirect()
+    req = mod.urllib.request.Request(mod.API_URL, method="POST")
+    for code in (301, 302, 303, 307, 308):
+        assert h.redirect_request(
+            req, _FakeBody(b""), code, "redir",
+            {"Location": "https://evil.example/"},
+            "https://evil.example/") is None
+
+
+def test_reporter_redirect_is_dropped_key_not_resent(monkeypatch):
+    """A 3xx surfaces as a permanent DROP; no success is recorded (F1).
+
+    The real _OPENER raises HTTPError on a refused redirect, so report() lands
+    in the permanent branch: DROP, advance, and crucially no _note_success().
+    """
+    import urllib.error
+
+    def redir(req, timeout):
+        # Assert the credential is present on the request the opener refused --
+        # proving the guard fires BEFORE any redirect target could receive it.
+        assert req.get_header("Key") == "k"
+        raise urllib.error.HTTPError(
+            mod.API_URL, 302, "Found",
+            {"Location": "https://evil.example/"}, _FakeBody(b""))
+
+    monkeypatch.setattr(mod._OPENER, "open", redir)
+    r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
+    outcome, _ = r.report("8.8.8.8", [21], "c", "", now=0.0)
+    assert outcome == mod.Reporter.DROP
+    assert r.in_cooldown(now=0.0) == 0.0     # DROP sets no cooldown
+
+
 def test_reporter_429_http_date_retry_after(monkeypatch):
     """The HTTP-date form is honoured, not silently downgraded to backoff."""
     import urllib.error
@@ -358,7 +423,7 @@ def test_reporter_429_http_date_retry_after(monkeypatch):
             {"Retry-After": "Wed, 21 Oct 2015 07:29:00 GMT"},
             _FakeBody(b'{"errors":[]}'))
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     outcome, _ = r.report("8.8.8.8", [21], "c", "", now=now)
     assert outcome == mod.Reporter.RETRY
@@ -372,7 +437,7 @@ def test_reporter_429_is_retry_with_cooldown(monkeypatch):
         raise urllib.error.HTTPError(mod.API_URL, 429, "Too Many", {"Retry-After": "30"},
                                      _FakeBody(b'{"errors":[]}'))
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.RETRY
@@ -391,7 +456,7 @@ def test_reporter_permanent_4xx_is_dropped(monkeypatch):
             raise urllib.error.HTTPError(mod.API_URL, _code, "Bad", {},
                                          _FakeBody(b'{"errors":[]}'))
 
-        monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+        monkeypatch.setattr(mod._OPENER, "open", boom)
         r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
         outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
         assert outcome == mod.Reporter.DROP, code
@@ -411,7 +476,7 @@ def test_reporter_3xx_is_dropped(monkeypatch):
         raise urllib.error.HTTPError(mod.API_URL, 302, "Found", {},
                                      _FakeBody(b'{}'))
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.DROP
@@ -428,7 +493,7 @@ def test_reporter_5xx_is_retry(monkeypatch):
         raise urllib.error.HTTPError(mod.API_URL, 503, "Down", {},
                                      _FakeBody(b'{"errors":[]}'))
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.RETRY
@@ -442,7 +507,7 @@ def test_reporter_network_error_is_retry(monkeypatch):
     def boom(req, timeout):
         raise urllib.error.URLError("unreachable")
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.RETRY
@@ -456,7 +521,7 @@ def test_reporter_success_clears_cooldown(monkeypatch):
 
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     r._note_failure(now=0.0, retry_after=None)          # arm a cooldown
-    monkeypatch.setattr(mod.urllib.request, "urlopen", okresp)
+    monkeypatch.setattr(mod._OPENER, "open", okresp)
     outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.OK
     assert "abuseConfidenceScore" in detail
@@ -551,7 +616,7 @@ def test_process_line_send_failure_retried(monkeypatch):
     def boom(req, timeout):
         raise urllib.error.URLError("down")
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(mod._OPENER, "open", boom)
     logs = []
     entry = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"})
     done = mod.process_line(entry, sup, r, now=1000.0, log=logs.append)
@@ -571,7 +636,7 @@ def test_process_line_permanent_4xx_advances(monkeypatch):
         raise urllib.error.HTTPError(mod.API_URL, 422, "Unprocessable", {},
                                      _FakeBody(b'{"errors":[]}'))
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(mod._OPENER, "open", boom)
     logs = []
     entry = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"})
     done = mod.process_line(entry, sup, r, now=1000.0, log=logs.append)
