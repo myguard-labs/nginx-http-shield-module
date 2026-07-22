@@ -26,9 +26,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ -z "${NGINX_VERSION:-}" ]; then
     for d in "$REPO_ROOT"/.build/nginx-*/; do
         [ -d "$d" ] || continue
-        v=${d%/}; v=${v##*/nginx-}
-        case "$v" in *.tar*) continue;; esac
-        NGINX_VERSION=$v   # last glob match wins; single tree in practice
+        v=${d%/}
+        v=${v##*/nginx-}
+        case "$v" in *.tar*) continue ;; esac
+        NGINX_VERSION=$v # last glob match wins; single tree in practice
     done
 fi
 if [ -z "${NGINX_VERSION:-}" ]; then

@@ -27,7 +27,7 @@ VERSION="${2:-1.31.3}"
 MODE="${3:-debug}"
 
 case "$MODE" in
-    debug|asan|module|coverage) ;;
+    debug | asan | module | coverage) ;;
     *)
         echo "unsupported mode: $MODE (want: debug|asan|module|coverage)" >&2
         exit 2
@@ -140,7 +140,7 @@ cd "$ROOT/$DIR"
     "$ADD_MODULE"
 
 case "$MODE" in
-    asan|coverage)
+    asan | coverage)
         make -j"$(nproc)"
         echo "built: $ROOT/$DIR/objs/$BIN"
         ;;

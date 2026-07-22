@@ -32,7 +32,7 @@ PORT=18253
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/conf" "$WORK/logs" "$WORK/html"
-echo ok > "$WORK/html/ok"
+echo ok >"$WORK/html/ok"
 
 # Dynamic (.so next to the binary) vs static (asan) build detection.
 NGINX_OBJS="$(cd "$(dirname "$NGINX")" && pwd)"
@@ -47,7 +47,7 @@ fi
 # runs); `return` would finalize in REWRITE, before shield ever sees the
 # request. A POST body to empty_gif is a 405, so for body cases 403 = blocked,
 # 405 = passed-through.
-cat > "$WORK/conf/nginx.conf" <<EOF
+cat >"$WORK/conf/nginx.conf" <<EOF
 $LOAD_MODULE
 daemon off;
 master_process on;
@@ -107,8 +107,11 @@ for _ in $(seq 1 100); do
     sleep 0.1
 done
 
-echo "soak: ${DURATION}s, concurrency ${CONC}$( [ "${USE_HELGRIND:-0}" = 1 ] && echo ' (helgrind)'; [ "${USE_VALGRIND:-0}" = 1 ] && echo ' (memcheck)')"
-END=$(( $(date +%s) + DURATION ))
+echo "soak: ${DURATION}s, concurrency ${CONC}$(
+    [ "${USE_HELGRIND:-0}" = 1 ] && echo ' (helgrind)'
+    [ "${USE_VALGRIND:-0}" = 1 ] && echo ' (memcheck)'
+)"
+END=$(($(date +%s) + DURATION))
 
 saw_block="$WORK/logs/saw_block"
 saw_pass="$WORK/logs/saw_pass"
@@ -172,20 +175,23 @@ storm_worker() {
             # benign: anything that is NOT a 403 block proves pass-through
             # (200/404/405 are all "shield let it through").
             if [ "$code" != "403" ] && [ "$code" != "000" ]; then
-                : > "$saw_pass" 2>/dev/null || true
+                : >"$saw_pass" 2>/dev/null || true
             fi
         fi
 
         if [ "$code" = "000" ]; then
-            printf 'x' >> "$saw_dead" 2>/dev/null || true
+            printf 'x' >>"$saw_dead" 2>/dev/null || true
         elif [ "$r" -lt 7 ] && [ "$code" = "403" ]; then
-            : > "$saw_block" 2>/dev/null || true
+            : >"$saw_block" 2>/dev/null || true
         fi
     done
 }
 
 pids=()
-for _ in $(seq 1 "$CONC"); do storm_worker & pids+=($!); done
+for _ in $(seq 1 "$CONC"); do
+    storm_worker &
+    pids+=($!)
+done
 for pid in "${pids[@]}"; do wait "$pid" || true; done
 
 kill -QUIT "$NGINX_PID" 2>/dev/null || true
@@ -204,11 +210,13 @@ wait "$NGINX_PID" 2>/dev/null || rc=$?
 
 problems=0
 if ls "$WORK"/logs/asan* >/dev/null 2>&1; then
-    echo "FAIL: ASAN/UBSAN report:"; cat "$WORK"/logs/asan*; problems=1
+    echo "FAIL: ASAN/UBSAN report:"
+    cat "$WORK"/logs/asan*
+    problems=1
 fi
 if ls "$WORK"/logs/valgrind.* >/dev/null 2>&1; then
     if grep -qE 'ERROR SUMMARY: [1-9]|definitely lost: [1-9]' \
-            "$WORK"/logs/valgrind.* 2>/dev/null; then
+        "$WORK"/logs/valgrind.* 2>/dev/null; then
         echo "FAIL: valgrind errors:"
         grep -E 'ERROR SUMMARY|definitely lost' "$WORK"/logs/valgrind.*
         for _vglog in "$WORK"/logs/valgrind.*; do
@@ -219,17 +227,19 @@ if ls "$WORK"/logs/valgrind.* >/dev/null 2>&1; then
         problems=1
     fi
 fi
-if grep -nE '\[alert\]|\[emerg\]' "$WORK/logs/error.log" 2>/dev/null \
-        | grep -vE 'shared memory zone .* was locked by|open socket #[0-9]+ left in connection|\[alert\][^:]*: aborting'; then
-    echo "FAIL: alert/emerg in error.log"; problems=1
+if grep -nE '\[alert\]|\[emerg\]' "$WORK/logs/error.log" 2>/dev/null |
+    grep -vE 'shared memory zone .* was locked by|open socket #[0-9]+ left in connection|\[alert\][^:]*: aborting'; then
+    echo "FAIL: alert/emerg in error.log"
+    problems=1
 fi
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ]; then
-    echo "FAIL: nginx exited $rc"; tail -40 "$WORK/logs/error.log" || true
+    echo "FAIL: nginx exited $rc"
+    tail -40 "$WORK/logs/error.log" || true
     problems=1
 fi
 if [ -f "$saw_dead" ]; then
-    echo "FAIL: $(wc -c < "$saw_dead") request(s) got no HTTP response (curl 000)" \
-         "-- nginx was unreachable, so this soak proves nothing"
+    echo "FAIL: $(wc -c <"$saw_dead") request(s) got no HTTP response (curl 000)" \
+        "-- nginx was unreachable, so this soak proves nothing"
     tail -40 "$WORK/logs/error.log" || true
     problems=1
 fi
