@@ -156,16 +156,19 @@ storm_worker() {
         if [ "$r" -lt 5 ]; then
             u="${ATTACKS[$((RANDOM % ${#ATTACKS[@]}))]}"
             code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
-                "http://127.0.0.1:$PORT$u" 2>/dev/null || echo 000)
+                "http://127.0.0.1:$PORT$u" 2>/dev/null)
+            code=${code:-000}
         elif [ "$r" -lt 7 ]; then
             b="${BODY_ATTACKS[$((RANDOM % ${#BODY_ATTACKS[@]}))]}"
             code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
                 -X POST --data "$b" \
-                "http://127.0.0.1:$PORT/post" 2>/dev/null || echo 000)
+                "http://127.0.0.1:$PORT/post" 2>/dev/null)
+            code=${code:-000}
         else
             u="${BENIGN[$((RANDOM % ${#BENIGN[@]}))]}"
             code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
-                "http://127.0.0.1:$PORT$u" 2>/dev/null || echo 000)
+                "http://127.0.0.1:$PORT$u" 2>/dev/null)
+            code=${code:-000}
             # benign: anything that is NOT a 403 block proves pass-through
             # (200/404/405 are all "shield let it through").
             if [ "$code" != "403" ] && [ "$code" != "000" ]; then

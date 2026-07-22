@@ -1,22 +1,31 @@
 ngx_addon_name=ngx_http_shield_module
 
-# The test probe comes from t/harness (nginx-test-harness) and only becomes
-# real code when NGX_TEST_HARNESS is defined -- tools/ci-build.sh sets that
-# under TEST_HARNESS=1 and never for a packaged build. Its sources are listed
-# unconditionally because each compiles to an empty translation unit without
-# the define; keeping the list unconditional avoids a second build-mode switch
-# here that could drift out of sync with the one in ci-build.sh.
+# Production sources -- always compiled, never depend on the t/harness
+# submodule. A plain (non-recursive) clone or a GitHub source archive contains
+# only the submodule gitlink, so listing t/harness files here for a packaged
+# build breaks `make modules` with "No rule to make target" (audit s43 F3).
 ngx_module_type=HTTP
 ngx_module_name=ngx_http_shield_module
 ngx_module_srcs="$ngx_addon_dir/src/ngx_http_shield_module.c \
                  $ngx_addon_dir/src/ngx_http_shield_ban.c \
-                 $ngx_addon_dir/src/ngx_shield_probe_hooks.c \
-                 $ngx_addon_dir/t/harness/src/ngx_test_probe.c \
-                 $ngx_addon_dir/t/harness/src/ngx_test_probe_arm.c"
+                 $ngx_addon_dir/src/ngx_shield_probe_hooks.c"
 ngx_module_deps="$ngx_addon_dir/src/ngx_http_shield_patterns.h \
                  $ngx_addon_dir/src/ngx_http_shield_ban.h \
-                 $ngx_addon_dir/src/ngx_shield_probe_hooks.h \
+                 $ngx_addon_dir/src/ngx_shield_probe_hooks.h"
+ngx_module_incs=""
+
+# The CI-only test probe comes from t/harness (nginx-test-harness). It is real
+# code only when NGX_TEST_HARNESS is defined -- tools/ci-build.sh sets both
+# TEST_HARNESS=1 (seen here) and -DNGX_TEST_HARNESS (the compile define), and
+# never for a packaged build. Gate its sources on the same switch so the
+# submodule is a hard prerequisite ONLY for the harness build.
+if [ "${TEST_HARNESS:-0}" = "1" ]; then
+    ngx_module_srcs="$ngx_module_srcs \
+                 $ngx_addon_dir/t/harness/src/ngx_test_probe.c \
+                 $ngx_addon_dir/t/harness/src/ngx_test_probe_arm.c"
+    ngx_module_deps="$ngx_module_deps \
                  $ngx_addon_dir/t/harness/src/ngx_test_probe.h"
-ngx_module_incs="$ngx_addon_dir/t/harness/src"
+    ngx_module_incs="$ngx_addon_dir/t/harness/src"
+fi
 
 . auto/module

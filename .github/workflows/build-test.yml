@@ -194,7 +194,15 @@ jobs:
             build-essential curl libpcre2-dev zlib1g-dev \
             cpanminus libio-socket-ssl-perl
           # Test::Nginx is not packaged on the runner; install it from CPAN.
-          sudo cpanm --notest --quiet Test::Nginx
+          # Pin Test::Nginx to an exact version + SHA-256 (S27-10 / audit
+          # F7): an unpinned `cpanm Test::Nginx` runs install code from whatever
+          # CPAN serves, as root. Keep in lockstep with ci-deep.yml.
+          TEST_NGINX_SHA256="8b47ac9d3489ab2289cb2d8bbdbf059878b8fef222b6fe74ad6148e1a280a6dc"
+          TEST_NGINX_URL="https://cpan.metacpan.org/authors/id/A/AG/AGENT/Test-Nginx-0.32.tar.gz"
+          tgz="$(mktemp --suffix=.tar.gz)"
+          curl -fsSL "$TEST_NGINX_URL" -o "$tgz"
+          echo "${TEST_NGINX_SHA256}  ${tgz}" | sha256sum -c -
+          sudo cpanm --notest --quiet "$tgz"
 
       - name: Build dynamic module
         run: bash tools/ci-build.sh nginx "$NGINX_VERSION"
@@ -223,7 +231,15 @@ jobs:
           sudo apt-get install -y \
             build-essential curl libpcre2-dev zlib1g-dev \
             cpanminus libio-socket-ssl-perl
-          sudo cpanm --notest --quiet Test::Nginx
+          # Pin Test::Nginx to an exact version + SHA-256 (S27-10 / audit
+          # F7): an unpinned `cpanm Test::Nginx` runs install code from whatever
+          # CPAN serves, as root. Keep in lockstep with ci-deep.yml.
+          TEST_NGINX_SHA256="8b47ac9d3489ab2289cb2d8bbdbf059878b8fef222b6fe74ad6148e1a280a6dc"
+          TEST_NGINX_URL="https://cpan.metacpan.org/authors/id/A/AG/AGENT/Test-Nginx-0.32.tar.gz"
+          tgz="$(mktemp --suffix=.tar.gz)"
+          curl -fsSL "$TEST_NGINX_URL" -o "$tgz"
+          echo "${TEST_NGINX_SHA256}  ${tgz}" | sha256sum -c -
+          sudo cpanm --notest --quiet "$tgz"
 
       # Static + sanitizer build so the ASan/UBSan runtime is linked into the
       # server binary; then drive every attack path through the Test::Nginx
@@ -377,7 +393,15 @@ jobs:
           sudo apt-get install -y \
             build-essential curl libpcre2-dev zlib1g-dev lcov \
             cpanminus libio-socket-ssl-perl
-          sudo cpanm --notest --quiet Test::Nginx
+          # Pin Test::Nginx to an exact version + SHA-256 (S27-10 / audit
+          # F7): an unpinned `cpanm Test::Nginx` runs install code from whatever
+          # CPAN serves, as root. Keep in lockstep with ci-deep.yml.
+          TEST_NGINX_SHA256="8b47ac9d3489ab2289cb2d8bbdbf059878b8fef222b6fe74ad6148e1a280a6dc"
+          TEST_NGINX_URL="https://cpan.metacpan.org/authors/id/A/AG/AGENT/Test-Nginx-0.32.tar.gz"
+          tgz="$(mktemp --suffix=.tar.gz)"
+          curl -fsSL "$TEST_NGINX_URL" -o "$tgz"
+          echo "${TEST_NGINX_SHA256}  ${tgz}" | sha256sum -c -
+          sudo cpanm --notest --quiet "$tgz"
 
       # gcov-instrumented static build so the module TU is measured while the
       # Test::Nginx suite drives every attack/config path through the very

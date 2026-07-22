@@ -45,6 +45,26 @@ import urllib.request
 
 API_URL = "https://api.abuseipdb.com/api/v2/report"
 
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every 3xx redirect.
+
+    The default opener follows redirects and copies our request headers --
+    including the "Key" API credential -- to the redirect target, possibly
+    cross-origin, and turns the report POST into a GET whose 200 we would then
+    record as a false success. AbuseIPDB has one fixed POST endpoint, so a
+    redirect is never legitimate: surface it as an HTTPError instead of
+    following it, so report() classifies it as a permanent DROP and the key is
+    never re-sent. See audit s43 F1.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+# Module-scoped opener so the credential-bearing POST never follows a redirect.
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
 # shield category -> AbuseIPDB category IDs.
 # https://www.abuseipdb.com/categories  (21 = Web App Attack, 16 = SQL Injection,
 # 15 = Hacking). Everything shield blocks is a web-app attack; the ones that map
@@ -187,7 +207,11 @@ def _parse_retry_after(value: str | None, now: float) -> float | None:
     if not value:
         return None
     value = value.strip()
-    if value.isdigit():
+    # str.isdigit() accepts Unicode digits (e.g. "²", "③") that float() then
+    # rejects with a ValueError outside this function's guard -- a hostile or
+    # buggy Retry-After would crash the daemon into a restart loop (F2). Require
+    # plain ASCII digits before the unguarded float().
+    if value.isascii() and value.isdigit():
         return float(value)
     try:
         when = email.utils.parsedate_to_datetime(value)
@@ -359,7 +383,7 @@ class Reporter:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with _OPENER.open(req, timeout=self.timeout) as resp:
                 body = resp.read().decode("utf-8", "replace")
             self._note_success()
             return self.OK, body
@@ -372,8 +396,9 @@ class Reporter:
                 # Server-side error: transient -> retry with backoff.
                 self._note_failure(now, None)
                 return self.RETRY, f"HTTP {e.code}: {body}"
-            # Anything else (permanent 4xx, or a non-followed 3xx redirect
-            # failure): retrying never helps. DROP -- log, advance, and do NOT
+            # Anything else (permanent 4xx, or a 3xx redirect that _NoRedirect
+            # refused before the Key header could be re-sent -- F1): retrying
+            # never helps. DROP -- log, advance, and do NOT
             # set a cooldown or bump the backoff streak, so one bad record can
             # never stall the whole queue. Only 429 and 5xx are retryable.
             return self.DROP, f"HTTP {e.code} (permanent, dropped): {body}"
