@@ -132,6 +132,7 @@ typedef enum {
     NGX_HTTP_SHIELD_CAT_SSTI,
     NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH,
     NGX_HTTP_SHIELD_CAT_CTRL_CHAR,
+    NGX_HTTP_SHIELD_CAT_DOTFILE,
     NGX_HTTP_SHIELD_CAT_N            /* count -- keep last */
 } ngx_http_shield_cat_e;
 
@@ -1221,6 +1222,7 @@ ngx_http_shield_no_query_mask(void)
 #define NGX_HTTP_SHIELD_NAME_HTTPOXY    "httpoxy"
 #define NGX_HTTP_SHIELD_NAME_RANGE_DOS  "range_dos"
 #define NGX_HTTP_SHIELD_NAME_CTRL_CHAR  "ctrl_char"
+#define NGX_HTTP_SHIELD_NAME_DOTFILE    "dotfile"
 
 
 /* ---- AND-rules: categories that require several tokens to co-occur ------ */
