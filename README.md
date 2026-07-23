@@ -28,7 +28,7 @@ Run a real WAF on top where you need one.
 
 ## What it blocks
 
-29 categories (633 signatures), all matched case-insensitively after
+30 categories (638 signatures), all matched case-insensitively after
 percent-decoding:
 
 | Category | Examples |
@@ -56,6 +56,7 @@ percent-decoding:
 | `httpoxy` | a request-borne `Proxy:` header (CVE-2016-5385) |
 | `range_dos` | a `Range:` header with more than 10 ranges (CVE-2011-3192) |
 | `ctrl_char` | a C0 control byte in the decoded path (`%01`, `%1b`, …) — nginx itself rejects the *raw* form, so only the encoded one gets this far |
+| `dotfile` | a **structural** check: any path segment beginning with `.` — `/.git/`, `/.env`, `/.htaccess`, `/.ssh/`, `/.well-known/` (no exception carved out). The segment *shape* is wrong, so it needs no signature list and cannot be evaded by a name the list doesn't yet carry. `.` and `..` are excluded (relative-path tokens; `..` is `traversal`'s job) |
 | `sensitive_file` | `/.env`, `/.git/`, package/cloud/CLI credential stores, Terraform state, AI-agent config dirs, and traversal **targets** — `/etc/passwd`, `/proc/self/maps`, `/etc/ssh/sshd_config`, `win.ini` |
 | `webshell` | `c99.php`, `r57.php`, `wso.php`, `weevely`, `behinder`, `shell.php?cmd=` |
 | `ssrf_meta` | cloud metadata hosts/paths, IMDSv2 tokens/credentials, Unicode-dot/IP-number evasions, wildcard-DNS forms, and loopback Docker/etcd/Lambda control endpoints |
@@ -135,7 +136,7 @@ http {
 | `shield_body` | http, server, location | `on` | Inspect the request body (text-shaped content types only). |
 | `shield_max_body` | http, server, location | `8k` | Bytes of body scanned. Larger bodies are passed through unscanned — uploads are never blocked for being big. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
-| `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus `httpoxy`, `range_dos` and `ctrl_char`). A child block that sets `shield_skip` **replaces** the inherited list wholesale (masks do not merge); a child that omits it inherits the parent's. An empty child cannot clear an inherited skip — to un-skip, re-state the categories you still want disabled. |
+| `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus the structural checks `httpoxy`, `range_dos`, `ctrl_char` and `dotfile`). A child block that sets `shield_skip` **replaces** the inherited list wholesale (masks do not merge); a child that omits it inherits the parent's. An empty child cannot clear an inherited skip — to un-skip, re-state the categories you still want disabled. |
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
 | `shield_ban_zone` | http | — | Define a shared-memory zone `name:size` (e.g. `shield:10m`) for the ban list. See [Repeat-offender banning](#repeat-offender-banning). |
 | `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. |
@@ -278,9 +279,9 @@ also runs as a CI gate.
 The module runs in the `PRECONTENT` phase. For each request it builds two
 normalized copies of every inspected input — a lowercased raw copy and a
 percent-decoded (once), `+`→space, lowercased copy — and runs every enabled
-category's patterns over them in a **single Aho-Corasick pass per buffer**. Three
-categories (`httpoxy`, `range_dos`, `ctrl_char`) are structural checks rather than
-literal matches. There is no regex and no per-request allocation beyond the two
+category's patterns over them in a **single Aho-Corasick pass per buffer**. Four
+categories (`httpoxy`, `range_dos`, `ctrl_char`, `dotfile`) are structural checks
+rather than literal matches. There is no regex and no per-request allocation beyond the two
 scratch buffers per inspected value, so the cost is a few microseconds on
 typical request sizes.
 
@@ -355,6 +356,7 @@ its category fires:
 | `jenkins_cli_read` | `exploit_path` | `/cli?` **and** `remoting=true` |
 | `vmware_wsone_ssti` | `exploit_path` | `/catalog-portal/ui/oauth/verify` **and** `${` |
 | `ssrf_wildcard_dns` | `ssrf_meta` | `.nip.io` **and** `169-254-169-254` |
+| `coldfusion_cfclient` | `exploit_path` | `/cf_scripts/scripts/ajax/ckeditor/plugins/filemanager/` **and** `_cfclient=true` (ColdFusion CVE-2023-26360) |
 
 Rule terms are **not** signatures: a term never fires on its own, and none of
 the left-hand tokens above will block a request by itself. That is checked
