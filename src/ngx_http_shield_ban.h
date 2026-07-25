@@ -50,10 +50,56 @@ typedef struct {
     ngx_uint_t    hits;           /* shield hits seen in the current window     */
 } ngx_http_shield_ban_node_t;
 
+/* Number of hit counters kept in shared memory, one per shield category.
+ *
+ * Deliberately NOT NGX_HTTP_SHIELD_CAT_N: that lives in ngx_http_shield_patterns.h,
+ * which pulls in the whole signature corpus, and this header must keep depending
+ * on <ngx_core.h> alone so the ban engine stays unit-testable. 64 is the same
+ * bound the scanner's category bitmask already enforces at compile time (the
+ * `NGX_HTTP_SHIELD_CAT_N <= 64` assert in patterns.h), so a category that fits
+ * the scanner fits here. The module static-asserts the two agree.
+ */
+#define NGX_HTTP_SHIELD_BAN_NCOUNTERS  64
+
 typedef struct {
     ngx_rbtree_t       rbtree;
     ngx_rbtree_node_t  sentinel;
     ngx_queue_t        queue;     /* LRU list head over all ban nodes           */
+
+    /* Per-category hit totals since worker start, reported by shield_ban_status.
+     * Monotonic; never reset except by a full restart (a reload reuses the
+     * segment, so counts survive it -- which is what an operator graphing them
+     * expects). Written under the slab mutex like everything else here. */
+    uint64_t           cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+
+    /* Totals that are not per-category: requests blocked, and bans armed. */
+    uint64_t           blocked;   /* requests denied by shield (any category)   */
+    uint64_t           bans;      /* ban arms, i.e. hits reaching the threshold */
+
+    /* Resumable eviction cursor: where the NEXT ngx_http_shield_ban_expire()
+     * call starts its walk, instead of always restarting at the LRU tail.
+     *
+     * Rotating skipped live nodes to the head (the S30-1 fix) guarantees
+     * progress only while nothing else reorders the queue. But ban_lookup()
+     * re-heads a node on EVERY request, and is_banned() runs per request, so
+     * ordinary traffic continuously undoes the rotation. With a live cluster
+     * larger than SCAN at the tail and one stale node touched every round, the
+     * walk never reaches that stale node -- 200 expire calls, zero reclaim
+     * (S32-4). A cursor decouples reclaim progress from queue order entirely.
+     *
+     * INVARIANT: `cursor` is either &queue (the sentinel, meaning "start at the
+     * tail") or points at the `queue` member of a LIVE node -- never at freed
+     * slab memory. ngx_http_shield_ban_expire() maintains this by advancing off
+     * a node before freeing it; ngx_http_shield_ban_lookup() re-inserts every
+     * node it unlinks, so it cannot invalidate the cursor. A future path that
+     * unlinks AND frees outside expire() would have to re-park the cursor.
+     *
+     * A queue pointer rather than a stored address on purpose: an address would
+     * need an O(log n) re-lookup each call and is ambiguous once its node is
+     * evicted, whereas a pointer is free to follow and merely has to be
+     * maintained at the single site that frees.
+     */
+    ngx_queue_t       *cursor;
 
 #ifdef NGX_TEST_HARNESS
     /* CI-only slab fault injection (see ngx_shield_probe_hooks.c).
@@ -139,9 +185,24 @@ ngx_http_shield_ban_node_t *ngx_http_shield_ban_lookup(
     ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t hash, u_char *addr, u_char len);
 
 /* Reclaim slab space by evicting genuinely-stale LRU nodes (neither banned nor
- * inside a live counting window). Bounded. Caller holds the shm lock. */
+ * inside a live counting window). Bounded. Resumes from ctx->sh->cursor rather
+ * than restarting at the tail, so reclaim progress does not depend on queue
+ * order. Caller holds the shm lock. */
 void ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
     time_t window);
+
+/* Initialise the LRU + eviction cursor for a fresh shared segment. Zeroed
+ * memory is NOT sufficient: the cursor must start at the queue sentinel, whose
+ * address is only known once the queue head is placed. */
+void ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh);
+
+/* Count one shield hit in category `cat` (and, if `blocked`, one denied
+ * request) for the shield_ban_status report. Out-of-range `cat` is ignored rather
+ * than trusted -- the counters are indexed by a value that ultimately derives
+ * from scanner output, so the bound is enforced here at the single write site.
+ * Caller holds the shm lock. */
+void ngx_http_shield_ban_count_hit(ngx_http_shield_ban_ctx_t *ctx,
+    ngx_uint_t cat, ngx_uint_t blocked);
 
 /* Is this address currently banned (banned_until > now)? Also refreshes LRU.
  * Caller holds the shm lock. */

@@ -58,6 +58,13 @@
 typedef char ngx_http_shield_ban_color_first[
     (offsetof(ngx_http_shield_ban_node_t, color) == 0) ? 1 : -1];
 
+/* The status counters are indexed by category, but their array lives in
+ * ngx_http_shield_ban.h, which cannot include patterns.h (it must depend on
+ * <ngx_core.h> alone to stay unit-testable). Assert here, where both headers
+ * are visible, that adding a category can never outgrow cat_hits[]. */
+typedef char ngx_http_shield_counters_cover_categories[
+    (NGX_HTTP_SHIELD_CAT_N <= NGX_HTTP_SHIELD_BAN_NCOUNTERS) ? 1 : -1];
+
 
 typedef struct {
     ngx_uint_t   mode;        /* OFF / DETECT / BLOCK                        */
@@ -75,6 +82,15 @@ typedef struct {
     time_t       ban_window;  /* fixed hit-count window, seconds              */
     time_t       ban_time;    /* how long a triggered ban lasts, seconds      */
 
+    /* Ban key source: peer (default) or a forwarded header. `ban_trusted` is
+     * the proxy allowlist that makes the header believable -- see
+     * ngx_http_shield_ban_addr(). NULL trusted list => header keying is
+     * refused at config time, never silently downgraded. */
+    ngx_uint_t   ban_key;     /* NGX_HTTP_SHIELD_BAN_KEY_{PEER,FORWARDED}     */
+    ngx_array_t *ban_trusted; /* ngx_cidr_t, trusted proxies; NULL = none     */
+
+    ngx_shm_zone_t *status_zone; /* zone shield_status reports on; NULL = off */
+
 #ifdef NGX_TEST_HARNESS
     ngx_shm_zone_t *probe_zone; /* zone the shield_probe endpoint reports on  */
 #endif
@@ -90,6 +106,7 @@ typedef struct {
 typedef struct {
     const char  *category;
     const char  *source;      /* "uri" / "user-agent" / "body" / ...        */
+    ngx_uint_t   cat;         /* NGX_HTTP_SHIELD_CAT_*, for shield_status   */
 } ngx_http_shield_hit_t;
 
 
@@ -136,11 +153,20 @@ static void ngx_http_shield_write_log(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit);
 static ngx_int_t ngx_http_shield_init(ngx_conf_t *cf);
 
+/* shield_ban key source. PEER is the TCP peer address and is the default and
+ * the only self-evidently trustworthy option. FORWARDED reads the client from
+ * a proxy header and is only ever consulted when the peer is itself a
+ * configured trusted proxy -- see ngx_http_shield_ban_addr(). */
+#define NGX_HTTP_SHIELD_BAN_KEY_PEER       0
+#define NGX_HTTP_SHIELD_BAN_KEY_FORWARDED  1
+
 /* shield_ban */
 static ngx_int_t ngx_http_shield_ban_addr(ngx_http_request_t *r,
     u_char *addr, u_char *len);
 static ngx_int_t ngx_http_shield_ban_is_banned(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf);
+static void ngx_http_shield_ban_count(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit);
 static void ngx_http_shield_ban_record(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf);
 static ngx_int_t ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone,
@@ -152,6 +178,10 @@ static char *ngx_http_shield_probe(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static ngx_int_t ngx_http_shield_probe_handler(ngx_http_request_t *r);
 #endif
+static char *ngx_http_shield_ban_status(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static ngx_int_t ngx_http_shield_ban_status_handler(ngx_http_request_t *r);
+
 static char *ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
@@ -207,9 +237,19 @@ static ngx_command_t  ngx_http_shield_commands[] = {
       0,
       NULL },
 
+    /* zone=/count=/window=/bantime= are required and key=/trusted= optional,
+     * with trusted= repeatable, so the arity is 1MORE and the parser enforces
+     * which parameters must be present. */
     { ngx_string("shield_ban"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE4,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_http_shield_ban,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("shield_ban_status"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_http_shield_ban_status,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -388,6 +428,12 @@ ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
      * attacker's NEXT request (this one is still handled on its own merits). */
     if (slcf->ban_zone != NULL) {
         ngx_http_shield_ban_record(r, slcf);
+
+        /* Count the hit for shield_ban_status. Same zone, so this rides the ban
+         * zone's existence: without shield_ban there is no shared memory to
+         * count into, and per-category totals are unavailable. Counted for
+         * detect mode too -- `blocked` distinguishes the two. */
+        ngx_http_shield_ban_count(r, slcf, hit);
     }
 
     /* Only the category and the source are logged, never attacker-supplied
@@ -630,6 +676,7 @@ ngx_http_shield_check_httpoxy(ngx_http_request_t *r,
                                sizeof("Proxy") - 1) == 0)
         {
             hit->category = NGX_HTTP_SHIELD_NAME_HTTPOXY;
+            hit->cat = NGX_HTTP_SHIELD_CAT_HTTPOXY;
             hit->source = "header";
             return NGX_OK;
         }
@@ -665,6 +712,7 @@ ngx_http_shield_check_range(ngx_http_request_t *r,
 
     if (ranges > NGX_HTTP_SHIELD_MAX_RANGES) {
         hit->category = NGX_HTTP_SHIELD_NAME_RANGE_DOS;
+        hit->cat = NGX_HTTP_SHIELD_CAT_RANGE_DOS;
         hit->source = "range";
         return NGX_OK;
     }
@@ -718,6 +766,7 @@ ngx_http_shield_check_ctrl_char(ngx_http_request_t *r,
         }
 
         hit->category = NGX_HTTP_SHIELD_NAME_CTRL_CHAR;
+        hit->cat = NGX_HTTP_SHIELD_CAT_CTRL_CHAR;
         hit->source = "uri";
         return NGX_OK;
     }
@@ -815,6 +864,7 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
             }
 
             hit->category = NGX_HTTP_SHIELD_NAME_DOTFILE;
+            hit->cat = NGX_HTTP_SHIELD_CAT_DOTFILE;
             hit->source = "uri";
             return NGX_OK;
         }
@@ -1600,6 +1650,7 @@ ngx_http_shield_scan_input(ngx_http_request_t *r,
                                   skip);
     if (cat != NULL) {
         hit->category = cat->name;
+        hit->cat = cat->cat;
         hit->source = source;
         return NGX_OK;
     }
@@ -1608,6 +1659,7 @@ ngx_http_shield_scan_input(ngx_http_request_t *r,
                                   skip);
     if (cat != NULL) {
         hit->category = cat->name;
+        hit->cat = cat->cat;
         hit->source = source;
         return NGX_OK;
     }
@@ -1731,6 +1783,13 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     slcf->ban_count = NGX_CONF_UNSET_UINT;
     slcf->ban_window = NGX_CONF_UNSET;
     slcf->ban_time = NGX_CONF_UNSET;
+    /* Not UNSET sentinels: these are set as a unit by the shield_ban directive
+     * and merged with it, so the safe default (key on the TCP peer, trust no
+     * proxy) is the right starting value rather than "unset". */
+    slcf->ban_key = NGX_HTTP_SHIELD_BAN_KEY_PEER;
+    slcf->ban_trusted = NULL;
+
+    slcf->status_zone = NULL;
 
     return slcf;
 }
@@ -1784,12 +1843,20 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             conf->ban_count = 0;
             conf->ban_window = 0;
             conf->ban_time = 0;
+            conf->ban_key = NGX_HTTP_SHIELD_BAN_KEY_PEER;
+            conf->ban_trusted = NULL;
 
         } else {
             conf->ban_zone = prev->ban_zone;
             conf->ban_count = prev->ban_count;
             conf->ban_window = prev->ban_window;
             conf->ban_time = prev->ban_time;
+            /* Key source travels WITH the policy. Inheriting the zone but not
+             * the trusted list would key an inherited policy on the proxy
+             * address while the parent keys on the real client -- two
+             * locations silently counting different things into one zone. */
+            conf->ban_key = prev->ban_key;
+            conf->ban_trusted = prev->ban_trusted;
         }
     }
 
@@ -1928,35 +1995,166 @@ ngx_http_shield_skip(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  * exactly and cheaply. Returns NGX_DECLINED for any other address family (e.g.
  * a unix socket): such a client is simply not ban-tracked.
  */
+/*
+ * Copy a sockaddr's raw address bytes out. Split from ban_addr() so the peer
+ * and the forwarded-header paths share one conversion and cannot drift.
+ */
 static ngx_int_t
-ngx_http_shield_ban_addr(ngx_http_request_t *r, u_char *addr, u_char *len)
+ngx_http_shield_ban_sockaddr_bytes(struct sockaddr *sa, u_char *addr,
+    u_char *len)
 {
     struct sockaddr_in   *sin;
 #if (NGX_HAVE_INET6)
     struct sockaddr_in6  *sin6;
 #endif
 
-    switch (r->connection->sockaddr->sa_family) {
+    switch (sa->sa_family) {
 
     case AF_INET:
-        sin = (struct sockaddr_in *) r->connection->sockaddr;
+        sin = (struct sockaddr_in *) sa;
         ngx_memcpy(addr, &sin->sin_addr, 4);
         *len = 4;
         return NGX_OK;
 
 #if (NGX_HAVE_INET6)
-    /* LCOV_EXCL_START -- suite clients connect over IPv4 loopback only. */
     case AF_INET6:
-        sin6 = (struct sockaddr_in6 *) r->connection->sockaddr;
+        sin6 = (struct sockaddr_in6 *) sa;
         ngx_memcpy(addr, &sin6->sin6_addr, 16);
         *len = 16;
         return NGX_OK;
-    /* LCOV_EXCL_STOP */
 #endif
 
     default:
         return NGX_DECLINED;  /* LCOV_EXCL_LINE -- non-inet family (unix sock) */
     }
+}
+
+
+/*
+ * Is the TCP peer one of the configured trusted proxies?
+ *
+ * This is the whole security gate for header-based keying. A forwarded header
+ * is client-supplied text: any direct client can put any address in it. Trusted
+ * only when the connection itself came from a proxy the operator named, so an
+ * attacker reaching nginx directly can never influence the ban key.
+ */
+static ngx_int_t
+ngx_http_shield_ban_peer_trusted(ngx_http_request_t *r, ngx_array_t *trusted)
+{
+    if (trusted == NULL) {
+        return 0;
+    }
+
+    /* nginx's own helper walks the CIDR array and handles the v4-mapped-in-v6
+     * case, which a hand-rolled comparison here would get wrong for a proxy
+     * connecting over IPv6 to a dual-stack listener. */
+    return ngx_cidr_match(r->connection->sockaddr, trusted) == NGX_OK;
+}
+
+
+/*
+ * Extract the ban key as raw address bytes (4 for IPv4, 16 for IPv6). The key
+ * is the binary address, not its text form, so v4/v6 both hash and compare
+ * exactly and cheaply. Returns NGX_DECLINED for any other address family (e.g.
+ * a unix socket): such a client is simply not ban-tracked.
+ *
+ * With `key=forwarded`, the rightmost address of X-Forwarded-For is used
+ * INSTEAD of the peer -- but only when the peer is a trusted proxy, and only
+ * when that address parses. Anything else falls back to the peer, which is the
+ * safe direction: a ban keyed on the proxy is over-broad but never lets an
+ * attacker pick who gets banned.
+ *
+ * RIGHTMOST, not leftmost. XFF is append-only, so the leftmost entry is
+ * whatever the original client claimed and is fully attacker-controlled even
+ * behind a trusted proxy -- keying on it would let anyone ban a third party by
+ * sending a forged header, and flood the zone with unlimited fake keys.
+ * The rightmost entry is the one the nearest trusted proxy appended, i.e. the
+ * peer IT saw. (Chained proxies: this trusts one hop. Deeper chains want
+ * realip's recursive walk in front, which rewrites r->connection->sockaddr and
+ * is then picked up by the default peer path anyway.)
+ */
+static ngx_int_t
+ngx_http_shield_ban_addr(ngx_http_request_t *r, u_char *addr, u_char *len)
+{
+    u_char                      *p, *start;
+    ngx_addr_t                   xff;
+    ngx_table_elt_t             *h;
+    ngx_http_shield_loc_conf_t  *slcf;
+
+    slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
+
+    if (slcf->ban_key != NGX_HTTP_SHIELD_BAN_KEY_FORWARDED
+        || !ngx_http_shield_ban_peer_trusted(r, slcf->ban_trusted))
+    {
+        return ngx_http_shield_ban_sockaddr_bytes(r->connection->sockaddr,
+                                                  addr, len);
+    }
+
+    h = r->headers_in.x_forwarded_for;
+
+    if (h == NULL) {
+        /* Trusted proxy that forwarded nothing: key on the proxy itself. */
+        return ngx_http_shield_ban_sockaddr_bytes(r->connection->sockaddr,
+                                                  addr, len);
+    }
+
+    /* Walk to the LAST header LINE first. Since nginx 1.23 repeated headers are
+     * NOT merged into one value: ngx_http_process_header_line() appends each
+     * additional "X-Forwarded-For:" line to a `->next` chain, and
+     * r->headers_in.x_forwarded_for is only the FIRST of them.
+     *
+     * This is load-bearing for the trust model, not tidiness. A proxy that
+     * appends its own header LINE (rather than extending the client's) leaves
+     * the client's forged line at the head of the chain. Reading only that head
+     * hands the ban key straight back to the attacker: rotating the forged value
+     * makes every request a distinct key, nothing ever reaches the threshold,
+     * and the real client is never banned. Verified against a live server --
+     * with the head-only read, two attacks plus a probe returned 200 (evaded);
+     * walking to the tail returns 403. The last line is the one the nearest
+     * trusted proxy wrote, which is the only line in the chain it vouches for. */
+    while (h->next != NULL) {
+        h = h->next;
+    }
+
+    /* Then the LAST comma-separated element within that line -- a proxy that
+     * appends to an existing line puts what it saw at the end. */
+    start = h->value.data;
+
+    for (p = h->value.data + h->value.len; p > start; p--) {
+        if (*(p - 1) == ',') {
+            start = p;
+            break;
+        }
+    }
+
+    /* Trim surrounding whitespace ("a.b.c.d, e.f.g.h" has a leading space). */
+    while (start < h->value.data + h->value.len
+           && (*start == ' ' || *start == '\t'))
+    {
+        start++;
+    }
+
+    xff.name.data = start;
+    xff.name.len = h->value.data + h->value.len - start;
+
+    while (xff.name.len > 0
+           && (start[xff.name.len - 1] == ' '
+               || start[xff.name.len - 1] == '\t'))
+    {
+        xff.name.len--;
+    }
+
+    /* ngx_parse_addr_port handles both a bare address and the [v6]:port and
+     * v4:port forms RFC 7239-era proxies emit. A value that does not parse is
+     * not guessed at -- fall back to the peer. */
+    if (xff.name.len == 0
+        || ngx_parse_addr_port(r->pool, &xff, start, xff.name.len) != NGX_OK)
+    {
+        return ngx_http_shield_ban_sockaddr_bytes(r->connection->sockaddr,
+                                                  addr, len);
+    }
+
+    return ngx_http_shield_ban_sockaddr_bytes(xff.sockaddr, addr, len);
 }
 
 
@@ -2041,6 +2239,31 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
 
 
 /*
+ * Count one hit for shield_ban_status: per-category, plus the blocked total when
+ * this hit actually denies the request. Separate from ban_record() because
+ * counting is reporting, not policy -- it must happen for every hit regardless
+ * of what the ban engine decides to do with it.
+ */
+static void
+ngx_http_shield_ban_count(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
+{
+    ngx_http_shield_ban_ctx_t  *ctx;
+
+    ctx = slcf->ban_zone->data;
+
+    if (ctx->sh == NULL || ctx->shpool == NULL) {
+        return;   /* LCOV_EXCL_LINE -- zone not yet initialised in this worker */
+    }
+
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+    ngx_http_shield_ban_count_hit(ctx, hit->cat,
+                                  slcf->mode == NGX_HTTP_SHIELD_BLOCK);
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
+}
+
+
+/*
  * shm zone init: on a fresh segment, lay down the rbtree + LRU queue in the
  * slab pool. On reload (existing data passed in), just re-point at it.
  */
@@ -2081,7 +2304,11 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_http_shield_ban_rbtree_insert);
-    ngx_queue_init(&ctx->sh->queue);
+
+    /* Sets up the LRU queue AND parks the eviction cursor on its sentinel.
+     * ngx_queue_init() alone would leave `cursor` holding slab garbage, which
+     * ban_expire would then dereference as a node. */
+    ngx_http_shield_ban_shctx_init(ctx->sh);
 
 #ifdef NGX_TEST_HARNESS
     /* -1 = no fault armed. ngx_slab_alloc() does not zero, so this must be set
@@ -2308,9 +2535,11 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_shield_loc_conf_t  *slcf = conf;
     ngx_str_t                   *value, name, s;
-    ngx_uint_t                   i;
-    ngx_int_t                    n;
+    ngx_uint_t                   i, key;
+    ngx_int_t                    n, rc;
     time_t                       window, bantime;
+    ngx_cidr_t                  *cidr;
+    ngx_array_t                 *trusted;
     ngx_shm_zone_t              *shm_zone;
 
     if (slcf->ban_zone != NGX_CONF_UNSET_PTR) {
@@ -2321,6 +2550,8 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     n = NGX_CONF_UNSET;
     window = NGX_CONF_UNSET;
     bantime = NGX_CONF_UNSET;
+    key = NGX_HTTP_SHIELD_BAN_KEY_PEER;
+    trusted = NULL;
 
     value = cf->args->elts;
 
@@ -2368,6 +2599,63 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        if (ngx_strncmp(value[i].data, "key=", 4) == 0) {
+            s.data = value[i].data + 4;
+            s.len = value[i].len - 4;
+
+            if (s.len == 4 && ngx_strncmp(s.data, "peer", 4) == 0) {
+                key = NGX_HTTP_SHIELD_BAN_KEY_PEER;
+
+            } else if (s.len == 9
+                       && ngx_strncmp(s.data, "forwarded", 9) == 0)
+            {
+                key = NGX_HTTP_SHIELD_BAN_KEY_FORWARDED;
+
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid shield_ban key \"%V\", "
+                                   "expected peer or forwarded", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+            continue;
+        }
+
+        if (ngx_strncmp(value[i].data, "trusted=", 8) == 0) {
+            s.data = value[i].data + 8;
+            s.len = value[i].len - 8;
+
+            if (trusted == NULL) {
+                trusted = ngx_array_create(cf->pool, 4, sizeof(ngx_cidr_t));
+                if (trusted == NULL) {
+                    return NGX_CONF_ERROR;
+                }
+            }
+
+            cidr = ngx_array_push(trusted);
+            if (cidr == NULL) {
+                return NGX_CONF_ERROR;
+            }
+
+            rc = ngx_ptocidr(&s, cidr);
+
+            if (rc == NGX_ERROR) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid shield_ban trusted address \"%V\"",
+                                   &s);
+                return NGX_CONF_ERROR;
+            }
+
+            if (rc == NGX_DONE) {
+                /* Host bits set in the prefix, e.g. 10.0.0.1/8. nginx's own
+                 * directives warn rather than fail here; match that, and keep
+                 * the mask ngx_ptocidr already normalised. */
+                ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                                   "low address bits of \"%V\" are meaningless",
+                                   &s);
+            }
+            continue;
+        }
+
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "invalid shield_ban parameter \"%V\"", &value[i]);
         return NGX_CONF_ERROR;
@@ -2382,6 +2670,27 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /* Header keying without a trusted-proxy list is a spoofing hole, not a
+     * configuration to second-guess: any direct client could then choose the
+     * ban key, banning third parties and filling the zone with fake entries.
+     * Refuse at parse time rather than silently falling back to the peer --
+     * a silent downgrade would leave the operator believing per-client banning
+     * works behind their proxy when it is really keying on the proxy. */
+    if (key == NGX_HTTP_SHIELD_BAN_KEY_FORWARDED && trusted == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "shield_ban key=forwarded requires at least one "
+                           "trusted=<address|CIDR>, otherwise the ban key is "
+                           "attacker-controlled");
+        return NGX_CONF_ERROR;
+    }
+
+    if (key == NGX_HTTP_SHIELD_BAN_KEY_PEER && trusted != NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "shield_ban trusted= is meaningless without "
+                           "key=forwarded");
+        return NGX_CONF_ERROR;
+    }
+
     shm_zone = ngx_shared_memory_add(cf, &name, 0, &ngx_http_shield_module);
     if (shm_zone == NULL) {
         return NGX_CONF_ERROR;
@@ -2391,8 +2700,268 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     slcf->ban_count = (ngx_uint_t) n;
     slcf->ban_window = window;
     slcf->ban_time = bantime;
+    slcf->ban_key = key;
+    slcf->ban_trusted = trusted;
 
     return NGX_CONF_OK;
+}
+
+
+/* ---- shield_ban_status: operator-facing JSON status endpoint ----------- */
+
+/*
+ * Name of a category by enum value, for the status report.
+ *
+ * Derived from ngx_http_shield_categories[] rather than from a second hand-kept
+ * list, so adding a signature category cannot make the two disagree. The four
+ * STRUCTURAL categories have no table row (nothing to match with signatures),
+ * so they are named from the same NGX_HTTP_SHIELD_NAME_* macros the detection
+ * sites use -- again, no new copy of the string.
+ *
+ * Returns "unknown" rather than NULL for an unnamed value: a category added to
+ * the enum but to neither the table nor the switch below should show up as a
+ * visibly wrong key in monitoring, not crash the endpoint.
+ */
+static const char *
+ngx_http_shield_cat_name(ngx_uint_t cat)
+{
+    ngx_uint_t  i;
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
+        if (ngx_http_shield_categories[i].cat == cat) {
+            return ngx_http_shield_categories[i].name;
+        }
+    }
+
+    switch (cat) {
+    case NGX_HTTP_SHIELD_CAT_HTTPOXY:
+        return NGX_HTTP_SHIELD_NAME_HTTPOXY;
+    case NGX_HTTP_SHIELD_CAT_RANGE_DOS:
+        return NGX_HTTP_SHIELD_NAME_RANGE_DOS;
+    case NGX_HTTP_SHIELD_CAT_CTRL_CHAR:
+        return NGX_HTTP_SHIELD_NAME_CTRL_CHAR;
+    case NGX_HTTP_SHIELD_CAT_DOTFILE:
+        return NGX_HTTP_SHIELD_NAME_DOTFILE;
+    default:
+        return "unknown";   /* LCOV_EXCL_LINE -- unreachable while the enum, */
+                            /* the table, and this switch stay in sync       */
+    }
+}
+
+
+/*
+ * shield_ban_status <zone>;
+ *
+ * Installs a content handler reporting the shield_ban zone's live state: the
+ * per-category hit totals, requests blocked, bans armed, and the current ban
+ * list. Unlike shield_probe this is a PRODUCTION feature, not gated on
+ * NGX_TEST_HARNESS.
+ *
+ * It is deliberately NOT self-protecting: the endpoint exposes which addresses
+ * are banned and how often each category fires, which is operational detail no
+ * anonymous client should read. Restricting it is the operator's job and the
+ * README says so -- `allow`/`deny`, an auth_basic, or a listener bound to a
+ * management interface. Building a half-measure in (say, localhost-only) would
+ * invite trusting it as if it were access control.
+ *
+ * The zone is attached with size 0, nginx's "bind to an already-declared zone"
+ * form; declaring it stays shield_ban_zone's job.
+ */
+static char *
+ngx_http_shield_ban_status(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_shield_loc_conf_t  *slcf = conf;
+
+    ngx_str_t                 *value;
+    ngx_http_core_loc_conf_t  *clcf;
+
+    if (slcf->status_zone != NULL) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    slcf->status_zone = ngx_shared_memory_add(cf, &value[1], 0,
+                                              &ngx_http_shield_module);
+    if (slcf->status_zone == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+    clcf->handler = ngx_http_shield_ban_status_handler;
+
+    return NGX_CONF_OK;
+}
+
+
+/*
+ * Render the status document.
+ *
+ * Sizing: the ban list is O(nodes) and a zone can hold thousands, so the buffer
+ * is measured from the live node count rather than fixed. The count is read
+ * under the lock, the buffer allocated OUTSIDE it (ngx_pnalloc can block on the
+ * pool, and allocating under the slab mutex would hold it far longer than the
+ * walk itself), then the walk re-checks against `last` and stops early if the
+ * zone grew between the two -- truncation of a monitoring document is
+ * acceptable; overrunning the buffer is not.
+ */
+static ngx_int_t
+ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
+{
+    size_t                       size;
+    u_char                      *buf, *p, *last;
+    time_t                       now;
+    ngx_int_t                    rc;
+    ngx_buf_t                   *b;
+    ngx_uint_t                   i, nodes, first;
+    ngx_chain_t                  out;
+    ngx_queue_t                 *q;
+    uint64_t                     cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    uint64_t                     blocked, bans;
+    ngx_http_shield_ban_node_t  *bn;
+    ngx_http_shield_ban_ctx_t   *ctx;
+    ngx_http_shield_loc_conf_t  *slcf;
+
+    if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
+        return NGX_HTTP_NOT_ALLOWED;
+    }
+
+    rc = ngx_http_discard_request_body(r);
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
+    ctx = slcf->status_zone->data;
+
+    /* A worker that has not yet run the zone's init callback (a request racing
+     * a reload) has no state to report. Say so rather than dereferencing. */
+    if (ctx == NULL || ctx->sh == NULL || ctx->shpool == NULL) {
+        return NGX_HTTP_SERVICE_UNAVAILABLE;
+    }
+
+    now = ngx_time();
+
+    /* Pass one under the lock: snapshot the counters and the node count only.
+     * Copying the counters out means the JSON rendering -- which is the
+     * expensive part -- happens with the mutex released. */
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+
+    ngx_memcpy(cat_hits, ctx->sh->cat_hits, sizeof(cat_hits));
+    blocked = ctx->sh->blocked;
+    bans = ctx->sh->bans;
+
+    nodes = 0;
+    for (q = ngx_queue_head(&ctx->sh->queue);
+         q != ngx_queue_sentinel(&ctx->sh->queue);
+         q = ngx_queue_next(q))
+    {
+        nodes++;
+    }
+
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+    /* Per banned entry: a quoted IPv6 text address, hits, and an expiry, plus
+     * punctuation -- 96 bytes is comfortable for the widest form. Per category:
+     * the name plus a 20-digit count and punctuation. */
+    size = sizeof("{\"zone\":\"\",\"nodes\":,\"blocked\":,\"bans\":,"
+                  "\"categories\":{},\"banned\":[]}")
+           + slcf->status_zone->shm.name.len
+           + 3 * NGX_INT64_LEN
+           + (size_t) NGX_HTTP_SHIELD_CAT_N * (64 + NGX_INT64_LEN)
+           + (size_t) nodes * 96;
+
+    buf = ngx_pnalloc(r->pool, size);
+    if (buf == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    last = buf + size;
+
+    p = ngx_slprintf(buf, last,
+                     "{\"zone\":\"%V\",\"nodes\":%ui,"
+                     "\"blocked\":%uL,\"bans\":%uL,\"categories\":{",
+                     &slcf->status_zone->shm.name, nodes, blocked, bans);
+
+    for (i = 0, first = 1; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+
+        /* Iterate the ENUM, not ngx_http_shield_categories[]. The table holds
+         * only categories that have a signature array; the four structural
+         * checks (httpoxy, range_dos, ctrl_char, dotfile) have no table row but
+         * do have an enum value and a counter, so a table-driven loop would
+         * silently omit exactly the categories with no signatures to grep for.
+         *
+         * Report every category including zeroes: a monitoring system wants a
+         * stable key set, not one that appears only once an attack starts. */
+        p = ngx_slprintf(p, last, "%s\"%s\":%uL",
+                         first ? "" : ",",
+                         ngx_http_shield_cat_name(i),
+                         cat_hits[i]);
+        first = 0;
+    }
+
+    p = ngx_slprintf(p, last, "},\"banned\":[");
+
+    /* Pass two: the ban list. Retaken because the buffer allocation above must
+     * not happen under the mutex; the node count may have changed since, which
+     * is why the walk is bounded by `last` and by a re-count rather than by
+     * the `nodes` value the sizing used. */
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+
+    for (q = ngx_queue_head(&ctx->sh->queue), first = 1;
+         q != ngx_queue_sentinel(&ctx->sh->queue);
+         q = ngx_queue_next(q))
+    {
+        bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
+
+        if (bn->banned_until <= now) {
+            continue;   /* counting, not banned: not part of the ban list */
+        }
+
+        /* Stop cleanly if the zone outgrew the buffer between the two locks.
+         * 96 is the per-entry reservation used in the sizing above. */
+        if ((size_t) (last - p) < 96) {
+            break;
+        }
+
+        p = ngx_slprintf(p, last, "%s{\"addr\":\"", first ? "" : ",");
+        p += ngx_inet_ntop(bn->len == 4 ? AF_INET : AF_INET6, bn->addr,
+                           p, last - p);
+        p = ngx_slprintf(p, last, "\",\"hits\":%ui,\"expires\":%T}",
+                         bn->hits, bn->banned_until - now);
+        first = 0;
+    }
+
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+    p = ngx_slprintf(p, last, "]}");
+
+    r->headers_out.status = NGX_HTTP_OK;
+    r->headers_out.content_length_n = p - buf;
+    ngx_str_set(&r->headers_out.content_type, "application/json");
+    r->headers_out.content_type_len = r->headers_out.content_type.len;
+    r->headers_out.content_type_lowcase = NULL;
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+        return rc;
+    }
+
+    b = ngx_calloc_buf(r->pool);
+    if (b == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    b->pos = buf;
+    b->last = p;
+    b->memory = 1;
+    b->last_buf = (r == r->main) ? 1 : 0;
+    b->last_in_chain = 1;
+
+    out.buf = b;
+    out.next = NULL;
+
+    return ngx_http_output_filter(r, &out);
 }
 
 

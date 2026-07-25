@@ -139,7 +139,8 @@ http {
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus the structural checks `httpoxy`, `range_dos`, `ctrl_char` and `dotfile`). A child block that sets `shield_skip` **replaces** the inherited list wholesale (masks do not merge); a child that omits it inherits the parent's. An empty child cannot clear an inherited skip — to un-skip, re-state the categories you still want disabled. |
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
 | `shield_ban_zone` | http | — | Define a shared-memory zone `name:size` (e.g. `shield:10m`) for the ban list. See [Repeat-offender banning](#repeat-offender-banning). |
-| `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. |
+| `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. Optional `key=peer\|forwarded` and repeatable `trusted=<addr\|CIDR>` — see [Banning behind a proxy](#banning-behind-a-proxy). |
+| `shield_ban_status` | location | — | `<zone>` — serve a JSON report for that ban zone: per-category hit totals, blocked/ban counts, and the current ban list. See [Status endpoint](#status-endpoint). |
 
 ### Repeat-offender banning
 
@@ -171,8 +172,14 @@ http {
   `detect` mode — so a detect-only deployment can still ban repeat attackers
   while it stays in observation mode for everyone else.
 - **Keyed on the client IP** (IPv4 or IPv6), stored in the shm zone, shared
-  across all worker processes. A `10m` zone holds on the order of 10⁵ addresses;
-  the least-recently-seen entries are evicted when it fills.
+  across all worker processes. A `10m` zone holds on the order of 10⁵ addresses.
+  When it fills, only **genuinely stale** entries are reclaimed — an entry with a
+  live ban or a live counting window is never evicted to make room, so an
+  attacker cannot rotate addresses to flush a pending ban. If nothing is
+  reclaimable the new hit is dropped and `zone … is full` is logged rather than a
+  live entry being sacrificed. Behind a proxy, see
+  [Banning behind a proxy](#banning-behind-a-proxy) — the default key is the TCP
+  peer, which would otherwise be your proxy for every client.
 - **The ban takes effect on the attacker's _next_ request** — the hit that
   reaches the threshold is still handled on its own merits.
 - **`window` and `bantime`** take nginx time units (`s`, `m`, `h`, `d`).
@@ -194,6 +201,83 @@ http {
   code path here can hold the lock across an operation that blocks or faults:
   the critical sections are bounded rbtree/queue work with no allocation beyond
   `ngx_slab_alloc_locked` and no I/O. Recovery is a restart.
+
+### Banning behind a proxy
+
+By default the ban key is the **TCP peer address**. Behind a reverse proxy or a
+CDN every request shares that one address, so a ban would take out every client
+behind it. `key=forwarded` keys on the client reported in `X-Forwarded-For`
+instead:
+
+```nginx
+location / {
+    shield block;
+    shield_ban zone=shield count=5 window=1m bantime=1h
+               key=forwarded trusted=10.0.0.0/8 trusted=192.168.1.5;
+}
+```
+
+`X-Forwarded-For` is **client-supplied text** — anyone can put anything in it —
+so it is only believed under two conditions, both enforced:
+
+- **`trusted=` is mandatory with `key=forwarded`.** It lists the proxies whose
+  header you accept, as addresses or CIDRs, and may be repeated. Omitting it is a
+  **configuration error**, not a silent fallback: without it any direct client
+  could pick its own ban key, ban third parties by forging a header, and fill the
+  zone with unlimited fake entries. Config with `trusted=` but no
+  `key=forwarded` is rejected too, since it would quietly do nothing.
+- **The header is read only when the TCP peer is itself in `trusted=`.** A
+  request arriving directly — not through your proxy — always keys on its real
+  peer address no matter what it claims.
+
+The **rightmost** `X-Forwarded-For` entry is used, not the leftmost. The header is
+append-only, so the leftmost value is whatever the original client claimed and is
+attacker-controlled even behind a trusted proxy; the rightmost is what your
+nearest trusted proxy actually observed. If the header is absent, unparsable, or
+the peer is untrusted, the key falls back to the peer address — over-broad, but
+never attacker-chosen.
+
+This trusts **one** proxy hop. For a deeper chain, put nginx's `realip` module in
+front (`set_real_ip_from` + `real_ip_header`, which supports a recursive walk):
+it rewrites the connection address, and the default `key=peer` then picks up the
+result with no shield configuration at all.
+
+### Status endpoint
+
+`shield_ban_status <zone>;` serves a JSON report for a ban zone:
+
+```nginx
+location /shield-status {
+    shield_ban_status shield;
+    allow 127.0.0.1;
+    deny all;                 # see the warning below
+}
+```
+
+```json
+{"zone":"shield","nodes":1,"blocked":2,"bans":1,
+ "categories":{"sqli":1,"xss":0,"httpoxy":1,"dotfile":0, "...":0},
+ "banned":[{"addr":"203.0.113.10","hits":0,"expires":3417}]}
+```
+
+- `blocked` counts requests actually denied, so in `detect` mode it stays 0 while
+  the per-category counters still climb — useful for sizing a ruleset before
+  turning blocking on.
+- `bans` counts bans **armed**, not requests refused while banned.
+- `categories` always lists **every** category, including those at zero, so a
+  metrics scraper sees a stable key set. Counters are cumulative and survive a
+  reload (the zone does); a restart clears them with the zone.
+- `expires` is seconds remaining on the ban. Only currently-banned clients appear
+  in `banned`; clients merely counting hits are in `nodes` but not the list.
+- Requires `shield_ban` on some location: the counters live in that zone's shared
+  memory. Non-`GET`/`HEAD` returns 405.
+
+> **Restrict this location.** The report names banned client addresses and reveals
+> which attack categories are firing — operational detail that should not be
+> public. The module deliberately applies **no** access control of its own, so
+> gate it with `allow`/`deny`, `auth_basic`, or a management-only listener.
+> Walking the ban list takes the zone's slab mutex for O(nodes), so scrape it at a
+> sane interval rather than per second on a large zone.
 
 ### Hit log
 
@@ -440,9 +524,26 @@ a table, and one row in `ngx_http_shield_categories[]`; no engine change.
 
 ```sh
 tools/ci-build.sh nginx 1.31.3
+bash tools/run-tests.sh nginx 1.31.3
+```
+
+`tools/run-tests.sh` sets the `TEST_NGINX_*` variables for you and, more
+usefully, binds an **ephemeral port instead of Test::Nginx's fixed default of
+1984**. Nothing arbitrates that default, so two runs on one box — two agents,
+two checkouts, or a stray nginx left by a crashed run — collide and the second
+dies with `bind() to 127.0.0.1:1984 failed (98: Address already in use)` …
+`still could not bind()`. That reads like a module regression and is not one.
+Pass extra arguments straight through to `prove` (`… nginx 1.31.3 -v`), pin a
+port with `TEST_NGINX_PORT=9999`, and set `TEST_NGINX_SERVROOT` to run two
+suites concurrently.
+
+The equivalent by hand, if you want the variables in your own shell:
+
+```sh
 export TEST_NGINX_BINARY="$PWD/.build/nginx-1.31.3/objs/nginx"
 export TEST_NGINX_LOAD_MODULES="$PWD/.build/nginx-1.31.3/objs/ngx_http_shield_module.so"
 export TEST_NGINX_TIMEOUT=20
+export TEST_NGINX_PORT=$((1984 + RANDOM % 20000))   # avoid the fixed-default clash
 prove t/
 ```
 
