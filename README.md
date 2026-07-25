@@ -440,9 +440,26 @@ a table, and one row in `ngx_http_shield_categories[]`; no engine change.
 
 ```sh
 tools/ci-build.sh nginx 1.31.3
+bash tools/run-tests.sh nginx 1.31.3
+```
+
+`tools/run-tests.sh` sets the `TEST_NGINX_*` variables for you and, more
+usefully, binds an **ephemeral port instead of Test::Nginx's fixed default of
+1984**. Nothing arbitrates that default, so two runs on one box — two agents,
+two checkouts, or a stray nginx left by a crashed run — collide and the second
+dies with `bind() to 127.0.0.1:1984 failed (98: Address already in use)` …
+`still could not bind()`. That reads like a module regression and is not one.
+Pass extra arguments straight through to `prove` (`… nginx 1.31.3 -v`), pin a
+port with `TEST_NGINX_PORT=9999`, and set `TEST_NGINX_SERVROOT` to run two
+suites concurrently.
+
+The equivalent by hand, if you want the variables in your own shell:
+
+```sh
 export TEST_NGINX_BINARY="$PWD/.build/nginx-1.31.3/objs/nginx"
 export TEST_NGINX_LOAD_MODULES="$PWD/.build/nginx-1.31.3/objs/ngx_http_shield_module.so"
 export TEST_NGINX_TIMEOUT=20
+export TEST_NGINX_PORT=$((1984 + RANDOM % 20000))   # avoid the fixed-default clash
 prove t/
 ```
 
