@@ -279,3 +279,37 @@ a=O:24:"GuzzleHttp\Psr7\FnStream":2:{}
 --- more_headers
 Content-Type: application/x-www-form-urlencoded
 --- error_code: 403
+
+=== TEST 26: a multipart/form-data body is scanned
+# multipart/form-data is one of the text-shaped content types scannable_body()
+# admits. Existing multipart tests only assert the Content-Type VALUE is not
+# itself misread as a payload; this one carries a real attack in the part body
+# and must be blocked, proving the type actually opts the body into scanning.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+--shieldbnd
+Content-Disposition: form-data; name="q"
+
+1 union select password from users
+--shieldbnd--
+--- more_headers
+Content-Type: multipart/form-data; boundary=shieldbnd
+--- error_code: 403
+
+=== TEST 27: a binary content type is NOT scanned (negative control for TEST 26)
+# The same payload under application/octet-stream must pass shield untouched and
+# reach empty_gif (405), or TEST 26 would prove nothing about the type check.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+POST /t
+--shieldbnd
+Content-Disposition: form-data; name="q"
+
+1 union select password from users
+--shieldbnd--
+--- more_headers
+Content-Type: application/octet-stream
+--- error_code: 405

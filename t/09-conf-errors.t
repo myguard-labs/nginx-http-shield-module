@@ -93,3 +93,17 @@ GET /t?sort=order
 --- must_die
 --- error_log
 "shield_log" directive is duplicate
+
+=== TEST 10: shield_ban rejects a duplicate directive
+--- http_config
+    shield_ban_zone shielddup:1m;
+--- config
+    location /t {
+        shield block;
+        shield_ban zone=shielddup count=3 window=60s bantime=10s;
+        shield_ban zone=shielddup count=5 window=60s bantime=10s;
+        empty_gif;
+    }
+--- must_die
+--- error_log
+"shield_ban" directive is duplicate

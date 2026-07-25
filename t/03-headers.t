@@ -396,3 +396,30 @@ GET /t
 Content-Type: text/plain
 Content-Type: application/json
 --- error_code: 200
+
+=== TEST 39: header scanning crosses an ngx_list_t part boundary
+# nginx stores request headers in an ngx_list_t whose first part holds 20
+# entries; header 21 onward lives in a chained part. Both header walks (the
+# httpoxy check and the generic per-header scan) must follow part->next, or
+# every header past the twentieth goes unscanned -- a trivially reachable
+# bypass. 24 padding headers put the payload in the SECOND part.
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers eval
+"X-Shield-Pad-1: padding-value-1\nX-Shield-Pad-2: padding-value-2\nX-Shield-Pad-3: padding-value-3\nX-Shield-Pad-4: padding-value-4\nX-Shield-Pad-5: padding-value-5\nX-Shield-Pad-6: padding-value-6\nX-Shield-Pad-7: padding-value-7\nX-Shield-Pad-8: padding-value-8\nX-Shield-Pad-9: padding-value-9\nX-Shield-Pad-10: padding-value-10\nX-Shield-Pad-11: padding-value-11\nX-Shield-Pad-12: padding-value-12\nX-Shield-Pad-13: padding-value-13\nX-Shield-Pad-14: padding-value-14\nX-Shield-Pad-15: padding-value-15\nX-Shield-Pad-16: padding-value-16\nX-Shield-Pad-17: padding-value-17\nX-Shield-Pad-18: padding-value-18\nX-Shield-Pad-19: padding-value-19\nX-Shield-Pad-20: padding-value-20\nX-Shield-Pad-21: padding-value-21\nX-Shield-Pad-22: padding-value-22\nX-Shield-Pad-23: padding-value-23\nX-Shield-Pad-24: padding-value-24\nUser-Agent: () { :; }; /bin/bash -c 'cat /etc/passwd'\n"
+--- error_code: 403
+
+=== TEST 40: the httpoxy check also crosses the part boundary
+# Same layout, but the payload is the Proxy header the structural httpoxy check
+# walks the list for (a separate loop from TEST 39's generic scan).
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers eval
+"X-Shield-Pad-1: padding-value-1\nX-Shield-Pad-2: padding-value-2\nX-Shield-Pad-3: padding-value-3\nX-Shield-Pad-4: padding-value-4\nX-Shield-Pad-5: padding-value-5\nX-Shield-Pad-6: padding-value-6\nX-Shield-Pad-7: padding-value-7\nX-Shield-Pad-8: padding-value-8\nX-Shield-Pad-9: padding-value-9\nX-Shield-Pad-10: padding-value-10\nX-Shield-Pad-11: padding-value-11\nX-Shield-Pad-12: padding-value-12\nX-Shield-Pad-13: padding-value-13\nX-Shield-Pad-14: padding-value-14\nX-Shield-Pad-15: padding-value-15\nX-Shield-Pad-16: padding-value-16\nX-Shield-Pad-17: padding-value-17\nX-Shield-Pad-18: padding-value-18\nX-Shield-Pad-19: padding-value-19\nX-Shield-Pad-20: padding-value-20\nX-Shield-Pad-21: padding-value-21\nX-Shield-Pad-22: padding-value-22\nX-Shield-Pad-23: padding-value-23\nX-Shield-Pad-24: padding-value-24\nProxy: http://evil.example\n"
+--- error_log
+category=httpoxy
+--- error_code: 403
