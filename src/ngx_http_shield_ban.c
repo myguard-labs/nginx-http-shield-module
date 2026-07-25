@@ -117,6 +117,33 @@ ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh)
      * the slab does not zero, and even zeroed memory would be a NULL cursor
      * rather than a valid sentinel pointer. */
     sh->cursor = &sh->queue;
+
+    /* ngx_slab_alloc() does not zero either, so the counters would otherwise
+     * start at whatever the segment last held and shield_status would report
+     * garbage totals on a fresh zone. */
+    ngx_memzero(sh->cat_hits, sizeof(sh->cat_hits));
+    sh->blocked = 0;
+    sh->bans = 0;
+}
+
+
+void
+ngx_http_shield_ban_count_hit(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t cat,
+    ngx_uint_t blocked)
+{
+    /* Bound-check rather than trust: `cat` comes from the scanner's category
+     * enum, and a category added to patterns.h beyond the 64 the bitmask allows
+     * would otherwise write past cat_hits[] into neighbouring shm. The module
+     * static-asserts the two bounds agree, so this is belt-and-braces at the
+     * one place that indexes the array -- cheap, and out of the hot path's way
+     * (this runs only on a hit, not on every request). */
+    if (cat < NGX_HTTP_SHIELD_BAN_NCOUNTERS) {
+        ctx->sh->cat_hits[cat]++;
+    }
+
+    if (blocked) {
+        ctx->sh->blocked++;
+    }
 }
 
 
@@ -367,6 +394,12 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
     bn->hits++;
 
     if (bn->hits >= count) {
+        /* Count the ARM, not the banned state: this branch is reached once per
+         * ban (the handler short-circuits an already-banned client before
+         * record() is ever called), so the total is "bans issued" rather than
+         * "requests while banned". */
+        ctx->sh->bans++;
+
         bn->banned_until = ngx_http_shield_time_add_clamp(now, ban_time);
         /* Reset the counter so the ban is re-armed cleanly if it is ever
          * extended after expiry, rather than tripping again on the next hit. */

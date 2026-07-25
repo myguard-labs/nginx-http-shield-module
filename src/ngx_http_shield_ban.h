@@ -50,10 +50,31 @@ typedef struct {
     ngx_uint_t    hits;           /* shield hits seen in the current window     */
 } ngx_http_shield_ban_node_t;
 
+/* Number of hit counters kept in shared memory, one per shield category.
+ *
+ * Deliberately NOT NGX_HTTP_SHIELD_CAT_N: that lives in ngx_http_shield_patterns.h,
+ * which pulls in the whole signature corpus, and this header must keep depending
+ * on <ngx_core.h> alone so the ban engine stays unit-testable. 64 is the same
+ * bound the scanner's category bitmask already enforces at compile time (the
+ * `NGX_HTTP_SHIELD_CAT_N <= 64` assert in patterns.h), so a category that fits
+ * the scanner fits here. The module static-asserts the two agree.
+ */
+#define NGX_HTTP_SHIELD_BAN_NCOUNTERS  64
+
 typedef struct {
     ngx_rbtree_t       rbtree;
     ngx_rbtree_node_t  sentinel;
     ngx_queue_t        queue;     /* LRU list head over all ban nodes           */
+
+    /* Per-category hit totals since worker start, reported by shield_ban_status.
+     * Monotonic; never reset except by a full restart (a reload reuses the
+     * segment, so counts survive it -- which is what an operator graphing them
+     * expects). Written under the slab mutex like everything else here. */
+    uint64_t           cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+
+    /* Totals that are not per-category: requests blocked, and bans armed. */
+    uint64_t           blocked;   /* requests denied by shield (any category)   */
+    uint64_t           bans;      /* ban arms, i.e. hits reaching the threshold */
 
     /* Resumable eviction cursor: where the NEXT ngx_http_shield_ban_expire()
      * call starts its walk, instead of always restarting at the LRU tail.
@@ -174,6 +195,14 @@ void ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
  * memory is NOT sufficient: the cursor must start at the queue sentinel, whose
  * address is only known once the queue head is placed. */
 void ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh);
+
+/* Count one shield hit in category `cat` (and, if `blocked`, one denied
+ * request) for the shield_ban_status report. Out-of-range `cat` is ignored rather
+ * than trusted -- the counters are indexed by a value that ultimately derives
+ * from scanner output, so the bound is enforced here at the single write site.
+ * Caller holds the shm lock. */
+void ngx_http_shield_ban_count_hit(ngx_http_shield_ban_ctx_t *ctx,
+    ngx_uint_t cat, ngx_uint_t blocked);
 
 /* Is this address currently banned (banned_until > now)? Also refreshes LRU.
  * Caller holds the shm lock. */
