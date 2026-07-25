@@ -514,3 +514,35 @@ invalid shield_ban trusted address
 ]
 --- error_code eval
 [403, 403, 403]
+
+=== TEST 27: an IPv6 forwarded client is keyed on its full 16-byte address
+# Exercises the v6 branch of the key extraction, which the loopback peer path
+# never reaches (the suite connects over IPv4). The forged first line rotates;
+# the real v6 client on the last line must still accumulate to a ban.
+--- http_config
+    shield_ban_zone shield27:1m;
+--- config
+    location /t {
+        shield block;
+        shield_ban zone=shield27 count=2 window=60s bantime=30s
+                   key=forwarded trusted=127.0.0.1;
+        empty_gif;
+    }
+--- request eval
+[
+    "GET /t?id=1%20union%20select%20pw",
+    "GET /t?id=1%20union%20select%20pw",
+    "GET /t?sort=order",
+    "GET /t?sort=order",
+]
+--- more_headers eval
+[
+    "X-Forwarded-For: 198.51.100.1\nX-Forwarded-For: 2001:db8::1234\n",
+    "X-Forwarded-For: 198.51.100.2\nX-Forwarded-For: 2001:db8::1234\n",
+    # same v6 client -> banned
+    "X-Forwarded-For: 198.51.100.3\nX-Forwarded-For: 2001:db8::1234\n",
+    # a DIFFERENT v6 client -> unaffected (keys are distinct, not truncated)
+    "X-Forwarded-For: 198.51.100.4\nX-Forwarded-For: 2001:db8::5678\n",
+]
+--- error_code eval
+[403, 403, 403, 200]
