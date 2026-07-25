@@ -1052,8 +1052,9 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/nmapi/recurringreport"),   /* WhatsUp Gold 2024-4885 */
 };
 
-/* One row per signature-table category. Structural categories (httpoxy,
- * range-dos) are not listed here -- they have no table. */
+/* One row per signature-table category. Structural categories are not listed
+ * here -- they have no table. Their authoritative list is the call block in
+ * ngx_http_shield_inspect_prebody() (httpoxy, range_dos, ctrl_char, dotfile). */
 typedef struct {
     ngx_http_shield_cat_e         cat;
     const char                   *name;   /* shield_skip token + log label   */

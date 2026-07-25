@@ -11,8 +11,10 @@
  *
  * Signatures live in ngx_http_shield_patterns.h. The engine here normalizes
  * each input (percent-decode once, lowercase, '+' -> space) and matches every
- * signature against it in a single Aho-Corasick pass, plus three structural
- * checks (httpoxy Proxy header, Apache-Killer Range, encoded C0 controls).
+ * signature against it in a single Aho-Corasick pass, plus four structural
+ * checks (httpoxy Proxy header, Apache-Killer Range, encoded C0 controls,
+ * dotfile path segments) -- see the call block in
+ * ngx_http_shield_inspect_prebody(), which is the authoritative list.
  * Scan cost is O(bytes)
  * and independent of the size of the signature set.
  *
@@ -726,16 +728,30 @@ ngx_http_shield_check_ctrl_char(ngx_http_request_t *r,
 
 /*
  * Any path segment starting with '.' -- dotfiles and dotdirs (.git, .env,
- * .htaccess, .ssh, .well-known included: no exception carved out, per the
- * directive this is scanned against).
+ * .htaccess, .ssh, ...).
  *
  * A structural check like ctrl_char: the SHAPE of the segment is wrong, not
  * its content, so it needs no signature list and cannot be evaded by a name
  * the list doesn't happen to carry yet.
  *
- * "." and ".." themselves are excluded -- they are relative-path tokens, not
- * named dotfiles, and ".." is already the traversal category's job.
+ * Three segment shapes are excluded:
+ *
+ *  - "." and ".." are relative-path tokens, not named dotfiles, and ".." is
+ *    already the traversal category's job.
+ *
+ *  - ".well-known" is a standards-registered PUBLIC namespace (RFC 8615): ACME
+ *    HTTP-01 renewal (RFC 8555 s8.3, /.well-known/acme-challenge/<token>),
+ *    OIDC discovery, security.txt. Blocking it structurally makes certificate
+ *    renewal fail and eventually takes the site's HTTPS down -- a
+ *    false positive that no legitimate deployment can afford, which is exactly
+ *    what this module promises not to do. The exemption is for the SEGMENT
+ *    only: the walk continues, so /.well-known/.env still hits dotfile, and
+ *    literal exploit paths under the namespace (the Citrix /oauth/idp/
+ *    .well-known/openid-configuration signature) are unaffected -- they live in
+ *    the exploit_path signature table, not here.
  */
+#define NGX_HTTP_SHIELD_WELL_KNOWN  ".well-known"
+
 static ngx_int_t
 ngx_http_shield_check_dotfile(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
@@ -761,6 +777,12 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
         if (at_segment_start && c == '.') {
             size_t  rest = r->uri.len - i;
 
+            /* LCOV_EXCL_START -- unreachable from HTTP, kept as defence in
+             * depth: ngx_http_parse_complex_uri() percent-decodes AND resolves
+             * dot-segments before r->uri, so neither "." nor ".." survives to
+             * here. t/11-dotfile.t TEST 23/24 pin the observable contract (no
+             * dotfile hit for either) rather than these lines. A future caller
+             * passing a non-normalized URI would still be handled correctly. */
             if ((rest == 1)
                 || (rest >= 2 && r->uri.data[i + 1] == '/'))
             {
@@ -774,6 +796,22 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
             {
                 at_segment_start = 0;
                 continue;   /* ".." segment -- owned by traversal */
+            }
+            /* LCOV_EXCL_STOP */
+
+            /* ".well-known" -- exactly, and only as a whole segment, so
+             * ".well-knownXYZ" is still a dotfile. Advance past the segment
+             * and keep walking: a dotfile DEEPER in the namespace still hits. */
+            if (rest >= sizeof(NGX_HTTP_SHIELD_WELL_KNOWN) - 1
+                && ngx_strncmp(&r->uri.data[i], NGX_HTTP_SHIELD_WELL_KNOWN,
+                               sizeof(NGX_HTTP_SHIELD_WELL_KNOWN) - 1) == 0
+                && (rest == sizeof(NGX_HTTP_SHIELD_WELL_KNOWN) - 1
+                    || r->uri.data[i + sizeof(NGX_HTTP_SHIELD_WELL_KNOWN) - 1]
+                       == '/'))
+            {
+                i += sizeof(NGX_HTTP_SHIELD_WELL_KNOWN) - 2;   /* loop ++ */
+                at_segment_start = 0;
+                continue;
             }
 
             hit->category = NGX_HTTP_SHIELD_NAME_DOTFILE;
