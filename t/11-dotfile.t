@@ -178,8 +178,13 @@ category=sensitive_file
 --- error_code: 403
 
 === TEST 22: a traversal payload under .well-known is still traversal
-# The traversal category scans the raw request target, so the encoded form
-# survives nginx's own dot-segment normalization and reaches the scanner.
+# The payload MUST sit in the query, not in a path segment. nginx normalizes
+# the path (decode, then resolve dot-segments) before r->uri, so an encoded
+# ".." in path position is collapsed away and the request 404s without ever
+# reaching the scanner -- verified, not assumed. It does NOT normalize the
+# query, which is why the traversal category scans the raw request target and
+# why query position is the only one that proves anything here.
+# Path-position traversal is covered by t/02-uri.t and by TEST 8 below.
 --- config
     location /t { shield block; empty_gif; }
 --- request
