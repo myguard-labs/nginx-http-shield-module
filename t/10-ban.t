@@ -546,3 +546,77 @@ invalid shield_ban trusted address
 ]
 --- error_code eval
 [403, 403, 403, 200]
+
+=== TEST 28: degenerate XFF values fall back to the peer without crashing
+# The rightmost-entry scan does pointer arithmetic over attacker-controlled
+# bytes, so the empty / comma-only / whitespace-only forms must terminate
+# safely rather than underflow or parse garbage. Each request is benign, so a
+# 200 means "handled, keyed on the peer"; a crash or 5xx would be the failure.
+# Verified clean under ASan+UBSan with these same values.
+--- http_config
+    shield_ban_zone shield28:1m;
+--- config
+    location /t {
+        shield block;
+        shield_ban zone=shield28 count=99 window=60s bantime=30s
+                   key=forwarded trusted=127.0.0.1;
+        empty_gif;
+    }
+--- request eval
+[
+    "GET /t?sort=order",
+    "GET /t?sort=order",
+    "GET /t?sort=order",
+    "GET /t?sort=order",
+    "GET /t?sort=order",
+    "GET /t?sort=order",
+]
+--- more_headers eval
+[
+    "X-Forwarded-For: ,\n",
+    "X-Forwarded-For: ,,\n",
+    "X-Forwarded-For:    \n",
+    "X-Forwarded-For:   ,  \n",
+    "X-Forwarded-For: , 203.0.113.7\n",
+    "X-Forwarded-For: 203.0.113.7 ,\n",
+]
+--- error_code eval
+[200, 200, 200, 200, 200, 200]
+
+=== TEST 29: a port-form XFF entry is parsed, and the PORT is not part of the key
+# RFC 7239-era proxies emit v4:port and [v6]:port. ngx_parse_addr_port handles
+# both; the address keys the ban and the port is ignored.
+#
+# The discriminating arm is the 4th: a DIFFERENT address in port form must be
+# unaffected (200). Without port parsing every port-form value fails to parse
+# and falls back to the peer -- all four requests then share the peer key, and
+# the 4th would be 403. That is what makes this test falsifiable; asserting only
+# the first three would pass either way.
+--- http_config
+    shield_ban_zone shield29:1m;
+--- config
+    location /t {
+        shield block;
+        shield_ban zone=shield29 count=2 window=60s bantime=30s
+                   key=forwarded trusted=127.0.0.1;
+        empty_gif;
+    }
+--- request eval
+[
+    "GET /t?id=1%20union%20select%20pw",
+    "GET /t?id=1%20union%20select%20pw",
+    "GET /t?sort=order",
+    "GET /t?sort=order",
+]
+--- more_headers eval
+[
+    "X-Forwarded-For: 203.0.113.90:1111\n",
+    "X-Forwarded-For: 203.0.113.90:2222\n",
+    # same address, third port -> banned (port is not part of the key)
+    "X-Forwarded-For: 203.0.113.90:3333\n",
+    # DIFFERENT address -> unaffected; 403 here means the port form failed to
+    # parse and everything collapsed onto the peer key
+    "X-Forwarded-For: 203.0.113.91:4444\n",
+]
+--- error_code eval
+[403, 403, 403, 200]
