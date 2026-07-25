@@ -2098,10 +2098,26 @@ ngx_http_shield_ban_addr(ngx_http_request_t *r, u_char *addr, u_char *len)
                                                   addr, len);
     }
 
-    /* Walk to the LAST comma-separated element. h->value is NUL-terminated by
-     * the header parser, and nginx coalesces repeated X-Forwarded-For headers
-     * into this one value, so scanning it is enough to reach the entry the
-     * nearest trusted proxy appended. */
+    /* Walk to the LAST header LINE first. Since nginx 1.23 repeated headers are
+     * NOT merged into one value: ngx_http_process_header_line() appends each
+     * additional "X-Forwarded-For:" line to a `->next` chain, and
+     * r->headers_in.x_forwarded_for is only the FIRST of them.
+     *
+     * This is load-bearing for the trust model, not tidiness. A proxy that
+     * appends its own header LINE (rather than extending the client's) leaves
+     * the client's forged line at the head of the chain. Reading only that head
+     * hands the ban key straight back to the attacker: rotating the forged value
+     * makes every request a distinct key, nothing ever reaches the threshold,
+     * and the real client is never banned. Verified against a live server --
+     * with the head-only read, two attacks plus a probe returned 200 (evaded);
+     * walking to the tail returns 403. The last line is the one the nearest
+     * trusted proxy wrote, which is the only line in the chain it vouches for. */
+    while (h->next != NULL) {
+        h = h->next;
+    }
+
+    /* Then the LAST comma-separated element within that line -- a proxy that
+     * appends to an existing line puts what it saw at the end. */
     start = h->value.data;
 
     for (p = h->value.data + h->value.len; p > start; p--) {

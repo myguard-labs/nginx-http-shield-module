@@ -172,8 +172,12 @@ http {
   `detect` mode — so a detect-only deployment can still ban repeat attackers
   while it stays in observation mode for everyone else.
 - **Keyed on the client IP** (IPv4 or IPv6), stored in the shm zone, shared
-  across all worker processes. A `10m` zone holds on the order of 10⁵ addresses;
-  the least-recently-seen entries are evicted when it fills. Behind a proxy, see
+  across all worker processes. A `10m` zone holds on the order of 10⁵ addresses.
+  When it fills, only **genuinely stale** entries are reclaimed — an entry with a
+  live ban or a live counting window is never evicted to make room, so an
+  attacker cannot rotate addresses to flush a pending ban. If nothing is
+  reclaimable the new hit is dropped and `zone … is full` is logged rather than a
+  live entry being sacrificed. Behind a proxy, see
   [Banning behind a proxy](#banning-behind-a-proxy) — the default key is the TCP
   peer, which would otherwise be your proxy for every client.
 - **The ban takes effect on the attacker's _next_ request** — the hit that

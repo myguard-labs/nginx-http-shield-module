@@ -92,10 +92,19 @@ export TEST_NGINX_BINARY="$BIN"
 export TEST_NGINX_LOAD_MODULES="$MODULE"
 export TEST_NGINX_TIMEOUT="${TEST_NGINX_TIMEOUT:-20}"
 
-# Keep each run's servroot separate too. Two concurrent runs sharing
-# t/servroot/ would overwrite each other's generated nginx.conf and pid file,
-# which is the same class of collision as the port.
-export TEST_NGINX_SERVROOT="${TEST_NGINX_SERVROOT:-$REPO_ROOT/t/servroot}"
+# Keep each run's servroot separate too, and actually derive one per invocation
+# rather than defaulting to the shared t/servroot: two concurrent runs sharing it
+# would overwrite each other's generated nginx.conf and pid file, which is the
+# same collision class the port work removes. It also keeps the retry decision
+# honest -- the bind-error grep below reads THIS run's error.log, so run A can no
+# longer burn a retry on run B's failure. Still overridable.
+export TEST_NGINX_SERVROOT="${TEST_NGINX_SERVROOT:-$REPO_ROOT/t/servroot-$$}"
+
+# A derived servroot is ours to clean up; an operator-supplied one is not.
+if [ -z "${TEST_NGINX_SERVROOT_KEEP:-}" ] &&
+    [ "$TEST_NGINX_SERVROOT" = "$REPO_ROOT/t/servroot-$$" ]; then
+    trap 'rm -rf "$TEST_NGINX_SERVROOT"' EXIT INT TERM
+fi
 
 i=1
 while [ "$i" -le "$ATTEMPTS" ]; do

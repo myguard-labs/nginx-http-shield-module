@@ -608,14 +608,18 @@ test_expire_progresses_despite_per_round_touch(void)
 /*
  * The cursor is a raw pointer into the LRU, so the node it points at must never
  * be freed underneath it. Eviction is the only path that unlinks-and-frees, and
- * it calls ngx_http_shield_ban_cursor_skip() first.
+ * it keeps the invariant by advancing `q` to `prev` BEFORE ngx_slab_free_locked(),
+ * so the value parked in ctx->sh->cursor on exit is always a node this call did
+ * not free (or the sentinel). There is no separate fix-up helper -- one was
+ * prototyped and dropped precisely because that store already masks it, which
+ * made it impossible to observe firing.
  *
  * Drive many rounds over a population that is entirely evictable, so the cursor
  * repeatedly lands on nodes that the very next call frees. A dangling cursor
  * would be dereferenced as a node on the following call -- caught here by ASan
  * in the sanitizer CI leg, and by the final "everything reclaimed" assertion in
- * a plain build (a walk that wanders into freed memory does not reliably keep
- * reclaiming).
+ * a plain build (the fake slab poisons freed blocks to 0xdb, so a walk into
+ * freed memory cannot quietly keep working).
  */
 static void
 test_cursor_survives_eviction_of_its_node(void)
@@ -641,6 +645,72 @@ test_cursor_survives_eviction_of_its_node(void)
 
     OK(live_allocs == 0,
        "cursor stays valid across eviction of the node it points at");
+
+    ctx_free_all();
+}
+
+
+
+/*
+ * S32-4 under the harshest reordering: EVERY live node re-headed every round.
+ *
+ * ban_lookup() re-heads a node on each hit, including whichever node the cursor
+ * parked on, so a busy proxy continuously reshuffles the queue under the walk.
+ * Reclaim must still finish. This is the property the cursor buys and the
+ * rotation approach did not (S32-4).
+ *
+ * NB this does NOT isolate the wrap-within-one-call branch in expire(): reclaim
+ * completes with or without it, because a call that ends at the sentinel parks
+ * there and the next call restarts from the tail. The wrap is a measured
+ * throughput tweak (fewer calls returning with unspent budget), not a
+ * correctness guarantee -- see the comment at that branch. Do not add an
+ * assertion here claiming otherwise.
+ */
+static void
+test_expire_wraps_within_one_call(void)
+{
+    u_char live[4]  = { 10, 4, 0, 0 };
+    u_char stale[4] = { 10, 5, 0, 0 };
+    int    i;
+    /* Enough live nodes that ONE call cannot walk past them: the walk burns its
+     * whole SCAN budget and parks the cursor mid-cluster. */
+    int    n_live = NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN + 4;
+    int    n_stale = 4;
+
+    ctx_reset();
+
+    /* Stale nodes first -> they end up nearest the TAIL. */
+    for (i = 0; i < n_stale; i++) {
+        stale[3] = (u_char) i;
+        hit((ngx_uint_t) (0x31000 + i), stale, 4, 100, 5, 10, 600);
+    }
+    /* Then the live cluster -> nearer the head than the stale ones. */
+    for (i = 0; i < n_live; i++) {
+        live[2] = (u_char) (i >> 8);
+        live[3] = (u_char) (i & 0xff);
+        hit((ngx_uint_t) (0x32000 + i), live, 4, 500, 1, 60, 36000);
+    }
+
+    /* First call: starts at the tail, frees up to EVICT stale nodes, parks. */
+    ngx_http_shield_ban_expire(&g_ctx, 5000, 10);
+
+    /* Now drive rounds where EVERY live node is touched each round, which is
+     * what a busy proxy does. That keeps re-heading nodes -- including whichever
+     * one the cursor parked on -- so a cursor that cannot wrap within a call
+     * repeatedly resumes near the head and reclaims nothing. */
+    for (i = 0; i < 64 && live_allocs > (size_t) n_live; i++) {
+        int j;
+        for (j = 0; j < n_live; j++) {
+            live[2] = (u_char) (j >> 8);
+            live[3] = (u_char) (j & 0xff);
+            ngx_http_shield_ban_lookup(&g_ctx, (ngx_uint_t) (0x32000 + j),
+                                       live, 4);
+        }
+        ngx_http_shield_ban_expire(&g_ctx, 5000, 10);
+    }
+
+    OK(live_allocs == (size_t) n_live,
+       "all stale nodes reclaimed despite every live node being re-headed");
 
     ctx_free_all();
 }
@@ -797,6 +867,7 @@ main(void)
     test_expire_progresses_past_oversized_live_cluster();
     test_expire_progresses_despite_per_round_touch();
     test_cursor_survives_eviction_of_its_node();
+    test_expire_wraps_within_one_call();
     test_rotation_does_not_defeat_ban();
     test_hash_collision_distinct();
     test_ipv4_ipv6_distinct();

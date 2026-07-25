@@ -483,3 +483,34 @@ invalid shield_ban trusted address
 --- must_die
 --- error_log
 "shield_ban_status" directive is duplicate
+
+=== TEST 26: a forged EXTRA XFF header line cannot steal the ban key
+# Since nginx 1.23 repeated headers are a ->next chain, NOT one merged value,
+# and headers_in.x_forwarded_for is only the FIRST line. A proxy that appends
+# its own line leaves the client's forged line at the head. Reading the head
+# would let the attacker rotate a fresh value per request so no key ever reaches
+# the threshold. Here the real client (last line) is constant and must be banned
+# by the 3rd request despite the rotating forged first line.
+--- http_config
+    shield_ban_zone shield26:1m;
+--- config
+    location /t {
+        shield block;
+        shield_ban zone=shield26 count=2 window=60s bantime=30s
+                   key=forwarded trusted=127.0.0.1;
+        empty_gif;
+    }
+--- request eval
+[
+    "GET /t?id=1%20union%20select%20pw",
+    "GET /t?id=1%20union%20select%20pw",
+    "GET /t?sort=order",
+]
+--- more_headers eval
+[
+    "X-Forwarded-For: 198.51.100.1\nX-Forwarded-For: 203.0.113.99\n",
+    "X-Forwarded-For: 198.51.100.2\nX-Forwarded-For: 203.0.113.99\n",
+    "X-Forwarded-For: 198.51.100.3\nX-Forwarded-For: 203.0.113.99\n",
+]
+--- error_code eval
+[403, 403, 403]

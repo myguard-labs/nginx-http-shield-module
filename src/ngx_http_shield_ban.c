@@ -151,7 +151,7 @@ void
 ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
     time_t window)
 {
-    ngx_uint_t                   scanned, evicted;
+    ngx_uint_t                   scanned, evicted, wrapped;
     ngx_queue_t                 *q, *prev;
     ngx_rbtree_node_t           *node;
     ngx_http_shield_ban_node_t  *bn;
@@ -216,6 +216,7 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
      * again", so the walk is cyclic and every node is eventually examined. */
     scanned = 0;
     evicted = 0;
+    wrapped = 0;
 
     /* Resume where the last call stopped. The sentinel means "start at the
      * tail"; ngx_queue_last() of an empty queue is the sentinel too, so the
@@ -224,12 +225,40 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
 
     if (q == ngx_queue_sentinel(&ctx->sh->queue)) {
         q = ngx_queue_last(&ctx->sh->queue);
+        wrapped = 1;   /* already starting from the tail; nothing left to wrap */
     }
 
-    while (q != ngx_queue_sentinel(&ctx->sh->queue)
-           && scanned < NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN
+    while (scanned < NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN
            && evicted < NGX_HTTP_SHIELD_BAN_EXPIRE_EVICT)
     {
+        if (q == ngx_queue_sentinel(&ctx->sh->queue)) {
+            /* Ran off the head. The cursor removed the DEPENDENCE on queue
+             * order, but without this it would still be SENSITIVE to it:
+             * ban_lookup() re-heads any node on a hit, including the one the
+             * cursor is parked on, so a call can resume near the head, run out
+             * of queue, and return with most of its SCAN budget unspent. Wrap to
+             * the tail and spend the remainder here instead of deferring it to
+             * the next call.
+             *
+             * EFFICIENCY, not correctness: reclaim already completed without
+             * this, because a call that ends at the sentinel still parks there
+             * and the following call restarts from the tail. Measured on the
+             * unit suite, calls ending at the sentinel with budget left over a
+             * non-empty queue drop from 187/293 to 150/291. No test can fail on
+             * its absence -- which is exactly why it is documented as a
+             * throughput tweak rather than a guarantee.
+             *
+             * `wrapped` bounds it to ONE lap, so a queue with no evictable node
+             * cannot spin: the second time we reach the sentinel we stop. */
+            if (wrapped) {
+                break;
+            }
+
+            wrapped = 1;
+            q = ngx_queue_last(&ctx->sh->queue);
+            continue;
+        }
+
         scanned++;
         prev = ngx_queue_prev(q);
         bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
