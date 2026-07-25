@@ -109,6 +109,18 @@ ngx_http_shield_ban_lookup(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t hash,
 
 
 void
+ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh)
+{
+    ngx_queue_init(&sh->queue);
+
+    /* Start at the sentinel = "begin at the LRU tail". Must be set explicitly:
+     * the slab does not zero, and even zeroed memory would be a NULL cursor
+     * rather than a valid sentinel pointer. */
+    sh->cursor = &sh->queue;
+}
+
+
+void
 ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
     time_t window)
 {
@@ -145,24 +157,47 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
      * sending, and under the documented count=5 window=1m bantime=1h they stay
      * live 60x longer than a counting node.
      *
-     * So every live node we skip is ROTATED to the LRU head. The next call then
-     * starts on nodes it has not examined yet, which guarantees progress across
-     * calls for any cluster size while keeping per-call work bounded by SCAN.
-     * The rotation only reorders live entries among themselves -- it never
-     * changes whether a node is evictable, and a node that is genuinely in use
-     * gets moved back to the head by ngx_http_shield_ban_lookup anyway.
+     * The previous fix ROTATED every skipped live node to the LRU head, so the
+     * next call would start on unexamined nodes. That works only while nothing
+     * else reorders the queue -- and something does: ngx_http_shield_ban_lookup
+     * re-heads a node on every hit, and is_banned() runs on EVERY request to a
+     * shield_ban location. Ordinary traffic therefore continuously reshuffles
+     * the very order the rotation relied on. With a live cluster larger than
+     * SCAN at the tail and one stale node re-touched every round, the walk
+     * never reaches the stale node: 200 expire calls, zero reclaim (S32-4).
      *
-     * Cost note: rotating turns what was a read-only skip into a queue unlink
-     * plus a head insert per skipped node -- several pointer stores each,
-     * touching the neighbouring links and the queue sentinel -- so a full SCAN
-     * of live nodes now dirties shm that a plain skip left untouched. The work
-     * is bounded (SCAN is 32) and confined to the alloc-miss path: ban_expire
-     * runs when a NEW address needs a node, not per request. Bounded extra work
-     * under the lock is the price of the progress guarantee; an unbounded walk,
-     * or no rotation at all, were both worse (see S30-1). */
+     * So progress no longer depends on queue order at all. A CURSOR in shctx
+     * records where the last call stopped, and the next call RESUMES there
+     * instead of restarting at the tail. Nodes the cursor has already passed
+     * are not re-examined until it wraps, whatever traffic does to the ordering
+     * in the meantime. Rotation is gone with it: skipping is a read again, which
+     * also retires the S32-5 note about rotation dirtying shm under the mutex.
+     *
+     * The cursor is a pointer INTO the queue, so it must never be left pointing
+     * at freed memory. ONE rule keeps that true, and it is the store at the end
+     * of this function: the loop advances q to `prev` BEFORE freeing a node, so
+     * whatever q holds on exit is either a node this call did not free or the
+     * queue sentinel (embedded in shctx, never freed). No separate fix-up on
+     * the eviction path is needed, and none exists -- a guard there could never
+     * be observed to fire, so it would be untestable dead weight.
+     *
+     * The other removal site, ngx_http_shield_ban_lookup(), re-inserts the node
+     * it removes, so it cannot invalidate the cursor either. Any FUTURE path
+     * that unlinks and frees a node outside this loop MUST re-park the cursor.
+     *
+     * Wrapping past the head stores the sentinel, i.e. "start at the tail
+     * again", so the walk is cyclic and every node is eventually examined. */
     scanned = 0;
     evicted = 0;
-    q = ngx_queue_last(&ctx->sh->queue);
+
+    /* Resume where the last call stopped. The sentinel means "start at the
+     * tail"; ngx_queue_last() of an empty queue is the sentinel too, so the
+     * loop below simply does not run. */
+    q = ctx->sh->cursor;
+
+    if (q == ngx_queue_sentinel(&ctx->sh->queue)) {
+        q = ngx_queue_last(&ctx->sh->queue);
+    }
 
     while (q != ngx_queue_sentinel(&ctx->sh->queue)
            && scanned < NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN
@@ -205,12 +240,8 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
                 && ngx_http_shield_time_add_clamp(bn->window_start, window)
                        > now))
         {
-            /* Live: keep it, but move it off the tail so the NEXT call starts
-             * on a node this one has not already rejected. `prev` was captured
-             * before the rotation, so the walk continues head-ward correctly
-             * even though q itself has just moved to the head. */
-            ngx_queue_remove(q);
-            ngx_queue_insert_head(&ctx->sh->queue, q);
+            /* Live: skip it. A plain read -- the cursor, not the queue order,
+             * is what carries progress to the next call now. */
             q = prev;
             continue;
         }
@@ -224,6 +255,19 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
         evicted++;
         q = prev;
     }
+
+    /* Park the cursor for the next call.
+     *
+     * `q` is where the walk stopped: a live node it has not yet judged, or the
+     * sentinel if it ran off the head. Storing the sentinel makes the next call
+     * wrap around to the tail, which is what keeps the walk cyclic -- without
+     * the wrap the cursor would stick at the head and reclaim would stop after
+     * one lap.
+     *
+     * Storing `q` unconditionally is safe: the loop only ever leaves q pointing
+     * at a node it did NOT free (it advances to `prev` before freeing), or at
+     * the sentinel. */
+    ctx->sh->cursor = q;
 }
 
 

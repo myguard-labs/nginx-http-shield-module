@@ -55,6 +55,31 @@ typedef struct {
     ngx_rbtree_node_t  sentinel;
     ngx_queue_t        queue;     /* LRU list head over all ban nodes           */
 
+    /* Resumable eviction cursor: where the NEXT ngx_http_shield_ban_expire()
+     * call starts its walk, instead of always restarting at the LRU tail.
+     *
+     * Rotating skipped live nodes to the head (the S30-1 fix) guarantees
+     * progress only while nothing else reorders the queue. But ban_lookup()
+     * re-heads a node on EVERY request, and is_banned() runs per request, so
+     * ordinary traffic continuously undoes the rotation. With a live cluster
+     * larger than SCAN at the tail and one stale node touched every round, the
+     * walk never reaches that stale node -- 200 expire calls, zero reclaim
+     * (S32-4). A cursor decouples reclaim progress from queue order entirely.
+     *
+     * INVARIANT: `cursor` is either &queue (the sentinel, meaning "start at the
+     * tail") or points at the `queue` member of a LIVE node -- never at freed
+     * slab memory. ngx_http_shield_ban_expire() maintains this by advancing off
+     * a node before freeing it; ngx_http_shield_ban_lookup() re-inserts every
+     * node it unlinks, so it cannot invalidate the cursor. A future path that
+     * unlinks AND frees outside expire() would have to re-park the cursor.
+     *
+     * A queue pointer rather than a stored address on purpose: an address would
+     * need an O(log n) re-lookup each call and is ambiguous once its node is
+     * evicted, whereas a pointer is free to follow and merely has to be
+     * maintained at the single site that frees.
+     */
+    ngx_queue_t       *cursor;
+
 #ifdef NGX_TEST_HARNESS
     /* CI-only slab fault injection (see ngx_shield_probe_hooks.c).
      *
@@ -139,9 +164,16 @@ ngx_http_shield_ban_node_t *ngx_http_shield_ban_lookup(
     ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t hash, u_char *addr, u_char len);
 
 /* Reclaim slab space by evicting genuinely-stale LRU nodes (neither banned nor
- * inside a live counting window). Bounded. Caller holds the shm lock. */
+ * inside a live counting window). Bounded. Resumes from ctx->sh->cursor rather
+ * than restarting at the tail, so reclaim progress does not depend on queue
+ * order. Caller holds the shm lock. */
 void ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
     time_t window);
+
+/* Initialise the LRU + eviction cursor for a fresh shared segment. Zeroed
+ * memory is NOT sufficient: the cursor must start at the queue sentinel, whose
+ * address is only known once the queue head is placed. */
+void ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh);
 
 /* Is this address currently banned (banned_until > now)? Also refreshes LRU.
  * Caller holds the shm lock. */

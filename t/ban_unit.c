@@ -56,12 +56,24 @@ ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
     return malloc(size);
 }
 
+/* Size of a ban allocation, so free() can poison the whole block. Mirrors what
+ * ngx_http_shield_ban_record_locked() asks for. */
+#define BAN_ALLOC_SIZE                                                       \
+    (offsetof(ngx_rbtree_node_t, color) + sizeof(ngx_http_shield_ban_node_t))
+
 void
 ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
 {
     (void) pool;
     if (p) {
         live_allocs--;
+        /* POISON before releasing. A real slab hands the block to another
+         * allocation and its queue links stop being followable; plain free()
+         * leaves them intact, so a dangling pointer into a freed node keeps
+         * "working" and a use-after-free reads as a pass. Poisoning makes any
+         * such deref land on 0xdb... instead -- which segfaults, or trips ASan,
+         * deterministically rather than by luck. */
+        memset(p, 0xdb, BAN_ALLOC_SIZE);
         free(p);
     }
 }
@@ -91,7 +103,7 @@ ctx_reset(void)
 {
     ngx_rbtree_init(&g_sh.rbtree, &g_sh.sentinel,
                     ngx_http_shield_ban_rbtree_insert);
-    ngx_queue_init(&g_sh.queue);
+    ngx_http_shield_ban_shctx_init(&g_sh);   /* queue + eviction cursor */
     g_ctx.sh = &g_sh;
     g_ctx.shpool = NULL;     /* fake slab ignores the pool arg */
     fail_alloc = 0;
@@ -116,6 +128,11 @@ ctx_free_all(void)
         ngx_rbtree_delete(&g_sh.rbtree, node);
         ngx_slab_free_locked(NULL, node);
     }
+
+    /* Every node is gone, so any cursor still parked on one now dangles. Park
+     * it back on the sentinel. ctx_reset() would do this at the start of the
+     * next test, but not every test calls free_all then reset in that order. */
+    g_sh.cursor = &g_sh.queue;
 }
 
 /* Convenience: record one hit for a synthetic (hash, addr) with a policy. */
@@ -512,10 +529,11 @@ test_expire_progresses_past_oversized_live_cluster(void)
 
     /* At t=600 the stale node is reclaimable but sits n_live (> SCAN) nodes
      * head-ward of the tail, so ONE call cannot reach it. The real caller runs
-     * expire() once per recorded hit, and each call rotates the live nodes it
-     * skipped to the head, so a bounded number of calls must reach the stale
-     * node. Without rotation every call rescans the same tail and this loop
-     * never reclaims (S30-1). Allow generous headroom, then assert progress. */
+     * expire() once per recorded hit, and each call RESUMES from the cursor
+     * where the last one stopped, so a bounded number of calls must reach the
+     * stale node. Without the cursor every call rescans the same tail and this
+     * loop never reclaims (S30-1, later S32-4). Generous headroom, then assert
+     * progress. */
     for (i = 0; i < 16 && live_allocs > (size_t) n_live; i++) {
         ngx_http_shield_ban_expire(&g_ctx, 600, 10);
     }
@@ -525,6 +543,108 @@ test_expire_progresses_past_oversized_live_cluster(void)
 
     ctx_free_all();
 }
+
+/*
+ * S32-4: reclaim must not depend on LRU order, because ordinary traffic
+ * rewrites that order continuously.
+ *
+ * This is the exact shape that defeated the S30-1 rotation fix. Rotation moved
+ * every skipped live node to the LRU head so the next call would start on fresh
+ * ground -- but ngx_http_shield_ban_lookup() ALSO moves a node to the head, and
+ * is_banned() calls it on every request to a shield_ban location. So a client
+ * that keeps touching one node re-heads it between expire() calls and undoes
+ * the rotation's progress.
+ *
+ * Here: a live cluster larger than SCAN sits at the tail, one stale node is
+ * reclaimable, and that stale node is TOUCHED ONCE PER ROUND (via lookup, which
+ * is what a real request does). Under rotation the walk restarted at the tail
+ * every call, spent its whole scan budget on the live cluster, and never
+ * reached the stale node: measured 200 calls, zero reclaim. With a resumable
+ * cursor the walk picks up where it stopped regardless of the reshuffling, so
+ * the stale node is reached in a bounded number of rounds.
+ *
+ * Negative control for this test: revert expire() to start at
+ * ngx_queue_last() every call and it fails -- live_allocs never drops.
+ */
+static void
+test_expire_progresses_despite_per_round_touch(void)
+{
+    u_char stale[4] = { 10, 0, 2, 90 };
+    u_char live[4]  = { 10, 2, 0, 0 };
+    int    i;
+    int    n_live = NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN + 8;   /* > SCAN */
+
+    ctx_reset();
+
+    /* Live cluster first -> occupies the LRU tail; banned long past t=600. */
+    for (i = 0; i < n_live; i++) {
+        live[2] = (u_char) (i >> 8);
+        live[3] = (u_char) (i & 0xff);
+        hit((ngx_uint_t) (0xF000 + i), live, 4, 500, 1, 60, 36000);
+    }
+
+    /* One stale node: window lapsed at t=110, never banned, so at t=600 it is
+     * genuinely evictable no matter how recently it was TOUCHED. Touching
+     * changes LRU position only -- not liveness. */
+    hit(0xFFFE, stale, 4, 100, 5, 10, 600);
+
+    for (i = 0; i < 64 && live_allocs > (size_t) n_live; i++) {
+        /* The per-round touch: re-heads the stale node exactly the way a real
+         * request's is_banned() would, right before the eviction pass. */
+        ngx_http_shield_ban_lookup(&g_ctx, 0xFFFE, stale, 4);
+        ngx_http_shield_ban_expire(&g_ctx, 600, 10);
+    }
+
+    OK(ngx_http_shield_ban_lookup(&g_ctx, 0xFFFE, stale, 4) == NULL,
+       "reclaim progresses although the stale node is touched every round"
+       " (S32-4)");
+    OK(live_allocs == (size_t) n_live,
+       "per-round-touch case retains the whole live cluster");
+
+    ctx_free_all();
+}
+
+
+/*
+ * The cursor is a raw pointer into the LRU, so the node it points at must never
+ * be freed underneath it. Eviction is the only path that unlinks-and-frees, and
+ * it calls ngx_http_shield_ban_cursor_skip() first.
+ *
+ * Drive many rounds over a population that is entirely evictable, so the cursor
+ * repeatedly lands on nodes that the very next call frees. A dangling cursor
+ * would be dereferenced as a node on the following call -- caught here by ASan
+ * in the sanitizer CI leg, and by the final "everything reclaimed" assertion in
+ * a plain build (a walk that wanders into freed memory does not reliably keep
+ * reclaiming).
+ */
+static void
+test_cursor_survives_eviction_of_its_node(void)
+{
+    u_char a[4] = { 10, 3, 0, 0 };
+    int    i;
+    int    n = NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN * 3;
+
+    ctx_reset();
+
+    for (i = 0; i < n; i++) {
+        a[2] = (u_char) (i >> 8);
+        a[3] = (u_char) (i & 0xff);
+        /* Short window, never banned -> all stale well before t=5000. */
+        hit((ngx_uint_t) (0x11000 + i), a, 4, 1000, 5, 10, 600);
+    }
+
+    /* EVICT caps each call, so this needs several rounds; every round parks the
+     * cursor on a node a later round frees. */
+    for (i = 0; i < n + 16 && live_allocs > 0; i++) {
+        ngx_http_shield_ban_expire(&g_ctx, 5000, 10);
+    }
+
+    OK(live_allocs == 0,
+       "cursor stays valid across eviction of the node it points at");
+
+    ctx_free_all();
+}
+
 
 static void
 test_expire_progresses_past_live_cluster(void)
@@ -675,6 +795,8 @@ main(void)
     test_expire_reclaims_stale();
     test_expire_progresses_past_live_cluster();
     test_expire_progresses_past_oversized_live_cluster();
+    test_expire_progresses_despite_per_round_touch();
+    test_cursor_survives_eviction_of_its_node();
     test_rotation_does_not_defeat_ban();
     test_hash_collision_distinct();
     test_ipv4_ipv6_distinct();

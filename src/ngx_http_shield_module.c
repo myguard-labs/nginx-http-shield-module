@@ -2081,7 +2081,11 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_http_shield_ban_rbtree_insert);
-    ngx_queue_init(&ctx->sh->queue);
+
+    /* Sets up the LRU queue AND parks the eviction cursor on its sentinel.
+     * ngx_queue_init() alone would leave `cursor` holding slab garbage, which
+     * ban_expire would then dereference as a node. */
+    ngx_http_shield_ban_shctx_init(ctx->sh);
 
 #ifdef NGX_TEST_HARNESS
     /* -1 = no fault armed. ngx_slab_alloc() does not zero, so this must be set
