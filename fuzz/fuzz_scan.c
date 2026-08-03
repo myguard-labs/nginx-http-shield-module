@@ -56,6 +56,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 
 /* Pull in the real signature tables (types come from ngx_core.h above). */
 #include "../src/ngx_http_shield_patterns.h"
@@ -81,10 +82,11 @@
 volatile ngx_cycle_t  *ngx_cycle;
 
 /*
- * ngx_palloc.c calls this on pool exhaustion. Real nginx logs and continues;
- * here a failure would silently shrink an automaton, so make it loud. Only
- * ever reachable from ac_build at startup -- the per-input path never
- * allocates.
+ * Referenced by ngx_palloc.c's allocation-failure path. Output is DISCARDED:
+ * the loud failure lives in shield_scan_ac_init() below, which aborts when
+ * ngx_http_shield_ac_build() returns NGX_ERROR. Aborting here instead would
+ * turn every nginx-internal error log into a crash, which is a wider contract
+ * than this harness wants.
  */
 void
 ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
@@ -247,6 +249,16 @@ static void
 shield_scan_ac_init(void)
 {
     ngx_memzero(&shield_fuzz_log, sizeof(shield_fuzz_log));
+
+    /* ngx_pagesize is DEFINED by ngx_alloc.c (linked) but ASSIGNED by
+     * ngx_os_init() in ngx_posix_init.c, which this binary does not link. Left
+     * at 0, NGX_MAX_ALLOC_FROM_POOL is (ngx_pagesize - 1) and
+     * underflows to SIZE_MAX, so ngx_create_pool() caps pool->max at the pool
+     * size (16304) rather than one page. Every allocation then takes
+     * ngx_palloc_small() and the large-block path is never exercised -- so the
+     * harness would be fuzzing a different allocator split than production.
+     * Both paths are correct, which is exactly why this is easy to miss. */
+    ngx_pagesize = (ngx_uint_t) getpagesize();
 
     shield_fuzz_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE,
                                        &shield_fuzz_log);
