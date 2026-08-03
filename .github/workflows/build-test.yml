@@ -105,10 +105,9 @@ jobs:
             build-essential curl libpcre2-dev zlib1g-dev
 
       - name: Cache source tarball
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: ./.github/actions/build-cache
         with:
-          path: .build/nginx-${{ env.NGINX_VERSION }}.tar.gz
-          key: src-nginx-${{ env.NGINX_VERSION }}
+          nginx-version: ${{ env.NGINX_VERSION }}
 
       - name: Build server and dynamic module
         run: |
