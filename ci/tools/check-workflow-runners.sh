@@ -10,11 +10,25 @@
 # Fails with a non-zero status and a list of offending workflows.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 fail=0
 
-for wf in .github/workflows/*.yml; do
+# An unmatched glob would otherwise expand to the literal pattern, the python
+# probe would fail to open it, and the loop would finish reporting zero
+# offending workflows -- a green trust-boundary gate that inspected nothing.
+# Fail closed instead: no workflows found means the check could not run.
+shopt -s nullglob
+workflows=(.github/workflows/*.yml)
+shopt -u nullglob
+
+if [ "${#workflows[@]}" -eq 0 ]; then
+    echo "ERROR: no workflows found under $PWD/.github/workflows/." >&2
+    echo "       This gate must never pass by inspecting nothing." >&2
+    exit 1
+fi
+
+for wf in "${workflows[@]}"; do
     # Does this workflow have a pull_request trigger?
     if ! python3 - "$wf" <<'PY'; then
 import sys
