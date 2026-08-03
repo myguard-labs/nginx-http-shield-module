@@ -7,8 +7,6 @@ env:
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
     # Monthly, day 4 @ 04:47 UTC (staggered per repo like ci-deep).
     - cron: "47 4 4 * *"
