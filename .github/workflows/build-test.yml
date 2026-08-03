@@ -185,6 +185,8 @@ jobs:
     name: Test::Nginx
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      TEST_BASE_PORT: '19200'
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -212,6 +214,14 @@ jobs:
       - name: Build dynamic module
         run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION"
 
+      # Runs BEFORE the first step that binds the band -- `prove` below, not
+      # just the runtime suite. Fails if the band reaches the kernel ephemeral
+      # range or is already occupied by a leftover server, either of which
+      # would otherwise surface inside a suite as a bind error or a timeout
+      # with no cause attached.
+      - name: Verify this job's port band is free
+        run: bash ci/tools/max-port.sh "$TEST_BASE_PORT"
+
       - name: Run ci/t/
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
@@ -220,12 +230,15 @@ jobs:
           # Test::Nginx defaults this to $CWD/t/servroot, which no longer
           # exists now that the suite lives under ci/t/.
           TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
+          TEST_NGINX_PORT: ${{ env.TEST_BASE_PORT }}
         run: prove -v ci/t/
 
   asan:
     name: ASan and UBSan
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TEST_BASE_PORT: '19260'
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -255,6 +268,14 @@ jobs:
       - name: Build with sanitizers
         run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" asan
 
+      # Runs BEFORE the first step that binds the band -- `prove` below, not
+      # just the runtime suite. Fails if the band reaches the kernel ephemeral
+      # range or is already occupied by a leftover server, either of which
+      # would otherwise surface inside a suite as a bind error or a timeout
+      # with no cause attached.
+      - name: Verify this job's port band is free
+        run: bash ci/tools/max-port.sh "$TEST_BASE_PORT"
+
       - name: Run ci/t/ under ASan and UBSan
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
@@ -262,6 +283,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
+          TEST_NGINX_PORT: ${{ env.TEST_BASE_PORT }}
         run: prove -v ci/t/
 
   reporter-tests:
@@ -389,6 +411,8 @@ jobs:
     name: C line coverage
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      TEST_BASE_PORT: '19320'
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -422,11 +446,20 @@ jobs:
       - name: Build with coverage instrumentation
         run: TEST_HARNESS=1 bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" coverage
 
+      # Runs BEFORE the first step that binds the band -- `prove` below, not
+      # just the runtime suite. Fails if the band reaches the kernel ephemeral
+      # range or is already occupied by a leftover server, either of which
+      # would otherwise surface inside a suite as a bind error or a timeout
+      # with no cause attached.
+      - name: Verify this job's port band is free
+        run: bash ci/tools/max-port.sh "$TEST_BASE_PORT"
+
       - name: Run ci/t/ (populates .gcda counters)
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
           TEST_NGINX_TIMEOUT: "30"
           TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
+          TEST_NGINX_PORT: ${{ env.TEST_BASE_PORT }}
         run: prove ci/t/
 
       # The prober reaches paths ci/t/ structurally cannot: the slab-exhaustion
