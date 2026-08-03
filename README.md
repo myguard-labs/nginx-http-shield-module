@@ -1,11 +1,13 @@
 # nginx-http-shield-module
 
-[![Build and Test](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml)
-[![Security scanners](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml)
+[![Build&Test](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml)
+[![Security Scanners](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml)
 [![Fuzzing](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/fuzzing.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/fuzzing.yml)
 [![Valgrind](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/valgrind.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/valgrind.yml)
-[![CI Deep](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml)
 [![CodeQL](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml)
+[![A/UBSan](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/asan.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/asan.yml)
+[![CI Deep](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml)
+[![Bump versions](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/bump.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/bump.yml)
 
 > 📖 **Read the article:** [nginx-http-shield-module: Block Ancient Exploits Without a WAF](https://deb.myguard.nl/articles/nginx-http-shield-module/)
 > — what it blocks, why the engine is an Aho-Corasick automaton, and how to roll it out from `detect` to `block`.
@@ -547,19 +549,6 @@ export TEST_NGINX_PORT=$((1984 + RANDOM % 20000))   # avoid the fixed-default cl
 prove ci/t/
 ```
 
-### Continuous testing
-
-This is hostile-input parser code, so every change runs through a layered gate:
-
-| Workflow | Trigger | What it does |
-|----------|---------|--------------|
-| **Build and Test** | PR/push | Multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under AddressSanitizer + UndefinedBehaviorSanitizer. |
-| **Fuzzing** | PR/push | 120 s libFuzzer run of `fuzz_scan` — the real normalize + Aho-Corasick scan core, differentially checked against a naive reference matcher, with nginx's own `ngx_unescape_uri()` decoder linked in. |
-| **Valgrind** | PR/push | 60 s Memcheck soak of a mixed attack/benign request storm against the debug build. |
-| **Security scanners** | PR/push | flawfinder (gate on ≥4), clang-tidy (`cert-*`, `security.*`), semgrep. |
-| **CodeQL** | PR/push + monthly | `security-extended` C/C++ analysis. |
-| **CI Deep** | monthly + dispatch | 4 h fuzz, 10 min Memcheck **and** Helgrind soaks, scanners. |
-
 Fuzz the scan core locally:
 
 ```sh
@@ -574,6 +563,28 @@ Soak under Valgrind locally:
 ci/tools/ci-build.sh nginx 1.31.3 debug
 USE_VALGRIND=1 ci/tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
 ```
+
+## CI
+
+A failure surfaces as a red run plus the uploaded artifact — no chat
+notifications wired.
+
+Only `ci.yml` has a `pull_request` trigger. The five PR-time workflows below
+are `workflow_call` members it triggers directly — six parallel jobs, no
+`needs:` chaining between them, so a PR is one run wide, not a lane map. There
+are no lanes here to document; that's a skeleton-only concept.
+
+| Workflow | Trigger | Gates |
+|---|---|---|
+| `build-test.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
+| `security-scanners.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), semgrep |
+| `fuzzing.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | 120s libFuzzer run of `fuzz_scan` — real normalize + Aho-Corasick core, differentially checked against a naive reference matcher |
+| `valgrind.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |
+| `codeql.yml` | `push` to `main` + monthly + `workflow_dispatch` (PR via `ci.yml`) | CodeQL `security-extended` C/C++ analysis |
+| `asan.yml` | `workflow_call` only (PR via `ci.yml`) | 60s ASan+UBSan request-storm soak against the static build — distinct from `build-test.yml`'s single-pass Test::Nginx-under-sanitizer job |
+| `ci-deep.yml` | monthly + `workflow_dispatch` | 4h fuzz, 10 min Memcheck **and** Helgrind soaks, nginx mainline+stable+angie build matrix |
+| `bump.yml` | weekly + `workflow_dispatch` | checks nginx.org/angie.software for newer pins, moves Action sha pins and linter versions; opens a PR via `BUMP_PR_TOKEN` rather than pushing to `main` directly (a required-pull-request ruleset blocks direct pushes). Unlike the skeleton, this repo has no `ci/vendor/nginx-tests` submodule to update. **`BUMP_PR_TOKEN` is not yet provisioned** for this repo, so the scheduled run fails fast and loud at the token-check step by design — not a bug |
+| `ci/tools/check-workflow-runners.sh` | pre-commit + local gate (no workflow, no badge) | enforces the runner trust boundary: fails the build if any `pull_request`-triggered workflow is set to run on a self-hosted runner, since that would hand a fork PR author code execution on the build host |
 
 ## See also
 
