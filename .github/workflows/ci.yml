@@ -1,0 +1,51 @@
+# Single entry point for the PR CI suite. The five members still carry their own
+# PR triggers for now, so each runs TWICE — that double-run is the
+# intermediate state that PROVES the call graph is wired, and their own triggers
+# get removed in a follow-up commit only after a real PR shows all five doubling.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: orchestrator-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build&Test
+    uses: ./.github/workflows/build-test.yml
+    permissions:
+      contents: read
+
+  fuzzing:
+    name: Fuzzing
+    uses: ./.github/workflows/fuzzing.yml
+    permissions:
+      contents: read
+
+  valgrind:
+    name: Valgrind
+    uses: ./.github/workflows/valgrind.yml
+    permissions:
+      contents: read
+
+  security-scanners:
+    name: Security scanners
+    uses: ./.github/workflows/security-scanners.yml
+    permissions:
+      contents: read
+
+  codeql:
+    name: CodeQL
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
