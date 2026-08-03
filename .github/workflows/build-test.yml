@@ -2,8 +2,6 @@ name: Build and Test
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  NGINX_VERSION: "1.31.3"
-  ANGIE_VERSION: "1.12.0"
 
 on:
   push:
@@ -96,6 +94,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: true
+
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
 
       - name: Install build dependencies
         run: |
@@ -194,6 +195,9 @@ jobs:
           persist-credentials: false
           submodules: true
 
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -245,6 +249,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: true
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
 
       - name: Install dependencies
         run: |
@@ -322,6 +328,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: true
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
 
       - name: Install dependencies
         run: |
@@ -374,6 +382,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: true
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
 
       - name: Install dependencies
         run: |
@@ -419,6 +429,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: true
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
 
       - name: Install dependencies
         run: |

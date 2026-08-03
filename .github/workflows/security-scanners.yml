@@ -10,9 +10,6 @@ name: Security scanners
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Keep in sync with build-test.yml. Pinned, not scraped: the digest for this
-  # version is recorded in ci/tools/sources.sha256 and verified before extraction.
-  NGINX_VERSION: "1.31.3"
   # Pinned so a scanner release cannot silently change the gate.
   SEMGREP_VERSION: "1.169.0"
 
@@ -40,6 +37,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: true
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -59,16 +58,15 @@ jobs:
       - name: Generate nginx build headers (for clang-tidy)
         run: |
           # Pinned to the same NGINX_VERSION the build jobs use, and verified
-          # against ci/tools/sources.sha256 before extraction: scraping "latest"
-          # and executing its configure script trusts whatever the origin
-          # serves at that moment.
+          # against the digest in .github/versions.env before extraction:
+          # scraping "latest" and executing its configure script trusts
+          # whatever the origin serves at that moment.
           set -euo pipefail
           tarball="nginx-${NGINX_VERSION}.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$tarball" \
-            "https://nginx.org/download/$tarball"
-          ( cd "$RUNNER_TEMP" \
-            && grep -E "[[:space:]]${tarball}\$" \
-                 "$GITHUB_WORKSPACE/ci/tools/sources.sha256" | sha256sum -c - )
+          bash "$GITHUB_WORKSPACE/.github/scripts/fetch-verify.sh" \
+            "https://nginx.org/download/$tarball" \
+            "$NGINX_VERSION_SHA256" \
+            "$RUNNER_TEMP/$tarball"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/nginx-${NGINX_VERSION}" "$RUNNER_TEMP/nginx-src"
           cd "$RUNNER_TEMP/nginx-src"
