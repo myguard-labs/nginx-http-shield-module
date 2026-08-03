@@ -45,11 +45,11 @@ jobs:
             build-essential curl libpcre2-dev zlib1g-dev valgrind
 
       - name: Build debug nginx + module
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" debug
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" debug
 
       - name: Memcheck soak (60s @ 4 conc, WITH suppressions)
         env:
           USE_VALGRIND: "1"
         run: |
-          bash tools/soak.sh \
+          bash ci/tools/soak.sh \
             "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" 60 4

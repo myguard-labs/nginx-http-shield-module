@@ -23,7 +23,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-#include "../src/ngx_http_shield_ban.h"
+#include "../../src/ngx_http_shield_ban.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -2,7 +2,7 @@
 #
 # Build nginx (or angie) with the shield module for local testing and CI.
 #
-#   tools/ci-build.sh [flavor] [version] [mode]
+#   ci/tools/ci-build.sh [flavor] [version] [mode]
 #     flavor : nginx (default) | angie
 #     version: source version, e.g. 1.31.3
 #     mode   : debug (default, dynamic .so) | asan (static, sanitizers)
@@ -59,9 +59,9 @@ fi
 # Verify BEFORE extraction, and verify the cached copy too: a poisoned Actions
 # cache is exactly as dangerous as a poisoned mirror, and HTTPS stops neither.
 # An unrecorded version is a hard failure, never a silent trust decision.
-DIGESTS="$MODULE_DIR/tools/sources.sha256"
+DIGESTS="$MODULE_DIR/ci/tools/sources.sha256"
 if ! grep -qE "[[:space:]]${DIR}\.tar\.gz\$" "$DIGESTS"; then
-    echo "no recorded sha256 for ${DIR}.tar.gz in tools/sources.sha256." >&2
+    echo "no recorded sha256 for ${DIR}.tar.gz in ci/tools/sources.sha256." >&2
     echo "Verify the upstream PGP signature, then record its digest." >&2
     exit 3
 fi
@@ -114,7 +114,7 @@ if [ "$MODE" = "coverage" ]; then
 fi
 
 # TEST_HARNESS=1 compiles the CI-only shield_probe introspection endpoint into
-# the module (t/harness/src/ngx_test_probe.c plus the shield-specific hooks in
+# the module (ci/t/harness/src/ngx_test_probe.c plus the shield-specific hooks in
 # src/ngx_shield_probe_hooks.c). Off by default and never set by the
 # .deb build, so the endpoint cannot reach a shipped package. The define goes
 # through --with-cc-opt, so it is visible core-wide -- harmless, since only our

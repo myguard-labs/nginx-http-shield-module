@@ -14,13 +14,13 @@
 # proves both branches ran, not merely that nothing crashed.
 #
 # Usage:
-#   tools/soak.sh <nginx-binary> [duration_seconds] [concurrency]
-#   USE_VALGRIND=1 tools/soak.sh <nginx-binary> 600 8
-#   USE_HELGRIND=1 tools/soak.sh <nginx-binary> 600 8
+#   ci/tools/soak.sh <nginx-binary> [duration_seconds] [concurrency]
+#   USE_VALGRIND=1 ci/tools/soak.sh <nginx-binary> 600 8
+#   USE_HELGRIND=1 ci/tools/soak.sh <nginx-binary> 600 8
 #
 # Build with ASAN for the ASAN path; plain debug for the valgrind path:
-#   CC=clang bash tools/ci-build.sh nginx 1.31.3 asan
-#   bash tools/ci-build.sh nginx 1.31.3 debug
+#   CC=clang bash ci/tools/ci-build.sh nginx 1.31.3 asan
+#   bash ci/tools/ci-build.sh nginx 1.31.3 debug
 
 set -euo pipefail
 

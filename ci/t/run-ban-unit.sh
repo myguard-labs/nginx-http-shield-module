@@ -2,25 +2,25 @@
 # Copyright (C) 2026 Thijs Eilander
 # SPDX-License-Identifier: BSD-2-Clause
 #
-# t/run-ban-unit.sh -- build and run the shield_ban direct-call unit harness.
+# ci/t/run-ban-unit.sh -- build and run the shield_ban direct-call unit harness.
 #
-# Compiles t/ban_unit.c against the real src/ngx_http_shield_ban.c plus nginx's
+# Compiles ci/t/ban_unit.c against the real src/ngx_http_shield_ban.c plus nginx's
 # own ngx_rbtree.c, with a malloc-backed fake slab pool (defined in the harness).
 # No network, no nginx runtime; a synthetic clock is passed per call so the
 # window / eviction / ban-expiry paths Test::Nginx cannot reach are exercised.
 #
-# Needs a configured nginx tree under .build/ (run tools/ci-build.sh first) for
+# Needs a configured nginx tree under .build/ (run ci/tools/ci-build.sh first) for
 # the core headers and ngx_rbtree.c. Honours CC / EXTRA_CFLAGS (the CI coverage
 # job passes --coverage so ban.c's gcda merges into the module floor).
 #
 # Usage:
-#   bash t/run-ban-unit.sh              # build + run
-#   CC=clang EXTRA_CFLAGS="-fsanitize=address,undefined" bash t/run-ban-unit.sh
+#   bash ci/t/run-ban-unit.sh           # build + run
+#   CC=clang EXTRA_CFLAGS="-fsanitize=address,undefined" bash ci/t/run-ban-unit.sh
 
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # --- Locate a configured nginx source tree. --------------------------------
 if [ -z "${NGINX_VERSION:-}" ]; then
@@ -33,14 +33,14 @@ if [ -z "${NGINX_VERSION:-}" ]; then
     done
 fi
 if [ -z "${NGINX_VERSION:-}" ]; then
-    echo "ERROR: could not determine NGINX_VERSION; run tools/ci-build.sh first" >&2
+    echo "ERROR: could not determine NGINX_VERSION; run ci/tools/ci-build.sh first" >&2
     exit 1
 fi
 
 NGX_SRC="$REPO_ROOT/.build/nginx-$NGINX_VERSION"
 if [ ! -d "$NGX_SRC/objs" ]; then
     echo "ERROR: nginx not configured ($NGX_SRC/objs missing)." >&2
-    echo "       Run: bash tools/ci-build.sh nginx $NGINX_VERSION" >&2
+    echo "       Run: bash ci/tools/ci-build.sh nginx $NGINX_VERSION" >&2
     exit 1
 fi
 

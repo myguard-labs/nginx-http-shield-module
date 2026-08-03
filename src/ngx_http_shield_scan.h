@@ -6,7 +6,7 @@
  *
  * Nothing here takes an ngx_http_request_t. The scanner sees bytes, a skip
  * mask and two caller-supplied scratch buffers, and returns a verdict. That is
- * what makes it linkable outside nginx -- ci/tests/unit and fuzz/ compile THIS
+ * what makes it linkable outside nginx -- ci/tests/unit and ci/fuzz/ compile THIS
  * source, not a copy of it, so a divergence between what is fuzzed and what
  * ships cannot happen silently.
  *

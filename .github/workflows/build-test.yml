@@ -62,7 +62,7 @@ jobs:
           git diff --check
 
       - name: Check runner trust boundary
-        run: bash tools/check-workflow-runners.sh
+        run: bash ci/tools/check-workflow-runners.sh
 
       - name: Lint workflows
         run: |
@@ -112,7 +112,7 @@ jobs:
 
       - name: Build server and dynamic module
         run: |
-          bash tools/ci-build.sh nginx "$NGINX_VERSION"
+          bash ci/tools/ci-build.sh nginx "$NGINX_VERSION"
           build=".build/nginx-${NGINX_VERSION}/objs"
           test -f "$build/ngx_http_shield_module.so"
 
@@ -211,14 +211,14 @@ jobs:
           sudo cpanm --notest --quiet "$tgz"
 
       - name: Build dynamic module
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION"
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION"
 
-      - name: Run t/
+      - name: Run ci/t/
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
           TEST_NGINX_LOAD_MODULES: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/ngx_http_shield_module.so
           TEST_NGINX_TIMEOUT: "20"
-        run: prove -v t/
+        run: prove -v ci/t/
 
   asan:
     name: ASan and UBSan
@@ -251,15 +251,15 @@ jobs:
       # server binary; then drive every attack path through the Test::Nginx
       # suite with halt-on-error so any memory or UB fault fails the job.
       - name: Build with sanitizers
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" asan
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" asan
 
-      - name: Run t/ under ASan and UBSan
+      - name: Run ci/t/ under ASan and UBSan
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
           TEST_NGINX_TIMEOUT: "30"
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: prove -v t/
+        run: prove -v ci/t/
 
   reporter-tests:
     name: Reporter unit tests
@@ -309,7 +309,7 @@ jobs:
       # Test::Nginx cannot reach (single loopback client, no clock control).
       # Run it under ASan/UBSan so the eviction pointer walk is fault-checked.
       - name: Configure nginx tree (headers + ngx_rbtree.c)
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION"
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION"
 
       - name: Build and run ban unit harness (ASan/UBSan)
         env:
@@ -317,7 +317,7 @@ jobs:
           EXTRA_CFLAGS: "-fsanitize=address,undefined -fno-sanitize-recover=all"
           ASAN_OPTIONS: halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: bash t/run-ban-unit.sh
+        run: bash ci/t/run-ban-unit.sh
 
   prober:
     name: Prober rules (${{ matrix.flavor }}, ${{ matrix.mode }})
@@ -342,8 +342,8 @@ jobs:
             version_key: NGINX_VERSION
             mode: asan
     steps:
-      # submodules: the prober engine lives in t/harness (nginx-test-harness).
-      # Without it t/prober/run.sh bails, so this is not optional for this job.
+      # submodules: the prober engine lives in ci/t/harness (nginx-test-harness).
+      # Without it ci/t/prober/run.sh bails, so this is not optional for this job.
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -371,16 +371,16 @@ jobs:
       # build-and-load only. The prober reads no banner, so angie gets the same
       # functional coverage nginx does.
       - name: Build server with the test harness
-        run: TEST_HARNESS=1 bash tools/ci-build.sh "${{ matrix.flavor }}" "$VER" "${{ matrix.mode }}"
+        run: TEST_HARNESS=1 bash ci/tools/ci-build.sh "${{ matrix.flavor }}" "$VER" "${{ matrix.mode }}"
 
       # SAN=1 puts the prober itself under ASan/UBSan on the sanitized leg: it
       # parses rule files and raw socket bytes, so it gets the same treatment as
       # the module it is testing.
       - name: Build the prober
-        run: SAN=$([ "${{ matrix.mode }}" = asan ] && echo 1 || echo 0) bash t/harness/prober/build.sh
+        run: SAN=$([ "${{ matrix.mode }}" = asan ] && echo 1 || echo 0) bash ci/t/harness/prober/build.sh
 
       - name: Run prober rules
-        run: bash t/prober/run.sh "${{ matrix.flavor }}" "$VER"
+        run: bash ci/t/prober/run.sh "${{ matrix.flavor }}" "$VER"
 
   coverage:
     name: C line coverage
@@ -417,41 +417,41 @@ jobs:
       # alloc-failure paths whose LCOV_EXCL markers were removed would count as
       # uncovered and drag the run under the floor.
       - name: Build with coverage instrumentation
-        run: TEST_HARNESS=1 bash tools/ci-build.sh nginx "$NGINX_VERSION" coverage
+        run: TEST_HARNESS=1 bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" coverage
 
-      - name: Run t/ (populates .gcda counters)
+      - name: Run ci/t/ (populates .gcda counters)
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
           TEST_NGINX_TIMEOUT: "30"
-        run: prove t/
+        run: prove ci/t/
 
-      # The prober reaches paths t/ structurally cannot: the slab-exhaustion
+      # The prober reaches paths ci/t/ structurally cannot: the slab-exhaustion
       # branch in ban_record (via armed allocation failure) and per-peer ban
       # behaviour (via bound source addresses out of 127.0.0.0/8).
       - name: Build the prober
-        run: bash t/harness/prober/build.sh
+        run: bash ci/t/harness/prober/build.sh
 
       - name: Run prober rules (adds fault-injection coverage)
-        run: bash t/prober/run.sh nginx "$NGINX_VERSION"
+        run: bash ci/t/prober/run.sh nginx "$NGINX_VERSION"
 
       # The ban state engine's multi-node / eviction / window-slide / expiry
       # paths are unreachable from Test::Nginx (single loopback client, no clock
       # control). Build+run the direct-call harness under gcov too so those lines
       # are genuinely covered rather than LCOV_EXCL'd away. Its .gcda lands next
-      # to t/ban_unit.c and is captured alongside the module's below.
+      # to ci/t/ban_unit.c and is captured alongside the module's below.
       - name: Build and run ban unit harness (gcov)
         env:
           EXTRA_CFLAGS: "--coverage -fprofile-arcs -ftest-coverage"
-        run: bash t/run-ban-unit.sh
+        run: bash ci/t/run-ban-unit.sh
 
       # Harvest coverage for our translation unit only; upstream nginx .gcda is
       # captured (core is instrumented too) but discarded by the --extract filter.
       # Two --directory args: the module TU built into nginx, and the harness's
-      # ban.c object under t/.
+      # ban.c object under ci/t/.
       - name: Collect and gate module coverage
         run: |
           build=.build/nginx-${NGINX_VERSION}
-          lcov --capture --directory "$build/objs/addon/src" --directory t \
+          lcov --capture --directory "$build/objs/addon/src" --directory ci/t \
             --output-file cov.info --rc geninfo_unexecuted_blocks=1
           lcov --extract cov.info '*ngx_http_shield*' --output-file cov-mod.info
           lcov --list cov-mod.info

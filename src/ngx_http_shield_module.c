@@ -822,7 +822,7 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
             /* LCOV_EXCL_START -- unreachable from HTTP, kept as defence in
              * depth: ngx_http_parse_complex_uri() percent-decodes AND resolves
              * dot-segments before r->uri, so neither "." nor ".." survives to
-             * here. t/11-dotfile.t TEST 23/24 pin the observable contract (no
+             * here. ci/t/11-dotfile.t TEST 23/24 pin the observable contract (no
              * dotfile hit for either) rather than these lines. A future caller
              * passing a non-normalized URI would still be handled correctly. */
             if ((rest == 1)
@@ -1822,7 +1822,7 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 
     if (rc == NGX_ERROR) {
-        /* Reachable under test: t/prober/rules/04-fault.rule arms a slab fault
+        /* Reachable under test: ci/t/prober/rules/04-fault.rule arms a slab fault
          * via the probe endpoint and drives this path. It used to carry an
          * LCOV_EXCL because filling a real zone would need thousands of
          * distinct source addresses the loopback harness cannot produce. */
@@ -2001,7 +2001,7 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  * shield_probe <zone>;
  *
  * Installs a content handler in this location that renders worker + shm state
- * as JSON. The renderer itself lives in t/harness (nginx-test-harness); this
+ * as JSON. The renderer itself lives in ci/t/harness (nginx-test-harness); this
  * module supplies only the HTTP surface and, via ngx_shield_probe_hooks.c, the
  * shield-specific zone semantics. Compiled out entirely unless
  * NGX_TEST_HARNESS is defined.
