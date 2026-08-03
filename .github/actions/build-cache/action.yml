@@ -1,0 +1,40 @@
+name: Build cache
+description: >-
+  Restore the cached upstream nginx/angie source tarball for a build job.
+  Ported from the skeleton's build-cache action (cp4b), scoped down to what
+  this module's CI actually does today -- see "Divergence from skeleton"
+  below before adding more layers here.
+
+inputs:
+  nginx-version:
+    description: "source version, e.g. 1.31.3 (nginx) or 1.12.0 (angie)"
+    required: true
+  flavor:
+    description: "nginx (default) | angie -- MUST match the ci-build.sh arg."
+    required: false
+    default: "nginx"
+
+runs:
+  using: composite
+  steps:
+    # The upstream tarball never changes for a given version -- key on version
+    # alone, no restore-keys ladder (a "close" tarball is the wrong tarball).
+    # Same path/key as the two inline `actions/cache` sites this replaces
+    # (build-test.yml, codeql.yml): src-<flavor>-<version> ->
+    # .build/<flavor>-<version>.tar.gz. No behaviour change on adoption.
+    - name: Cache source tarball
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: .build/${{ inputs.flavor }}-${{ inputs.nginx-version }}.tar.gz
+        key: src-${{ inputs.flavor }}-${{ inputs.nginx-version }}
+
+    # Divergence from skeleton -- deliberate, not an oversight:
+    #   The reference action.yml also restores a ccache layer and an
+    #   exact-match build-tree layer (.build/<flavor>-<ver>-<mode>), and
+    #   installs ccache/mold/eatmydata on a hosted runner. `ci/tools/ci-build.sh`
+    #   in THIS module has no ccache integration and no `mode` in its build-tree
+    #   path (always `.build/<flavor>-<ver>/`, not `.build/<flavor>-<ver>-<mode>/`)
+    #   -- porting those layers verbatim would either no-op (nothing ever
+    #   populates ~/.cache/ccache) or key against a path this build never
+    #   writes. Add them here only alongside the ccache/per-mode build-tree
+    #   work itself, not as a silent copy-paste.
