@@ -12,14 +12,23 @@
  *   2. builds the percent-decoded copy     (ngx_unescape_uri) + '+'->' ' + lc
  *   3. scans the raw and/or decoded buffer per each category's match flags.
  *
- * DIFFERENTIAL. The module now uses an Aho-Corasick engine (ac_scan), which is
- * fast but non-obvious. This target runs TWO engines on every input:
+ * DIFFERENTIAL. The module uses an Aho-Corasick engine, which is fast but
+ * non-obvious. This target runs TWO engines on every input:
  *   - the original naive per-signature memmem (shield_scan) -- simple enough to
  *     be correct by inspection, kept as the reference oracle;
- *   - a malloc port of the shipped AC engine (shield_scan_ac).
+ *   - the SHIPPED engine, by linking src/ngx_http_shield_scan.c and calling
+ *     ngx_http_shield_scan_input() directly.
  * They must agree on hit / no-hit; a divergence aborts and libFuzzer saves the
- * input. This fuzzes the AC build + scan, which are otherwise untested against
- * hostile input, and proves the rewrite matches the reference on every string.
+ * input.
+ *
+ * The AC side used to be a hand-maintained malloc PORT of the module's engine,
+ * kept in sync by comment. That made this a copy-versus-copy differential: two
+ * files could agree perfectly while both diverged from what ships, and no gate
+ * in the repo could see it. Since the decision seam landed
+ * (src/ngx_http_shield_scan.{c,h}, which takes bytes rather than a request and
+ * so links outside nginx) the port is gone and the production TU is compiled
+ * in. A divergence now means the naive oracle disagrees with SHIPPED CODE,
+ * which is the only version of this claim worth making.
  *
  * Input layout: 8 bytes little-endian skip mask, then 1 position-fold byte
  * (bit 0 folds ngx_http_shield_no_body_mask() -- the fold
@@ -47,31 +56,43 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 
 /* Pull in the real signature tables (types come from ngx_core.h above). */
 #include "../src/ngx_http_shield_patterns.h"
 
+/* The decision seam itself. src/ngx_http_shield_scan.c is compiled into this
+ * binary by fuzz/build.sh, so the calls below reach production code. */
+#include "../src/ngx_http_shield_scan.h"
+
 /*
  * ngx_string.c is linked whole so ngx_unescape_uri()/ngx_strlow() are the real
- * decoder. That drags in three symbols from functions we never call
- * (ngx_pstrdup -> ngx_pnalloc, ngx_sort -> ngx_alloc + ngx_cycle). Satisfy the
- * linker with stubs that abort if ever reached, so a future refactor that
- * routes the scan through them is caught rather than silently mislinked.
+ * decoder, and ngx_palloc.c/ngx_alloc.c are linked for real because
+ * ngx_http_shield_ac_build() builds the production automata from a real pool.
+ * Between them those three define every allocator symbol the linked code
+ * needs, so the only stub left is ngx_cycle -- referenced by ngx_sort(), which
+ * nothing here calls.
+ *
+ * Formerly ngx_pnalloc() and ngx_alloc() were abort() stubs asserting the scan
+ * never allocates through nginx. That assertion now lives in the seam's own
+ * signature instead, and states it more strongly: ngx_http_shield_scan_input()
+ * takes both scratch buffers as parameters, so the per-input path has no
+ * allocator to reach for at all.
  */
 volatile ngx_cycle_t  *ngx_cycle;
 
-void *
-ngx_pnalloc(ngx_pool_t *pool, size_t size)
+/*
+ * Referenced by ngx_palloc.c's allocation-failure path. Output is DISCARDED:
+ * the loud failure lives in shield_scan_ac_init() below, which aborts when
+ * ngx_http_shield_ac_build() returns NGX_ERROR. Aborting here instead would
+ * turn every nginx-internal error log into a crash, which is a wider contract
+ * than this harness wants.
+ */
+void
+ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
+    const char *fmt, ...)
 {
-    (void) pool; (void) size;
-    abort();
-}
-
-void *
-ngx_alloc(size_t size, ngx_log_t *log)
-{
-    (void) size; (void) log;
-    abort();
+    (void) level; (void) log; (void) err; (void) fmt;
 }
 
 /* Mirror of ngx_http_shield_memmem() in the module. Kept identical: a plain
@@ -209,215 +230,82 @@ done:
     return hit;
 }
 
-/* ---- Aho-Corasick oracle (malloc port of the module's engine) ----------
+/* ---- The SHIPPED engine ------------------------------------------------
  *
- * A standalone copy of ngx_http_shield_ac_build()/ac_scan() from the module,
- * ported off ngx_pool_t onto malloc so it links into the fuzz target without a
- * cycle. It reads the SAME ngx_http_shield_categories[] table as the naive
- * scan above, so the two are true differential oracles: every fuzz input is run
- * through both and they must agree on hit / no-hit (see the assert in
- * LLVMFuzzerTestOneInput). The naive engine -- simple enough to be obviously
- * correct -- is the reference; any divergence aborts and libFuzzer saves the
- * input.
+ * Not a port: src/ngx_http_shield_scan.c is compiled into this binary and
+ * ngx_http_shield_scan_input() is called directly. That is the whole point of
+ * the decision seam -- it takes (bytes, len, scratch, scratch) rather than an
+ * ngx_http_request_t, so the production translation unit links here unchanged.
  *
- * Keep this port in lockstep with the module. out[] is a MASK of the categories
- * accepting at a state, not a single id: one state can accept several (shared
- * signature string, or a short signature ending inside a longer one from
- * another category, unioned along fail links). Storing one id per state is
- * exactly the detection bypass this harness caught -- the naive oracle checks
- * every signature independently and so never had it.
- *
- * Note: this asserts hit/no-hit parity, NOT same-category. The naive scan is
- * category-major (first matching category in table order) while AC is
- * buffer-major (whole RAW automaton, then whole DECODED); on an input matching
- * two categories they may legitimately name different ones. Both are valid
- * blocks, so category identity is deliberately not part of the invariant.
+ * The automata are built once from a real ngx_pool_t. ngx_create_pool() needs
+ * only ngx_palloc.c/ngx_alloc.c (both linked by fuzz/build.sh) and a zeroed
+ * ngx_log_t, since the stub ngx_log_error_core() below discards output.
  */
-#define AC_ALPHABET  256
 
-typedef struct {
-    uint16_t  *next;   /* [nstates][256] */
-    uint64_t  *out;    /* [nstates] accepting-category mask */
-    uint64_t  *rout;   /* [nstates] accepting rule-TERM mask */
-    uint64_t   need[NGX_HTTP_SHIELD_NRULES];  /* per-rule required term set */
-    size_t     nstates;
-} ac_t;
+static ngx_pool_t  *shield_fuzz_pool;
+static ngx_log_t    shield_fuzz_log;
 
-static ac_t  ac_decoded, ac_raw;
-
-/* Build one automaton over every category carrying `match`. Aborts on OOM or
- * on a state-count overflow -- the fuzzer wants a loud failure, not a skip. */
 static void
-ac_build_fuzz(ac_t *ac, ngx_uint_t match)
+shield_scan_ac_init(void)
 {
-    size_t     i, j, k, cap, nstates, head, tail;
-    ngx_uint_t b, term;
-    uint16_t  *next, *queue, *fail, s, v, f;
-    uint64_t  *out, *rout;
+    ngx_memzero(&shield_fuzz_log, sizeof(shield_fuzz_log));
 
-    cap = 1;
-    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
-        if (!(ngx_http_shield_categories[i].match & match)) {
-            continue;
-        }
-        for (j = 0; j < ngx_http_shield_categories[i].nsigs; j++) {
-            cap += ngx_http_shield_categories[i].sigs[j].len;
-        }
-    }
-    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
-        if (!(ngx_http_shield_rules[i].match & match)) {
-            continue;
-        }
-        for (j = 0; j < ngx_http_shield_rules[i].nterms; j++) {
-            cap += ngx_http_shield_rules[i].terms[j].len;
-        }
-    }
+    /* ngx_pagesize is DEFINED by ngx_alloc.c (linked) but ASSIGNED by
+     * ngx_os_init() in ngx_posix_init.c, which this binary does not link. Left
+     * at 0, NGX_MAX_ALLOC_FROM_POOL is (ngx_pagesize - 1) and
+     * underflows to SIZE_MAX, so ngx_create_pool() caps pool->max at the pool
+     * size (16304) rather than one page. Every allocation then takes
+     * ngx_palloc_small() and the large-block path is never exercised -- so the
+     * harness would be fuzzing a different allocator split than production.
+     * Both paths are correct, which is exactly why this is easy to miss. */
+    ngx_pagesize = (ngx_uint_t) getpagesize();
 
-    term = 0;
-    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
-        term += ngx_http_shield_rules[i].nterms;
-    }
-    if (term > 64) {
+    shield_fuzz_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE,
+                                       &shield_fuzz_log);
+    if (shield_fuzz_pool == NULL) {
+        fprintf(stderr, "SHIELD FUZZ: ngx_create_pool failed\n");
         abort();
     }
 
-    if (cap > 65535) {
-        abort();
-    }
-
-    next = calloc(cap * AC_ALPHABET, sizeof(*next));
-    out = calloc(cap, sizeof(*out));
-    rout = calloc(cap, sizeof(*rout));
-    queue = malloc(cap * sizeof(*queue));
-    fail = calloc(cap, sizeof(*fail));
-    if (next == NULL || out == NULL || rout == NULL || queue == NULL
-        || fail == NULL)
+    /* A failed build would leave an empty automaton that matches nothing --
+     * silently turning the differential into "naive says hit, AC says no" on
+     * every input. Abort loudly instead. */
+    if (ngx_http_shield_ac_build(shield_fuzz_pool, &shield_fuzz_log,
+                                 &ngx_http_shield_ac_decoded,
+                                 NGX_HTTP_SHIELD_MATCH_DECODED)
+        != NGX_OK)
     {
+        fprintf(stderr, "SHIELD FUZZ: ac_build(decoded) failed\n");
         abort();
     }
 
-    nstates = 1;
-    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
-        if (!(ngx_http_shield_categories[i].match & match)) {
-            continue;
-        }
-        for (j = 0; j < ngx_http_shield_categories[i].nsigs; j++) {
-            const ngx_http_shield_sig_t  *sig =
-                &ngx_http_shield_categories[i].sigs[j];
-            s = 0;
-            for (k = 0; k < sig->len; k++) {
-                b = (u_char) sig->s[k];
-                if (next[(size_t) s * AC_ALPHABET + b] == 0) {
-                    next[(size_t) s * AC_ALPHABET + b] = (uint16_t) nstates++;
-                }
-                s = next[(size_t) s * AC_ALPHABET + b];
-            }
-            out[s] |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
-        }
+    if (ngx_http_shield_ac_build(shield_fuzz_pool, &shield_fuzz_log,
+                                 &ngx_http_shield_ac_raw,
+                                 NGX_HTTP_SHIELD_MATCH_RAW)
+        != NGX_OK)
+    {
+        fprintf(stderr, "SHIELD FUZZ: ac_build(raw) failed\n");
+        abort();
     }
-
-    /* Rule terms into the same trie: rout[] only, never out[]. */
-    term = 0;
-    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
-        ac->need[i] = 0;
-        for (j = 0; j < ngx_http_shield_rules[i].nterms; j++, term++) {
-            const ngx_http_shield_sig_t  *t = &ngx_http_shield_rules[i].terms[j];
-            if (!(ngx_http_shield_rules[i].match & match)) {
-                continue;
-            }
-            ac->need[i] |= (uint64_t) 1 << term;
-            s = 0;
-            for (k = 0; k < t->len; k++) {
-                b = (u_char) t->s[k];
-                if (next[(size_t) s * AC_ALPHABET + b] == 0) {
-                    next[(size_t) s * AC_ALPHABET + b] = (uint16_t) nstates++;
-                }
-                s = next[(size_t) s * AC_ALPHABET + b];
-            }
-            rout[s] |= (uint64_t) 1 << term;
-        }
-    }
-
-    head = tail = 0;
-    for (b = 0; b < AC_ALPHABET; b++) {
-        v = next[b];
-        if (v != 0) {
-            queue[tail++] = v;
-        }
-    }
-    while (head < tail) {
-        s = queue[head++];
-        for (b = 0; b < AC_ALPHABET; b++) {
-            v = next[(size_t) s * AC_ALPHABET + b];
-            f = next[(size_t) fail[s] * AC_ALPHABET + b];
-            if (v == 0) {
-                next[(size_t) s * AC_ALPHABET + b] = f;
-                continue;
-            }
-            fail[v] = f;
-            out[v] |= out[f];
-            rout[v] |= rout[f];
-            queue[tail++] = v;
-        }
-    }
-
-    free(queue);
-    free(fail);
-
-    ac->next = next;
-    ac->out = out;
-    ac->rout = rout;
-    ac->nstates = nstates;
 }
 
-static int
-ac_scan_fuzz(const ac_t *ac, u_char *data, size_t len, uint64_t skip)
-{
-    size_t    i;
-    uint64_t  seen = 0;
-    uint16_t  s = 0;
-
-    for (i = 0; i < len; i++) {
-        s = ac->next[(size_t) s * AC_ALPHABET + data[i]];
-
-        seen |= ac->rout[s];
-
-        /* out[s] is the SET of categories accepting here; ~skip drops the
-         * disabled ones. Hit/no-hit only -- the caller does not care which
-         * category, so no table-order tiebreak is needed (unlike the module). */
-        if (ac->out[s] & ~skip) {
-            return 1;
-        }
-    }
-
-    /* AND-rules: every term of the rule seen in THIS buffer. */
-    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
-        if (ac->need[i] == 0) {
-            continue;
-        }
-        if ((seen & ac->need[i]) != ac->need[i]) {
-            continue;
-        }
-        if (skip & ((uint64_t) 1 << ngx_http_shield_rules[i].cat)) {
-            continue;
-        }
-        return 1;
-    }
-
-    return 0;
-}
-
-/* Same normalize + double-automaton scan the module's scan_input() runs. */
+/*
+ * Run the production scanner and reduce its verdict to hit / no-hit.
+ *
+ * The scratch buffers are malloc'd per call, exactly len bytes each and freed
+ * immediately, so ASan bounds-checks the module's writes into them precisely.
+ * A pool allocation would round up and hide a one-byte overrun.
+ *
+ * "body" is passed as the source string only because the seam requires one;
+ * the position folds that actually vary the scan are applied to the skip mask
+ * by the caller, as they are in production.
+ */
 static int
 shield_scan_ac(u_char *data, size_t len, uint64_t skip)
 {
-    size_t   i, dlen;
-    u_char  *raw_lc, *dec, *dst, *src;
-    int      hit;
-
-    if (len == 0) {
-        return 0;
-    }
+    int                     hit;
+    u_char                 *raw_lc, *dec;
+    ngx_http_shield_hit_t   h;
 
     raw_lc = malloc(len);
     dec = malloc(len);
@@ -427,26 +315,16 @@ shield_scan_ac(u_char *data, size_t len, uint64_t skip)
         return 0;
     }
 
-    ngx_strlow(raw_lc, data, len);
+    ngx_memzero(&h, sizeof(h));
 
-    dst = dec;
-    src = data;
-    ngx_unescape_uri(&dst, &src, len, 0);
-    dlen = dst - dec;
-    for (i = 0; i < dlen; i++) {
-        if (dec[i] == '+') {
-            dec[i] = ' ';
-        }
-    }
-    ngx_strlow(dec, dec, dlen);
-
-    hit = ac_scan_fuzz(&ac_raw, raw_lc, len, skip)
-          || ac_scan_fuzz(&ac_decoded, dec, dlen, skip);
+    hit = (ngx_http_shield_scan_input(data, len, raw_lc, dec, "body", skip, &h)
+           == NGX_OK);
 
     free(raw_lc);
     free(dec);
     return hit;
 }
+
 
 int
 LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
@@ -456,8 +334,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     static int built;
 
     if (!built) {
-        ac_build_fuzz(&ac_decoded, NGX_HTTP_SHIELD_MATCH_DECODED);
-        ac_build_fuzz(&ac_raw, NGX_HTTP_SHIELD_MATCH_RAW);
+        shield_scan_ac_init();
         built = 1;
     }
 

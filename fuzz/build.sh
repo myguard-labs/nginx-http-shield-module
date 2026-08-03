@@ -67,9 +67,15 @@ NGX_INCS="-I$NGX_SRC/src/core -I$NGX_SRC/src/event -I$NGX_SRC/src/event/modules 
     -I$NGX_SRC/src/http -I$NGX_SRC/src/http/modules -I$NGX_SRC/src/http/v2"
 
 # --- Build fuzz_scan (normalize + substring scan core). --------------------
-# Links nginx's real ngx_string.c so ngx_unescape_uri()/ngx_strlow() are the
-# production decoder. ngx_string.c pulls only headers (no other .o needed for
-# the symbols we call).
+# Links the module's REAL decision TU (src/ngx_http_shield_scan.c), not a copy
+# of it. That is what the decision seam bought: the scanner takes bytes and
+# caller-supplied scratch rather than an ngx_http_request_t, so the production
+# source compiles into a standalone binary unchanged. A divergence found here
+# is a divergence in shipped code.
+#
+# Also links nginx's real ngx_string.c so ngx_unescape_uri()/ngx_strlow() are
+# the production decoder, plus ngx_palloc.c/ngx_alloc.c because
+# ngx_http_shield_ac_build() builds the automata from a real ngx_pool_t.
 echo
 echo "==> Building fuzz_scan ..."
 # shellcheck disable=SC2086
@@ -77,7 +83,10 @@ echo "==> Building fuzz_scan ..."
     -I "$REPO_ROOT/src" \
     -o "$BIN_DIR/fuzz_scan" \
     "$REPO_ROOT/fuzz/fuzz_scan.c" \
-    "$NGX_SRC/src/core/ngx_string.c"
+    "$REPO_ROOT/src/ngx_http_shield_scan.c" \
+    "$NGX_SRC/src/core/ngx_string.c" \
+    "$NGX_SRC/src/core/ngx_palloc.c" \
+    "$NGX_SRC/src/os/unix/ngx_alloc.c"
 echo "    OK: $BIN_DIR/fuzz_scan"
 
 echo
