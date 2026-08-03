@@ -4,10 +4,14 @@
 #
 #   ci/tools/ci-build.sh [flavor] [version] [mode]
 #     flavor : nginx (default) | angie
-#     version: source version, e.g. 1.31.3
+#     version: source version, e.g. 1.31.3 (default: the pin in
+#              .github/versions.env for the chosen flavor)
 #     mode   : debug (default, dynamic .so) | asan (static, sanitizers)
 #              | module (dynamic .so only, nginx core NOT compiled)
 #              | coverage (static, gcov-instrumented module TU)
+#
+# Every version this script is asked to build must have a matching sha256 in
+# .github/versions.env -- see the integrity block below.
 #
 # The built tree lives under ./.build. On success the paths of interest are:
 #   .build/<dir>/objs/nginx                         (server binary)
@@ -23,7 +27,29 @@
 set -euo pipefail
 
 FLAVOR="${1:-nginx}"
-VERSION="${2:-1.31.3}"
+
+# Version pins (and their sha256s) all come from .github/versions.env -- see
+# the integrity block below. Sourced this early so the default version tracks
+# the pinned one instead of being a literal that silently rots.
+MODULE_DIR="$PWD"
+VERSIONS_FILE="${VERSIONS_FILE:-$MODULE_DIR/.github/versions.env}"
+if [ ! -f "$VERSIONS_FILE" ]; then
+    echo "FATAL: $VERSIONS_FILE not found (run from the module root)" >&2
+    exit 1
+fi
+# Validate before sourcing: a line in this file that is not a pin would be
+# executed as shell. Shared with every other consumer -- see
+# ci/tools/versions-env.sh.
+# shellcheck source=ci/tools/versions-env.sh disable=SC1091
+. "$MODULE_DIR/ci/tools/versions-env.sh"
+load_versions_env "$VERSIONS_FILE" || exit 1
+
+case "$FLAVOR" in
+    nginx) DEFAULT_VERSION="${NGINX_VERSION:-}" ;;
+    angie) DEFAULT_VERSION="${ANGIE_VERSION:-}" ;;
+    *) DEFAULT_VERSION="" ;;
+esac
+VERSION="${2:-$DEFAULT_VERSION}"
 MODE="${3:-debug}"
 
 case "$MODE" in
@@ -34,7 +60,6 @@ case "$MODE" in
         ;;
 esac
 ROOT="${BUILD_ROOT:-$PWD/.build}"
-MODULE_DIR="$PWD"
 
 case "$FLAVOR" in
     nginx)
@@ -51,24 +76,59 @@ case "$FLAVOR" in
         ;;
 esac
 
-mkdir -p "$ROOT"
-if [ ! -f "$ROOT/${DIR}.tar.gz" ]; then
-    curl -fsSL "$URL" -o "$ROOT/${DIR}.tar.gz"
+# --- integrity: sha256 pins come from .github/versions.env -----------------
+# nginx.org serves plain HTTP-adjacent PGP signatures, not a sha256sum file, so
+# "verify against the vendor" means pinning a known-good digest for each source
+# tarball we build. Version (workflow env / this script's default) and digest
+# now live on adjacent lines in .github/versions.env, written by one tool
+# (.github/scripts/compute-versions.sh), so a bumped version with a stale
+# digest can no longer happen.
+#
+# Verification is MANDATORY: a version with no digest here is a hard failure,
+# not a warning. (versions.env was already sourced above, to default $VERSION.)
+if [ -z "$VERSION" ]; then
+    # Guard before the case below: an empty $VERSION would match an empty
+    # "${NGINX_STABLE:-}" pattern and silently adopt the wrong digest.
+    echo "FATAL: no version given and no default pin for flavor '$FLAVOR'" >&2
+    exit 1
+fi
+EXPECTED=""
+case "$FLAVOR" in
+    nginx)
+        case "$VERSION" in
+            "${NGINX_VERSION:-}") EXPECTED="${NGINX_VERSION_SHA256:-}" ;;
+            "${NGINX_STABLE:-}") EXPECTED="${NGINX_STABLE_SHA256:-}" ;;
+        esac
+        ;;
+    angie)
+        case "$VERSION" in
+            "${ANGIE_VERSION:-}") EXPECTED="${ANGIE_VERSION_SHA256:-}" ;;
+        esac
+        ;;
+esac
+
+if [ -z "$EXPECTED" ]; then
+    echo "FATAL: no pinned sha256 for $FLAVOR $VERSION" >&2
+    echo "  $VERSIONS_FILE pins:" >&2
+    echo "    nginx  ${NGINX_VERSION:-?} (stable ${NGINX_STABLE:-?})" >&2
+    echo "    angie  ${ANGIE_VERSION:-?}" >&2
+    echo "  Regenerate it with .github/scripts/compute-versions.sh, or add the" >&2
+    echo "  version + its sha256 there -- never build an unverified tarball." >&2
+    exit 1
 fi
 
-# Verify BEFORE extraction, and verify the cached copy too: a poisoned Actions
-# cache is exactly as dangerous as a poisoned mirror, and HTTPS stops neither.
-# An unrecorded version is a hard failure, never a silent trust decision.
-DIGESTS="$MODULE_DIR/ci/tools/sources.sha256"
-if ! grep -qE "[[:space:]]${DIR}\.tar\.gz\$" "$DIGESTS"; then
-    echo "no recorded sha256 for ${DIR}.tar.gz in ci/tools/sources.sha256." >&2
-    echo "Verify the upstream PGP signature, then record its digest." >&2
-    exit 3
+mkdir -p "$ROOT"
+# fetch-verify.sh downloads (with retries/timeouts) and checks the digest. It
+# re-checks a tarball already present in .build/ rather than trusting it, so a
+# poisoned build cache is caught too -- a poisoned Actions cache is exactly as
+# dangerous as a poisoned mirror, and HTTPS stops neither.
+if ! bash "$MODULE_DIR/.github/scripts/fetch-verify.sh" \
+    "$URL" "$EXPECTED" "$ROOT/${DIR}.tar.gz"; then
+    # A tarball that fails verification must not survive to be picked up as a
+    # "cache hit" by the next run.
+    rm -f "$ROOT/${DIR}.tar.gz"
+    exit 1
 fi
-(
-    cd "$ROOT"
-    grep -E "[[:space:]]${DIR}\.tar\.gz\$" "$DIGESTS" | sha256sum -c -
-)
 
 if [ ! -d "$ROOT/$DIR" ]; then
     tar -xzf "$ROOT/${DIR}.tar.gz" -C "$ROOT"
