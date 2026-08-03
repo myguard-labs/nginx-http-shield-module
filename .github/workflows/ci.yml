@@ -37,6 +37,12 @@ jobs:
     permissions:
       contents: read
 
+  asan-soak:
+    name: ASan soak
+    uses: ./.github/workflows/asan.yml
+    permissions:
+      contents: read
+
   security-scanners:
     name: Security scanners
     uses: ./.github/workflows/security-scanners.yml

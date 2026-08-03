@@ -27,7 +27,10 @@ set -euo pipefail
 NGINX="${1:?usage: soak.sh <nginx-binary> [duration] [concurrency]}"
 DURATION="${2:-120}"
 CONC="${3:-8}"
-PORT=18253
+# Overridable so two soak.sh callers (e.g. valgrind.yml and asan.yml) never
+# race on the same listener when GitHub Actions schedules their jobs in
+# parallel on the same runner.
+PORT="${SOAK_PORT:-18253}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

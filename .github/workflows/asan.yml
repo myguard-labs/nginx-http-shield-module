@@ -1,0 +1,86 @@
+name: ASan soak
+
+# Dedicated ASan+UBSan request-storm soak -- distinct from build-test.yml's
+# "ASan and UBSan" job, which runs the single-shot Test::Nginx suite (ci/t/)
+# under the sanitizer. This job runs ci/tools/soak.sh instead: minutes of
+# concurrent, mixed attack/benign traffic against shield's real block+scan+
+# body-buffering config, proving the normalize/Aho-Corasick/body path stays
+# clean under sustained load, not just a single pass per test case.
+#
+# The asan build is STATIC (--add-module, see ci/tools/ci-build.sh), so the
+# sanitizer runtime is linked into the server binary and soak.sh's dynamic-vs-
+# static detection correctly omits load_module.
+#
+# PR member, called from ci.yml (the single `pull_request:` entry point) --
+# no `pull_request:` trigger here. 60s is fast enough to run on every PR
+# alongside valgrind.yml's memcheck-lite soak; the exhaustive multi-minute
+# soak variants belong in ci-deep.yml if added later.
+#
+# Own port band (SOAK_PORT=19460, width 64) so this job's soak.sh listener
+# never collides with valgrind.yml's memcheck-lite soak (fixed port 18253)
+# when GitHub Actions runs both PR-member jobs in parallel on the runner.
+#
+# Action pin (keep in sync with build-test.yml / valgrind.yml headers):
+# actions/checkout@v5 -> 93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_call: {}
+
+concurrency:
+  group: asan-soak-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  asan-soak:
+    name: ASan/UBSan soak (60s)
+    # PUBLIC repo + pull_request-reachable (via ci.yml's workflow_call) ->
+    # GitHub-hosted only. See ci-deep.yml's runner-trust-boundary comment and
+    # ci/tools/check-workflow-runners.sh, which enforces this mechanically.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TEST_BASE_PORT: "19460"
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          submodules: true
+
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl libpcre2-dev libssl-dev zlib1g-dev
+
+      - name: Build ASan/UBSan nginx + module (static --add-module)
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" asan
+
+      # Runs before soak.sh binds its listener, same pattern as build-test.yml
+      # and ci-deep.yml -- fails with a named cause instead of a bind-error
+      # flake if the band is occupied or reaches the ephemeral range.
+      - name: Verify this job's port band is free
+        run: bash ci/tools/max-port.sh "$TEST_BASE_PORT"
+
+      # soak.sh asserts it saw >=1 blocked attack AND >=1 passed benign
+      # request, so a green result proves shield's block/body/scan path
+      # actually ran under the sanitizer -- not merely that nothing crashed.
+      # halt_on_error aborts on the first ASan/UBSan report so the soak fails
+      # loudly instead of logging past it.
+      - name: ASan/UBSan soak (60s @ 4 conc)
+        env:
+          SOAK_PORT: ${{ env.TEST_BASE_PORT }}
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          bash ci/tools/soak.sh \
+            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" 60 4
