@@ -95,7 +95,7 @@ load_module modules/ngx_http_shield_module.so;
 Or use the helper for a throwaway build:
 
 ```sh
-tools/ci-build.sh nginx 1.31.3        # dynamic .so under .build/
+ci/tools/ci-build.sh nginx 1.31.3        # dynamic .so under .build/
 ```
 
 ## Configuration
@@ -444,8 +444,8 @@ its category fires:
 
 Rule terms are **not** signatures: a term never fires on its own, and none of
 the left-hand tokens above will block a request by itself. That is checked
-in both directions — `t/07-and-rules.t` proves the full set blocks, and
-`t/05-fp-negative.t` proves each term alone does not.
+in both directions — `ci/t/07-and-rules.t` proves the full set blocks, and
+`ci/t/05-fp-negative.t` proves each term alone does not.
 
 **Every term must be specific enough that co-occurrence *is* the attack.** The
 engine checks that a rule's terms appear in the same buffer, not that they form
@@ -455,7 +455,7 @@ mentions both — which is why the rule set has no `sleep(` + `select ` pairing
 attack in quote context instead) and why the Jenkins and VMware rules use
 `/cli?` and `${` rather than `/cli` and `freemarker`. Distance does not rescue a
 vague term: benign mentions and real payloads sit at overlapping byte gaps.
-`t/05-fp-negative.t` TESTS 64-69 pin the benign co-occurrence shapes.
+`ci/t/05-fp-negative.t` TESTS 64-69 pin the benign co-occurrence shapes.
 
 The terms are matched by the same single automaton pass, so a rule costs no
 extra scan time: the pass just records which terms it saw and evaluates the sets
@@ -516,18 +516,18 @@ allocation; normalization uses the two bounded scratch buffers described above.
 
 Signatures live in [`src/ngx_http_shield_patterns.h`](src/ngx_http_shield_patterns.h).
 Store them lowercase, and never as a bare keyword — always a multi-token
-combination that only appears in an attack. `t/05-fp-negative.t` exists to
+combination that only appears in an attack. `ci/t/05-fp-negative.t` exists to
 catch signatures that are too broad. Adding a whole category is an enum value,
 a table, and one row in `ngx_http_shield_categories[]`; no engine change.
 
 ## Testing
 
 ```sh
-tools/ci-build.sh nginx 1.31.3
-bash tools/run-tests.sh nginx 1.31.3
+ci/tools/ci-build.sh nginx 1.31.3
+bash ci/tools/run-tests.sh nginx 1.31.3
 ```
 
-`tools/run-tests.sh` sets the `TEST_NGINX_*` variables for you and, more
+`ci/tools/run-tests.sh` sets the `TEST_NGINX_*` variables for you and, more
 usefully, binds an **ephemeral port instead of Test::Nginx's fixed default of
 1984**. Nothing arbitrates that default, so two runs on one box — two agents,
 two checkouts, or a stray nginx left by a crashed run — collide and the second
@@ -544,7 +544,7 @@ export TEST_NGINX_BINARY="$PWD/.build/nginx-1.31.3/objs/nginx"
 export TEST_NGINX_LOAD_MODULES="$PWD/.build/nginx-1.31.3/objs/ngx_http_shield_module.so"
 export TEST_NGINX_TIMEOUT=20
 export TEST_NGINX_PORT=$((1984 + RANDOM % 20000))   # avoid the fixed-default clash
-prove t/
+prove ci/t/
 ```
 
 ### Continuous testing
@@ -563,16 +563,16 @@ This is hostile-input parser code, so every change runs through a layered gate:
 Fuzz the scan core locally:
 
 ```sh
-tools/ci-build.sh nginx 1.31.3          # populate .build/ (fuzz needs headers)
-CC=clang bash fuzz/build.sh
-fuzz/fuzz_scan -max_total_time=60 -dict=fuzz/fuzz.dict fuzz/corpus/fuzz_scan
+ci/tools/ci-build.sh nginx 1.31.3          # populate .build/ (fuzz needs headers)
+CC=clang bash ci/fuzz/build.sh
+ci/fuzz/fuzz_scan -max_total_time=60 -dict=ci/fuzz/fuzz.dict ci/fuzz/corpus/fuzz_scan
 ```
 
 Soak under Valgrind locally:
 
 ```sh
-tools/ci-build.sh nginx 1.31.3 debug
-USE_VALGRIND=1 tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
+ci/tools/ci-build.sh nginx 1.31.3 debug
+USE_VALGRIND=1 ci/tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
 ```
 
 ## See also

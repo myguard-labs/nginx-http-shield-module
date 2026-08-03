@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Thijs Eilander
 # SPDX-License-Identifier: BSD-2-Clause
 #
-# tools/run-tests.sh -- run the Test::Nginx suite against a built module,
+# ci/tools/run-tests.sh -- run the Test::Nginx suite against a built module,
 # on a port that is free RIGHT NOW rather than on Test::Nginx's fixed default.
 #
 # Why this exists: Test::Nginx binds TEST_NGINX_PORT, default 1984, and nothing
@@ -16,17 +16,17 @@
 # port per invocation removes the collision class entirely.
 #
 # Usage:
-#   bash tools/run-tests.sh                     # nginx, default version
-#   bash tools/run-tests.sh angie 1.12.0        # pick flavor + version
-#   bash tools/run-tests.sh nginx 1.31.3 -v     # extra args go to prove
-#   TEST_NGINX_PORT=9999 bash tools/run-tests.sh   # honoured, not overridden
+#   bash ci/tools/run-tests.sh                  # nginx, default version
+#   bash ci/tools/run-tests.sh angie 1.12.0     # pick flavor + version
+#   bash ci/tools/run-tests.sh nginx 1.31.3 -v  # extra args go to prove
+#   TEST_NGINX_PORT=9999 bash ci/tools/run-tests.sh # honoured, not overridden
 #
-# Needs a build: tools/ci-build.sh <flavor> <version>
+# Needs a build: ci/tools/ci-build.sh <flavor> <version>
 
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 FLAVOR="${1:-nginx}"
 [ $# -gt 0 ] && shift
@@ -44,7 +44,7 @@ if [ -z "$VERSION" ]; then
     done
 fi
 if [ -z "$VERSION" ]; then
-    echo "ERROR: no .build/$FLAVOR-* tree; run tools/ci-build.sh $FLAVOR <ver>" >&2
+    echo "ERROR: no .build/$FLAVOR-* tree; run ci/tools/ci-build.sh $FLAVOR <ver>" >&2
     exit 1
 fi
 
@@ -57,7 +57,7 @@ MODULE="$BUILD/objs/ngx_http_shield_module.so"
 
 for f in "$BIN" "$MODULE"; do
     if [ ! -e "$f" ]; then
-        echo "ERROR: missing $f -- run: bash tools/ci-build.sh $FLAVOR $VERSION" >&2
+        echo "ERROR: missing $f -- run: bash ci/tools/ci-build.sh $FLAVOR $VERSION" >&2
         exit 1
     fi
 done
@@ -93,16 +93,16 @@ export TEST_NGINX_LOAD_MODULES="$MODULE"
 export TEST_NGINX_TIMEOUT="${TEST_NGINX_TIMEOUT:-20}"
 
 # Keep each run's servroot separate too, and actually derive one per invocation
-# rather than defaulting to the shared t/servroot: two concurrent runs sharing it
+# rather than defaulting to the shared ci/t/servroot: two concurrent runs sharing it
 # would overwrite each other's generated nginx.conf and pid file, which is the
 # same collision class the port work removes. It also keeps the retry decision
 # honest -- the bind-error grep below reads THIS run's error.log, so run A can no
 # longer burn a retry on run B's failure. Still overridable.
-export TEST_NGINX_SERVROOT="${TEST_NGINX_SERVROOT:-$REPO_ROOT/t/servroot-$$}"
+export TEST_NGINX_SERVROOT="${TEST_NGINX_SERVROOT:-$REPO_ROOT/ci/t/servroot-$$}"
 
 # A derived servroot is ours to clean up; an operator-supplied one is not.
 if [ -z "${TEST_NGINX_SERVROOT_KEEP:-}" ] &&
-    [ "$TEST_NGINX_SERVROOT" = "$REPO_ROOT/t/servroot-$$" ]; then
+    [ "$TEST_NGINX_SERVROOT" = "$REPO_ROOT/ci/t/servroot-$$" ]; then
     trap 'rm -rf "$TEST_NGINX_SERVROOT"' EXIT INT TERM
 fi
 
@@ -114,7 +114,7 @@ while [ "$i" -le "$ATTEMPTS" ]; do
     echo "==> $FLAVOR $VERSION on 127.0.0.1:$TEST_NGINX_PORT (attempt $i/$ATTEMPTS)"
 
     set +e
-    prove "$@" "$REPO_ROOT/t/"
+    prove "$@" "$REPO_ROOT/ci/t/"
     rc=$?
     set -e
 

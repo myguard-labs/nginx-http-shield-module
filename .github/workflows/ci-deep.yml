@@ -10,25 +10,25 @@ name: CI Deep
 # and workflow_dispatch both run repository-owner-approved code from a branch.
 # Every PR-triggered workflow MUST run on a GitHub-hosted runner: this is a
 # public repository, so a fork PR would otherwise execute attacker-controlled
-# repository scripts (tools/ci-build.sh, fuzz/build.sh, tools/soak.sh) on the
+# repository scripts (ci/tools/ci-build.sh, ci/fuzz/build.sh, ci/tools/soak.sh) on the
 # build host. See GitHub's guidance on self-hosted runners and public repos:
 # https://docs.github.com/en/actions/reference/security/secure-use
 #
 # Jobs: build-flavors · fuzz (long, scan target) · memcheck soak · helgrind
 # soak · scanners.
 #   * build-flavors builds nginx mainline, nginx stable and angie. nginx
-#     mainline and stable additionally run t/; angie is build-only HERE and runs
+#     mainline and stable additionally run ci/t/; angie is build-only HERE and runs
 #     a module-load smoke test instead (stock Test::Nginx cannot drive it — see
 #     the job's own comment). Note the PR prober (build-test.yml) DOES exercise
 #     angie functionally via the harness, so "build-only" is specific to this
 #     Test::Nginx-driven job, not angie coverage overall. The README claims angie support and
-#     tools/ci-build.sh has always accepted the flavor, but every other job pins
+#     ci/tools/ci-build.sh has always accepted the flavor, but every other job pins
 #     ONE mainline version — nothing actually built angie or nginx stable until
 #     this job. It is here (monthly) rather than in the PR gate because it is
 #     three full server builds; a break in stable/angie is not worth blocking
 #     every PR on.
-#   * memcheck AND helgrind run via tools/soak.sh (USE_VALGRIND / USE_HELGRIND),
-#     which passes --suppressions=tools/valgrind.supp and --error-exitcode=99.
+#   * memcheck AND helgrind run via ci/tools/soak.sh (USE_VALGRIND / USE_HELGRIND),
+#     which passes --suppressions=ci/tools/valgrind.supp and --error-exitcode=99.
 #
 # Action pins (keep in sync with build-test.yml):
 # actions/checkout@v5        -> 93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -109,7 +109,7 @@ jobs:
 
       - name: Build server and dynamic module
         run: |
-          bash tools/ci-build.sh "${{ matrix.flavor }}" "${{ matrix.version }}"
+          bash ci/tools/ci-build.sh "${{ matrix.flavor }}" "${{ matrix.version }}"
           build=".build/${{ matrix.flavor }}-${{ matrix.version }}/objs"
           test -f "$build/ngx_http_shield_module.so"
           # angie names its binary objs/angie; nginx names it objs/nginx.
@@ -118,11 +118,11 @@ jobs:
       # angie is build-only, deliberately. Stock Test::Nginx::Socket probes the
       # server with -V and requires "nginx version: .../<x>.<y>" (Util.pm:1365);
       # angie reports "Angie version: Angie/1.12.0" and the harness bails out
-      # before the first test. Running t/ on angie therefore needs a harness
+      # before the first test. Running ci/t/ on angie therefore needs a harness
       # shim, not a config tweak -- until someone writes it, asserting that the
       # module COMPILES and LINKS against angie is the honest gate. That alone
       # has value: it is what caught -Wshadow leaking into angie's core.
-      - name: Run t/
+      - name: Run ci/t/
         if: matrix.flavor == 'nginx'
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/${{ matrix.flavor }}-${{ matrix.version }}/objs/nginx
@@ -130,7 +130,10 @@ jobs:
           # Must be 20, not the ~2s Test::Nginx::Socket default — see the
           # identical setting in build-test.yml.
           TEST_NGINX_TIMEOUT: "20"
-        run: prove t/
+          # Test::Nginx defaults this to $CWD/t/servroot, which no longer
+          # exists now that the suite lives under ci/t/.
+          TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
+        run: prove ci/t/
 
       - name: Load the module (angie build-only smoke check)
         if: matrix.flavor == 'angie'
@@ -199,15 +202,15 @@ jobs:
           echo "FUZZ_SECS=$FUZZ_SECONDS_INPUT" >> "$GITHUB_ENV"
 
       - name: Fetch + configure nginx source (fuzz build needs headers)
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION"
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION"
 
       - name: Build fuzz target
-        run: CC=clang bash fuzz/build.sh
+        run: CC=clang bash ci/fuzz/build.sh
 
       - name: Fuzz scan target
         run: |
           set -euo pipefail
-          cd fuzz
+          cd ci/fuzz
           echo "=== fuzz_scan (${FUZZ_SECS}s) ==="
           set +e
           ./fuzz_scan \
@@ -230,7 +233,7 @@ jobs:
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: fuzz-deep-crashes
-          path: ${{ github.workspace }}/fuzz/crash-*
+          path: ${{ github.workspace }}/ci/fuzz/crash-*
           retention-days: 30
 
       - name: Upload minimized corpus
@@ -238,7 +241,7 @@ jobs:
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: fuzz-corpus
-          path: ${{ github.workspace }}/fuzz/corpus-min
+          path: ${{ github.workspace }}/ci/fuzz/corpus-min
           retention-days: 30
 
       - name: Notify Discord on failure
@@ -269,12 +272,12 @@ jobs:
           sudo apt-get install -y \
             build-essential clang curl libpcre2-dev zlib1g-dev valgrind
       - name: Build debug nginx + module
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" debug
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" debug
       - name: Memcheck soak (600s @ 4 conc, WITH suppressions)
         env:
           USE_VALGRIND: "1"
         run: |
-          bash tools/soak.sh \
+          bash ci/tools/soak.sh \
             "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" 600 4
       - name: Notify Discord on failure
         if: failure() && github.event_name == 'schedule'
@@ -304,12 +307,12 @@ jobs:
           sudo apt-get install -y \
             build-essential clang curl libpcre2-dev zlib1g-dev valgrind
       - name: Build debug nginx + module
-        run: bash tools/ci-build.sh nginx "$NGINX_VERSION" debug
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" debug
       - name: Helgrind soak (600s @ 4 conc, --error-exitcode=99, WITH suppressions)
         env:
           USE_HELGRIND: "1"
         run: |
-          bash tools/soak.sh \
+          bash ci/tools/soak.sh \
             "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" 600 4
       - name: Notify Discord on failure
         if: failure() && github.event_name == 'schedule'
@@ -350,7 +353,7 @@ jobs:
       - name: Generate nginx build headers (for clang-tidy)
         run: |
           # Pinned to the same NGINX_VERSION the build jobs use, and verified
-          # against tools/sources.sha256 before extraction: scraping "latest"
+          # against ci/tools/sources.sha256 before extraction: scraping "latest"
           # and executing its configure script trusts whatever the origin
           # serves at that moment.
           set -euo pipefail
@@ -359,7 +362,7 @@ jobs:
             "https://nginx.org/download/$tarball"
           ( cd "$RUNNER_TEMP" \
             && grep -E "[[:space:]]${tarball}\$" \
-                 "$GITHUB_WORKSPACE/tools/sources.sha256" | sha256sum -c - )
+                 "$GITHUB_WORKSPACE/ci/tools/sources.sha256" | sha256sum -c - )
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/nginx-${NGINX_VERSION}" "$RUNNER_TEMP/nginx-src"
           cd "$RUNNER_TEMP/nginx-src"

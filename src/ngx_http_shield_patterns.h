@@ -14,7 +14,7 @@
  *     scanning, so uppercase bytes here can never match.
  *   - Never a bare single keyword ("select", "or", "cat"). Use a multi-token
  *     combination that only appears in an attack ("union select", "; wget ").
- *     t/05-fp-negative.t exists to catch violations of this rule.
+ *     ci/t/05-fp-negative.t exists to catch violations of this rule.
  *     If the attack token is ALSO legitimate traffic on its own (a real
  *     product path, a word that occurs in prose), it does not belong here at
  *     all -- make it an AND-rule term instead, so it only fires alongside the
@@ -541,10 +541,10 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
      * "<!DOCTYPE") is an ordinary XML construct -- an internal entity
      * "<!ENTITY company \"Acme\">" is used by SOAP templates, XHTML, config and
      * docs -- so it is deliberately NOT a signature: it 403'd every benign XML
-     * body that declared an internal entity (t/05 TEST 74). What no benign body
+     * body that declared an internal entity (ci/t/05 TEST 74). What no benign body
      * carries is a SYSTEM reference to a file: or http: URI; those signatures
      * below match real external-entity and out-of-band (parameter-entity + remote
-     * DTD) XXE independent of the "<!ENTITY" token (t/04 TESTS 15/15b). */
+     * DTD) XXE independent of the "<!ENTITY" token (ci/t/04 TESTS 15/15b). */
     NGX_HTTP_SHIELD_SIG("system \"file:"),
     NGX_HTTP_SHIELD_SIG("system 'file:"),
     NGX_HTTP_SHIELD_SIG("system \"http:"),
@@ -1013,7 +1013,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/analytics/telemetry/ph/api/hyper/send"), /* vCenter 2021-22005 */
     /* Grafana CVE-2021-43798 is caught by the traversal category (../ under
      * /public/plugins/); a bare "/public/plugins/" matches legit plugin assets
-     * and is therefore NOT listed here (would break t/05 FP guard). */
+     * and is therefore NOT listed here (would break ci/t/05 FP guard). */
     NGX_HTTP_SHIELD_SIG("/webtools/control/xmlrpc"), /* OFBiz 2020-9496      */
     NGX_HTTP_SHIELD_SIG("/webtools/control/programexport"), /* OFBiz 2023-49070 */
     /* OFBiz requirePasswordChange=Y and Metabase /api/setup/validate are both
@@ -1083,7 +1083,7 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
      * only reaches PRECONTENT if it is ENCODED -- "..%2f" -- which no client emits
      * by accident), while a literal or encoded "../" in a QUERY value is passed
      * through unnormalized and stays scanned -- an argument like ?f=../../etc/passwd
-     * is an attack, not content (t/06 TEST 11/69 pin both survive-and-block). In a
+     * is an attack, not content (ci/t/06 TEST 11/69 pin both survive-and-block). In a
      * request BODY the same bytes are ordinary relative-path CONTENT: JSON asset
      * maps ({"path":"../logo.png"}),
      * JS/CSS imports, Markdown links, config files. Scanning bodies for "../"
@@ -1275,7 +1275,7 @@ typedef struct {
  * no request where the AND-rule fires but standalone traversal does not.
  * It only adds a second, redundant code path that could itself drift into a
  * false positive later. The real Grafana exploit stays covered by the
- * standalone "../" sig alone (t/05 TEST 18b). */
+ * standalone "../" sig alone (ci/t/05 TEST 18b). */
 
 /* Apache OFBiz CVE-2023-51467 auth bypass: the bypass parameter is only an
  * attack when it is steering a request at the webtools control endpoint.
@@ -1294,7 +1294,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ofbiz[] = {
  * The gadget term is "init=", NOT a bare "jdbc:h2:" DSN. Requiring any H2 DSN
  * on its own blocked every benign shape carrying an in-memory H2 connection
  * string -- a legitimate first-run install, a health probe, the DSN quoted in
- * documentation ("jdbc:h2:mem:test" with no INIT script, t/05 TEST 73). The H2
+ * documentation ("jdbc:h2:mem:test" with no INIT script, ci/t/05 TEST 73). The H2
  * DSN term stays so an INIT clause against a non-H2 engine (where it is not
  * this RCE) does not match.
  *
@@ -1304,7 +1304,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ofbiz[] = {
  * endpoint in the request line and the H2 INIT gadget in the JSON body, so an
  * endpoint term made the rule unfireable on the actual exploit while it still
  * matched a contrived request that repeated the endpoint INSIDE the body --
- * which is exactly what the old t/07 positive did, and why this survived six
+ * which is exactly what the old ci/t/07 positive did, and why this survived six
  * audits behind a green test.
  *
  * Dropping it does not widen the rule in practice: "jdbc:h2:" + "init=" is
@@ -1321,7 +1321,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_metabase[] = {
 /* No "sqli_time_based" AND-rule ("sleep(" + "select "). Both terms are ordinary
  * English that co-occur in perfectly normal traffic -- a product search naming
  * a plan next to a timer parameter, an SQL tutorial search, two unrelated
- * cookies on one Cookie line -- and the rule fired on all of them (t/05 TESTS
+ * cookies on one Cookie line -- and the rule fired on all of them (ci/t/05 TESTS
  * 64-67 pin those shapes). It also added no detection: every real time-based
  * SQLi carries the call in quote or operator context, which the standalone sqli
  * table above already matches: "' and sleep(", ") or sleep(", ";sleep(",
@@ -1345,7 +1345,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_metabase[] = {
  * the exploit always drives the endpoint with parameters, while "/cli" alone
  * is a prefix of ordinary paths ("/cli/help", "/client/...") that then only
  * needed an unrelated "remoting=true" anywhere in the buffer to be blocked
- * (t/05 TEST 68). */
+ * (ci/t/05 TEST 68). */
 static const ngx_http_shield_sig_t  ngx_http_shield_rule_jenkins_cli[] = {
     NGX_HTTP_SHIELD_SIG("/cli?"),
     NGX_HTTP_SHIELD_SIG("remoting=true"),
@@ -1359,7 +1359,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_jenkins_cli[] = {
  * "freemarker": the exploit's payload is an interpolation expression, whereas
  * the bare product name is ordinary prose that can appear anywhere in a buffer
  * that also names the route -- documentation, a support ticket, an analytics
- * parameter (t/05 TEST 69). "${" has no benign reading in a request. */
+ * parameter (ci/t/05 TEST 69). "${" has no benign reading in a request. */
 static const ngx_http_shield_sig_t  ngx_http_shield_rule_vmware_ssti[] = {
     NGX_HTTP_SHIELD_SIG("/catalog-portal/ui/oauth/verify"),
     NGX_HTTP_SHIELD_SIG("${"),
@@ -1382,7 +1382,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ssrf_wildcard_dns[] = {
 /* No wp.getUsersBlogs rule. The obvious pairing -- wp.getUsersBlogs AND a
  * <methodCall> wrapper -- is worthless: <methodCall> is the XML-RPC envelope
  * EVERY client sends for EVERY method, so the rule would block the legitimate
- * call (t/05 TEST 24 catches exactly that). What distinguishes the brute-force
+ * call (ci/t/05 TEST 24 catches exactly that). What distinguishes the brute-force
  * from a real client is request VOLUME, which no same-buffer term set can
  * express. The amplifier it rides on, system.multicall, is a standalone
  * signature and stays blocked. Left out until there is a term that actually

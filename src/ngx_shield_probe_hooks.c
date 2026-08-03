@@ -6,7 +6,7 @@
  *
  * Everything generic -- flavor, pid, connections, fds, cycle-pool stats, the
  * zone's name/size/slab page accounting, and the whole fault_slab= query parser
- * -- now comes from t/harness (nginx-test-harness). What remains here is only
+ * -- now comes from ci/t/harness (nginx-test-harness). What remains here is only
  * what a generic probe cannot know: the SEMANTICS of shield's shared memory.
  *
  * Two hooks, matching ngx_test_probe_hooks_t:
@@ -19,7 +19,7 @@
  *
  * The rendered field names are unchanged from the pre-harness probe
  * (zone.nodes, zone.banned, zone.fault.slab_nth, zone.fault.slab_seen), so
- * the rule files under t/prober/rules assert on exactly the paths they
+ * the rule files under ci/t/prober/rules assert on exactly the paths they
  * always did.
  *
  * Like ngx_http_shield_ban.{c,h}, this depends only on <ngx_core.h> and never

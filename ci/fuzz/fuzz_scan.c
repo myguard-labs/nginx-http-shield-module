@@ -59,11 +59,11 @@
 #include <unistd.h>
 
 /* Pull in the real signature tables (types come from ngx_core.h above). */
-#include "../src/ngx_http_shield_patterns.h"
+#include "../../src/ngx_http_shield_patterns.h"
 
 /* The decision seam itself. src/ngx_http_shield_scan.c is compiled into this
  * binary by fuzz/build.sh, so the calls below reach production code. */
-#include "../src/ngx_http_shield_scan.h"
+#include "../../src/ngx_http_shield_scan.h"
 
 /*
  * ngx_string.c is linked whole so ngx_unescape_uri()/ngx_strlow() are the real

@@ -2,11 +2,11 @@
 #
 # Run the shield prober rules against a probe-enabled build.
 #
-#   t/prober/run.sh [flavor] [version]
+#   ci/t/prober/run.sh [flavor] [version]
 #     flavor : nginx (default) | angie
-#     version: source version; must match what tools/ci-build.sh fetched
+#     version: source version; must match what ci/tools/ci-build.sh fetched
 #
-# The engine lives in t/harness (nginx-test-harness) and knows nothing about
+# The engine lives in ci/t/harness (nginx-test-harness) and knows nothing about
 # shield: this only supplies the four things that are shield's -- which .so to
 # look in, which directive proves the harness build, and where the conf and
 # rules are. Everything else (boot, teardown, TAP, the delta engine, the pid
@@ -23,7 +23,7 @@ cd "$(dirname "$0")"
 HERE="$PWD"
 
 if [ ! -x ../harness/prober/run.sh ]; then
-    echo "Bail out! t/harness is empty -- run: git submodule update --init"
+    echo "Bail out! ci/t/harness is empty -- run: git submodule update --init"
     exit 1
 fi
 
@@ -35,7 +35,7 @@ export PROBER_CONF="$HERE/conf/prober.conf"
 export PROBER_RULES="$HERE/rules/*.rule"
 # SC2155: split declare from assign so a failed cd/pwd surfaces its exit status
 # instead of being masked by export's own success.
-PROBER_ROOT="$(cd ../.. && pwd)"
+PROBER_ROOT="$(cd ../../.. && pwd)"
 export PROBER_ROOT
 
 # NOT setting PROBER_ALLOW_LOG on purpose. 04-fault.rule drives the slab
