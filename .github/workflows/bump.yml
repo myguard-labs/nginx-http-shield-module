@@ -1,0 +1,139 @@
+name: Bump versions
+
+# Weekly: check nginx.org/angie.software for newer releases than what's
+# pinned, and move every GitHub Action sha pin and pinned linter version to
+# its newest release. ci/tools/bump-versions.sh does the actual work (also
+# runnable locally with --dry-run to preview).
+#
+# Unlike nginx-skeleton-module, this repo has no ci/vendor/nginx-tests
+# submodule -- there is no vendored-upstream-test arm here to run. ci/t/harness
+# IS a real submodule but is the test HARNESS, not a vendored test corpus, and
+# is intentionally NOT touched by this workflow.
+#
+# Opens a PR rather than pushing straight to main -- main carries a
+# required-pull-request ruleset with no bypass actor, so a direct push is
+# always rejected (GH013). The bot pushes a branch and opens a PR via
+# BUMP_PR_TOKEN (a classic PAT -- the default GITHUB_TOKEN cannot create
+# PRs on myguard-labs repos). Normal review/required-checks gate the merge.
+#
+# BUMP_PR_TOKEN authenticates BOTH halves: gh (via GH_TOKEN) for the PR, and
+# git (via GIT_ASKPASS) for the branch push.
+#
+# ** BUMP_PR_TOKEN IS NOT YET PROVISIONED FOR THIS REPO. ** Neither
+# myguard-labs/nginx-http-shield-module nor the myguard-labs org has this
+# secret (the org only has DISCORD_BOT_TOKEN, DISCORD_CHANNEL_BUILDS and
+# GH_SUBMODULE_TOKEN). Until a human adds a classic PAT with repo scope as
+# BUMP_PR_TOKEN, the "Require BUMP_PR_TOKEN" step below fails fast and loud on
+# every scheduled run -- this is expected and intentional: it fails at step 1
+# with a named `::error::` rather than reproducing nginx-skeleton-module's
+# failure mode of dying mid-script inside bump-actions.sh's api.github.com
+# lookup (see runs 30791888680 and the 2026-07-27 skeleton run).
+#
+# Action pins (keep in sync with build-test.yml):
+# actions/checkout@v5 -> 93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+on:
+  schedule:
+    # Weekly, Monday 04:00 UTC.
+    - cron: "0 4 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  group: bump-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Bump nginx/angie/action/linter pins
+    # schedule + workflow_dispatch only -- never pull_request -- so this is
+    # allowed on the self-hosted builder02 runner, same trust boundary as
+    # ci-deep.yml (see that workflow's header for the full rationale).
+    runs-on: [self-hosted, builder02, lxc]
+    timeout-minutes: 15
+    steps:
+      - name: Require BUMP_PR_TOKEN
+        env:
+          BUMP_PR_TOKEN: ${{ secrets.BUMP_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BUMP_PR_TOKEN" ]; then
+            echo "::error::secrets.BUMP_PR_TOKEN is not set on this repo (or org)." \
+                 "This workflow needs a classic GitHub PAT with repo scope, added" \
+                 "as the BUMP_PR_TOKEN secret, to push a branch and open a PR --" \
+                 "the default GITHUB_TOKEN cannot create PRs on myguard-labs" \
+                 "repos. Failing fast here rather than partway through the bump" \
+                 "script. See this workflow's header comment for detail."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          submodules: true
+          fetch-depth: 0
+
+      - name: Run bump script
+        id: bump
+        env:
+          # The angie release lookup and every action-pin lookup hit
+          # api.github.com; unauthenticated, the shared runner IP is
+          # rate-limited to 403s. bump-actions.sh treats a failed lookup as
+          # fatal rather than "nothing to bump", so a missing/expired token
+          # fails this step instead of quietly leaving the pins to rot.
+          GH_TOKEN: ${{ secrets.BUMP_PR_TOKEN }}
+        run: bash ci/tools/bump-versions.sh
+
+      - name: Open PR if anything changed
+        env:
+          GH_TOKEN: ${{ secrets.BUMP_PR_TOKEN }}
+          BUMP_PR_TOKEN: ${{ secrets.BUMP_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "nothing changed, skipping PR"
+            exit 0
+          fi
+          branch="bump/versions-$(date -u +%Y%m%d)"
+          git config user.name "myguard-bump-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "chore: bump nginx/angie/action/linter pins
+
+          Automated weekly version check (ci/tools/bump-versions.sh)."
+          # persist-credentials is false, so the checkout leaves no git
+          # credential behind and a plain `git push` prompts for a username.
+          # GH_TOKEN authenticates gh but not git, so hand git its own
+          # credential via the askpass helper -- keeps the token out of argv
+          # and out of .git/config, unlike an inline x-access-token@ URL.
+          git config credential.helper ''
+          askpass="$(mktemp)"
+          cat > "$askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            Username*) echo x-access-token ;;
+            *) printf '%s' "$BUMP_PR_TOKEN" ;;
+          esac
+          ASKPASS
+          chmod 700 "$askpass"
+          # Force-push: the branch name is date-based, so a same-day re-run
+          # (a manual dispatch, or a retry after a failure) collides with the
+          # branch the earlier run created and is otherwise rejected
+          # non-fast-forward. The branch is bot-owned and disposable.
+          GIT_ASKPASS="$askpass" git push --force-with-lease origin "$branch"
+          rm -f "$askpass"
+          # An open PR for this branch may already exist from that earlier
+          # run; the push above has refreshed it, so there is nothing to do.
+          if [ -n "$(gh pr list --head "$branch" --state open --json number -q '.[0].number')" ]; then
+            echo "PR for $branch already open, refreshed by the push"
+            exit 0
+          fi
+          gh pr create \
+            --title "chore: bump nginx/angie/action/linter pins ($(date -u +%Y-%m-%d))" \
+            --body "Automated weekly version check (ci/tools/bump-versions.sh). Review the diff and let required CI checks gate the merge." \
+            --base main \
+            --head "$branch"
