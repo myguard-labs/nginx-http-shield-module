@@ -22,6 +22,7 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch: {}
+  workflow_call: {}
 
 concurrency:
   group: security-scanners-${{ github.workflow }}-${{ github.ref }}

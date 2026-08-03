@@ -1,0 +1,57 @@
+# Single entry point for the PR CI suite. The five members still carry their own
+# PR triggers for now, so each runs TWICE — that double-run is the
+# intermediate state that PROVES the call graph is wired, and their own triggers
+# get removed in a follow-up commit only after a real PR shows all five doubling.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: orchestrator-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build&Test
+    uses: ./.github/workflows/build-test.yml
+    permissions:
+      contents: read
+
+  fuzzing:
+    name: Fuzzing
+    uses: ./.github/workflows/fuzzing.yml
+    permissions:
+      contents: read
+
+  valgrind:
+    name: Valgrind
+    uses: ./.github/workflows/valgrind.yml
+    permissions:
+      contents: read
+
+  security-scanners:
+    name: Security scanners
+    uses: ./.github/workflows/security-scanners.yml
+    permissions:
+      contents: read
+
+  # codeql.yml groups on `codeql-${{ github.ref }}`, with no github.workflow
+  # component. A called workflow inherits the caller's github.ref, so while the
+  # standalone `pull_request:` trigger still exists the called copy computes an
+  # identical group string and cancels its own standalone twin. Harmless here —
+  # the called copy is the one that runs and gates — and it disappears when the
+  # member triggers are removed in the follow-up commit.
+  codeql:
+    name: CodeQL
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      contents: read
+      security-events: write  # CodeQL uploads its SARIF to code scanning
+      actions: read  # the CodeQL action reads run metadata to attribute results

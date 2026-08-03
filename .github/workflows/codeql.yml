@@ -13,6 +13,7 @@ on:
     # Monthly, day 4 @ 04:47 UTC (staggered per repo like ci-deep).
     - cron: "47 4 4 * *"
   workflow_dispatch: {}
+  workflow_call: {}
 
 concurrency:
   group: codeql-${{ github.ref }}
