@@ -130,6 +130,9 @@ jobs:
           # Must be 20, not the ~2s Test::Nginx::Socket default — see the
           # identical setting in build-test.yml.
           TEST_NGINX_TIMEOUT: "20"
+          # Test::Nginx defaults this to $CWD/t/servroot, which no longer
+          # exists now that the suite lives under ci/t/.
+          TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
         run: prove ci/t/
 
       - name: Load the module (angie build-only smoke check)

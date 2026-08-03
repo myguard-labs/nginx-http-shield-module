@@ -218,6 +218,9 @@ jobs:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
           TEST_NGINX_LOAD_MODULES: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/ngx_http_shield_module.so
           TEST_NGINX_TIMEOUT: "20"
+          # Test::Nginx defaults this to $CWD/t/servroot, which no longer
+          # exists now that the suite lives under ci/t/.
+          TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
         run: prove -v ci/t/
 
   asan:
@@ -259,6 +262,7 @@ jobs:
           TEST_NGINX_TIMEOUT: "30"
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
         run: prove -v ci/t/
 
   reporter-tests:
@@ -423,6 +427,7 @@ jobs:
         env:
           TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
           TEST_NGINX_TIMEOUT: "30"
+          TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
         run: prove ci/t/
 
       # The prober reaches paths ci/t/ structurally cannot: the slab-exhaustion
