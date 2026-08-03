@@ -533,3 +533,46 @@ jobs:
           echo "module line coverage: ${rate}%"
           awk -v r="$rate" 'BEGIN { exit (r+0 >= 92) ? 0 : 1 }' \
             || { echo "coverage ${rate}% below floor 92%"; exit 1; }
+
+  runtime-tests:
+    name: Runtime (live server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TEST_BASE_PORT: '19520'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          submodules: true
+
+      - name: Load version pins
+        run: bash .github/scripts/load-versions.sh
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libpcre2-dev zlib1g-dev
+
+      - name: Build dynamic module
+        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION"
+
+      # Runs BEFORE the first step that binds the band -- the driver below,
+      # not merely a wrapper around it. Fails if the band reaches the kernel
+      # ephemeral range or is already occupied by a leftover server, either of
+      # which would otherwise surface inside the driver as a bind error or a
+      # timeout with no cause attached.
+      - name: Verify this job's port band is free
+        run: bash ci/tools/max-port.sh "$TEST_BASE_PORT"
+
+      # ci/t/*.t drives the request path one request at a time via
+      # Test::Nginx; this covers the shapes that need a live server driven
+      # from outside that harness -- concurrency, chunked body reassembly and
+      # reload-under-load. See ci/tools/test_runtime.py's own docstring.
+      - name: Run ci/tools/test_runtime.py
+        run: |
+          python3 ci/tools/test_runtime.py \
+            --nginx "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" \
+            --module "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/ngx_http_shield_module.so" \
+            --port "$TEST_BASE_PORT" -v
