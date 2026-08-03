@@ -42,10 +42,16 @@ jobs:
     permissions:
       contents: read
 
+  # codeql.yml groups on `codeql-${{ github.ref }}`, with no github.workflow
+  # component. A called workflow inherits the caller's github.ref, so while the
+  # standalone `pull_request:` trigger still exists the called copy computes an
+  # identical group string and cancels its own standalone twin. Harmless here —
+  # the called copy is the one that runs and gates — and it disappears when the
+  # member triggers are removed in the follow-up commit.
   codeql:
     name: CodeQL
     uses: ./.github/workflows/codeql.yml
     permissions:
       contents: read
-      security-events: write
-      actions: read
+      security-events: write  # CodeQL uploads its SARIF to code scanning
+      actions: read  # the CodeQL action reads run metadata to attribute results
