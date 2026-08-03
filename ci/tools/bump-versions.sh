@@ -79,13 +79,31 @@ fi
 # pin. An unmaintained sha is not "stable", it is a frozen copy of an action
 # that stopped receiving its own security fixes. Major-line only -- see
 # bump-actions.sh for why crossing a major unattended is not wanted.
+## In --dry-run the children write nothing, so `git diff --quiet` always sees a
+# clean tree and CHANGED stays 0 even when the child just printed pending
+# bumps -- a dry-run that contradicts its own output. Both children already
+# emit a machine-readable ACTIONS_CHANGED=0|1 / TOOLS_CHANGED=0|1 marker as
+# their last line for exactly this purpose: read it instead of trusting the
+# working tree. `tee` keeps the child's full output streaming to the user
+# while a copy is captured to grep the marker from; PIPESTATUS preserves the
+# child's real exit code past the pipe.
 if [ "$DRY_RUN" = 0 ]; then
     bash ci/tools/bump-actions.sh
+    if ! git diff --quiet -- .github/ 2>/dev/null; then
+        CHANGED=1
+    fi
 else
-    bash ci/tools/bump-actions.sh --dry-run
-fi
-if ! git diff --quiet -- .github/ 2>/dev/null; then
-    CHANGED=1
+    actions_out="$(mktemp)"
+    bash ci/tools/bump-actions.sh --dry-run | tee "$actions_out" || true
+    rc="${PIPESTATUS[0]}"
+    if [ "$rc" != 0 ]; then
+        rm -f "$actions_out"
+        exit "$rc"
+    fi
+    if grep -qE '^ACTIONS_CHANGED=1$' "$actions_out"; then
+        CHANGED=1
+    fi
+    rm -f "$actions_out"
 fi
 
 # --- pinned linter versions ------------------------------------------------
@@ -94,11 +112,21 @@ fi
 # left behind.
 if [ "$DRY_RUN" = 0 ]; then
     bash ci/tools/bump-tools.sh
+    if ! git diff --quiet -- .github/ ci/ 2>/dev/null; then
+        CHANGED=1
+    fi
 else
-    bash ci/tools/bump-tools.sh --dry-run
-fi
-if ! git diff --quiet -- .github/ ci/ 2>/dev/null; then
-    CHANGED=1
+    tools_out="$(mktemp)"
+    bash ci/tools/bump-tools.sh --dry-run | tee "$tools_out" || true
+    rc="${PIPESTATUS[0]}"
+    [ "$rc" = 0 ] || {
+        rm -f "$tools_out"
+        exit "$rc"
+    }
+    if grep -qE '^TOOLS_CHANGED=1$' "$tools_out"; then
+        CHANGED=1
+    fi
+    rm -f "$tools_out"
 fi
 
 if [ "$CHANGED" = 0 ]; then

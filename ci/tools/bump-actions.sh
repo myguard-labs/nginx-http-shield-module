@@ -47,8 +47,12 @@ NOTES=()
 # the job stays green. Any failure to resolve a pin is fatal at the end.
 FAILED=0
 
-# One cache entry per repo: the same action is pinned in several workflows and
-# each lookup is a rate-limited API call.
+# One cache entry per repo@major: the same action is pinned in several
+# workflows and each lookup is a rate-limited API call. Keying by repo alone
+# would let a repo pinned on two major lines (e.g. v3 in one workflow, v4 in
+# another) reuse the FIRST pin's resolution for the second, silently moving
+# the v3 pin onto the v4 line. Latent today (every shield-pinned repo sits on
+# exactly one major) but fires the moment that stops being true.
 declare -A RESOLVED_SHA RESOLVED_TAG
 
 # Collect every distinct owner/repo@sha # tag triple across .github/.
@@ -78,7 +82,9 @@ for pin in "${PINS[@]}"; do
         continue
     fi
 
-    if [ -z "${RESOLVED_SHA[$repo]:-}" ]; then
+    key="${repo}@${major}"
+
+    if [ -z "${RESOLVED_SHA[$key]:-}" ]; then
         # Releases, newest first. --exclude-pre-releases keeps an -rc out of a
         # production pin. A release whose tag is not vN.* is not on this line.
         newest_in_major=""
@@ -96,8 +102,8 @@ for pin in "${PINS[@]}"; do
         if [ -z "$newest_in_major" ]; then
             NOTES+=("FAILED $repo: no release resolved on the v${major} line (auth? rate limit? renamed repo?)")
             FAILED=1
-            RESOLVED_SHA[$repo]="-"
-            RESOLVED_TAG[$repo]="-"
+            RESOLVED_SHA[$key]="-"
+            RESOLVED_TAG[$key]="-"
             continue
         fi
 
@@ -114,13 +120,13 @@ for pin in "${PINS[@]}"; do
         if ! printf '%s' "$new_sha" | grep -qE '^[0-9a-f]{40}$'; then
             NOTES+=("FAILED $repo: could not resolve $newest_in_major to a commit sha")
             FAILED=1
-            RESOLVED_SHA[$repo]="-"
-            RESOLVED_TAG[$repo]="-"
+            RESOLVED_SHA[$key]="-"
+            RESOLVED_TAG[$key]="-"
             continue
         fi
 
-        RESOLVED_SHA[$repo]="$new_sha"
-        RESOLVED_TAG[$repo]="$newest_in_major"
+        RESOLVED_SHA[$key]="$new_sha"
+        RESOLVED_TAG[$key]="$newest_in_major"
 
         if [ -n "$newest_any" ] &&
             ! printf '%s' "$newest_any" | grep -qE "^v?${major}(\.|$)"; then
@@ -128,8 +134,8 @@ for pin in "${PINS[@]}"; do
         fi
     fi
 
-    new_sha="${RESOLVED_SHA[$repo]}"
-    new_tag="${RESOLVED_TAG[$repo]}"
+    new_sha="${RESOLVED_SHA[$key]}"
+    new_tag="${RESOLVED_TAG[$key]}"
     [ "$new_sha" = "-" ] && continue
     [ "$new_sha" = "$sha" ] && continue
 
@@ -149,9 +155,11 @@ done
 # ("actions/checkout@v5 -> <sha>"). Those are the same second-copy hazard as the
 # trailing tag comment, so keep them in step.
 if [ "$DRY_RUN" = 0 ] && [ "$CHANGED" = 1 ]; then
-    for repo in "${!RESOLVED_SHA[@]}"; do
-        s="${RESOLVED_SHA[$repo]}"
-        t="${RESOLVED_TAG[$repo]}"
+    for key in "${!RESOLVED_SHA[@]}"; do
+        s="${RESOLVED_SHA[$key]}"
+        t="${RESOLVED_TAG[$key]}"
+        repo="${key%@*}"
+        key_major="${key##*@}"
         [ "$s" = "-" ] && continue
         # The comment spells the action the way `uses:` does -- owner/repo, and
         # for codeql-action a subpath too ("github/codeql-action/init@v4 -> ...").
@@ -163,9 +171,14 @@ if [ "$DRY_RUN" = 0 ] && [ "$CHANGED" = 1 ]; then
         # the `uses:` line (anchored on the sha) while the comment stays frozen
         # at the previous week's tag and sha. Verified by running two bumps
         # against a copy -- second pass selected zero files.
-        grep -rlE "# ${repo}(/[A-Za-z0-9._-]+)?@v?[0-9][0-9A-Za-z._-]* +-> +[0-9a-f]{40}" .github/ 2>/dev/null |
+        #
+        # Restricted to THIS key's major line: the existing comment's own major
+        # must equal key_major, or a repo pinned on two major lines (v3 in one
+        # workflow, v4 in another) would have its v3 documentation overwritten
+        # by the v4 resolution just because both share a repo name.
+        grep -rlE "# ${repo}(/[A-Za-z0-9._-]+)?@v?${key_major}(\.[0-9A-Za-z._-]+)? +-> +[0-9a-f]{40}" .github/ 2>/dev/null |
             while IFS= read -r f; do
-                perl -pi -e "s{(# \Q$repo\E(?:/[A-Za-z0-9._-]+)?\@)v?[0-9][0-9A-Za-z._-]*( +-> +)[0-9a-f]{40}}{\${1}$t\${2}$s}g" "$f"
+                perl -pi -e "s{(# \Q$repo\E(?:/[A-Za-z0-9._-]+)?\@)v?\Q$key_major\E(\.[0-9A-Za-z._-]+)?( +-> +)[0-9a-f]{40}}{\${1}$t\${3}$s}g" "$f"
             done
     done
 fi

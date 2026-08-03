@@ -64,21 +64,46 @@ for entry in "${TOOLS[@]}"; do
     pkg="${entry%%:*}"
     files="${entry#*:}"
 
-    # Current pin, read from the first file that has one. All files are asserted
-    # to agree at the end, so any of them is a valid source of truth here.
-    # The pin here is a workflow env var (SEMGREP_VERSION: "1.169.0"), not a
-    # bare `pkg==ver` literal, so match the quoted version string.
-    cur=""
+    # Every listed file must exist -- a missing file is silently "no pin to
+    # disagree" if skipped, and a rename/typo in TOOLS[] would rot unnoticed.
     for f in $files; do
-        [ -f "$f" ] || continue
-        cur="$(grep -hoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" "$f" | head -1 |
+        if [ ! -f "$f" ]; then
+            echo "FAILED ${pkg}: listed file '${f}' does not exist" >&2
+            FAILED=1
+            continue 2
+        fi
+    done
+
+    # Collect the pin from EVERY listed file BEFORE any up-to-date shortcut.
+    # The pin here is a workflow env var (SEMGREP_VERSION: "1.169.0"), not a
+    # bare `pkg==ver` literal, so match the quoted version string. Reading only
+    # the first file (the old behavior) let a later file's stale pin hide
+    # behind an early exit -- see F2 in PR review.
+    cur=""
+    disagree=0
+    for f in $files; do
+        v="$(grep -hoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" "$f" | head -1 |
             sed -E 's/.*"([0-9.]+)"/\1/' || true)"
-        [ -n "$cur" ] && break
+        [ -n "$v" ] || continue
+        if [ -z "$cur" ]; then
+            cur="$v"
+        elif [ "$v" != "$cur" ]; then
+            disagree=1
+        fi
     done
     if [ -z "$cur" ]; then
         echo "FAILED ${pkg}: no SEMGREP_VERSION pin found in any of its listed files" >&2
         FAILED=1
         continue
+    fi
+    if [ "$disagree" = 1 ]; then
+        echo "FATAL: ${pkg} pins disagree across its listed files BEFORE any bump:" >&2
+        for f in $files; do
+            v="$(grep -hoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" "$f" | head -1 |
+                sed -E 's/.*"([0-9.]+)"/\1/' || true)"
+            [ -n "$v" ] && echo "  $f: $v" >&2
+        done
+        exit 1
     fi
 
     if ! new="$(newest_on_pypi "$pkg")"; then
