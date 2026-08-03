@@ -176,7 +176,7 @@ jobs:
                 -Wno-unused-parameter \
                 -DNGX_TEST_HARNESS \
                 -I "$GITHUB_WORKSPACE/src" \
-                -I "$GITHUB_WORKSPACE/t/harness/src" \
+                -I "$GITHUB_WORKSPACE/ci/t/harness/src" \
                 $incs "$GITHUB_WORKSPACE/src/${src}.c" \
                 -o "/tmp/${src}.o"
             done
