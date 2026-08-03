@@ -63,6 +63,8 @@ jobs:
     name: Build & Test::Nginx (${{ matrix.label }} ${{ matrix.version }})
     runs-on: [self-hosted, builder02, lxc]
     timeout-minutes: 30
+    env:
+      TEST_BASE_PORT: '19400'
     strategy:
       fail-fast: false
       matrix:
@@ -122,6 +124,18 @@ jobs:
       # shim, not a config tweak -- until someone writes it, asserting that the
       # module COMPILES and LINKS against angie is the honest gate. That alone
       # has value: it is what caught -Wshadow leaking into angie's core.
+      # Runs BEFORE the first step that binds the band -- `prove` below, not
+      # just the runtime suite. Fails if the band reaches the kernel ephemeral
+      # range or is already occupied by a leftover server, either of which
+      # would otherwise surface inside a suite as a bind error or a timeout
+      # with no cause attached. Matters more here than on the hosted runners:
+      # builder02 is persistent and self-hosted, so a server left over from a
+      # prior matrix leg or a prior run would otherwise squat the port and this
+      # suite would silently test the OLD binary.
+      - name: Verify this job's port band is free
+        if: matrix.flavor == 'nginx'
+        run: bash ci/tools/max-port.sh "$TEST_BASE_PORT"
+
       - name: Run ci/t/
         if: matrix.flavor == 'nginx'
         env:
@@ -133,6 +147,7 @@ jobs:
           # Test::Nginx defaults this to $CWD/t/servroot, which no longer
           # exists now that the suite lives under ci/t/.
           TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
+          TEST_NGINX_PORT: ${{ env.TEST_BASE_PORT }}
         run: prove ci/t/
 
       - name: Load the module (angie build-only smoke check)
