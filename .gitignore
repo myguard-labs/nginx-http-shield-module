@@ -8,6 +8,10 @@ ci/t/*.t.tmp
 # Ban unit harness binary (built by ci/t/run-ban-unit.sh)
 ci/t/ban_unit
 
+# Scan-core unit test binary (built by ci/tests/unit/run.sh; *.o/*.gcda/*.gcno
+# already covered by the global patterns below)
+ci/tests/unit/test_scan
+
 # Fuzz build outputs (keep sources, corpus seeds, and fuzz.dict)
 ci/fuzz/fuzz_scan
 ci/fuzz/crash-*

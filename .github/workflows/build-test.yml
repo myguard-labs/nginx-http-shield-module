@@ -351,6 +351,15 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: bash ci/t/run-ban-unit.sh
 
+      # Scan-core direct-call unit tests (src/ngx_http_shield_scan.c), the
+      # decoder/automaton-boundary layer ci/t (needs a live nginx) and
+      # ci/fuzz (asserts invariants, not named values) each cannot state on
+      # their own -- see ci/tests/unit/run.sh's header. Same nginx tree this
+      # job already configured above; plain cc is enough, no sanitizers, it
+      # runs in well under a second.
+      - name: Build and run scan-core unit tests
+        run: bash ci/tests/unit/run.sh
+
   prober:
     name: Prober rules (${{ matrix.flavor }}, ${{ matrix.mode }})
     runs-on: ubuntu-latest
@@ -492,14 +501,25 @@ jobs:
           EXTRA_CFLAGS: "--coverage -fprofile-arcs -ftest-coverage"
         run: bash ci/t/run-ban-unit.sh
 
+      # ci/tests/unit's own gcda: the boundary/skip-mask/case-folding values
+      # ci/t and the prober cannot state as exact assertions (see
+      # ci/tests/unit/run.sh's header). Its .gcda lands next to test_scan.c
+      # and is captured below alongside ban_unit's.
+      - name: Build and run scan-core unit tests (gcov)
+        env:
+          COVERAGE: 1
+        run: bash ci/tests/unit/run.sh
+
       # Harvest coverage for our translation unit only; upstream nginx .gcda is
       # captured (core is instrumented too) but discarded by the --extract filter.
-      # Two --directory args: the module TU built into nginx, and the harness's
-      # ban.c object under ci/t/.
+      # Three --directory args: the module TU built into nginx, the ban harness's
+      # object under ci/t/, and the scan-core harness's object under
+      # ci/tests/unit/.
       - name: Collect and gate module coverage
         run: |
           build=.build/nginx-${NGINX_VERSION}
           lcov --capture --directory "$build/objs/addon/src" --directory ci/t \
+            --directory ci/tests/unit \
             --output-file cov.info --rc geninfo_unexecuted_blocks=1
           lcov --extract cov.info '*ngx_http_shield*' --output-file cov-mod.info
           lcov --list cov-mod.info
