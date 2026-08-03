@@ -49,10 +49,16 @@ BASE="${1:-${TEST_BASE_PORT:-18880}}"
 WIDTH="${2:-${TEST_PORT_WIDTH:-64}}"
 
 case "$BASE" in
-    ''|*[!0-9]*) echo "ERROR: base port must be numeric, got '$BASE'" >&2; exit 2 ;;
+    '' | *[!0-9]*)
+        echo "ERROR: base port must be numeric, got '$BASE'" >&2
+        exit 2
+        ;;
 esac
 case "$WIDTH" in
-    ''|*[!0-9]*) echo "ERROR: width must be numeric, got '$WIDTH'" >&2; exit 2 ;;
+    '' | *[!0-9]*)
+        echo "ERROR: width must be numeric, got '$WIDTH'" >&2
+        exit 2
+        ;;
 esac
 
 # Force base 10 before ANY arithmetic. `$(( ))` reads a leading zero as octal,
@@ -110,8 +116,8 @@ if ! listeners="$(ss -Hltn 2>&1)"; then
     exit 2
 fi
 
-busy="$(printf '%s\n' "$listeners" \
-    | awk -v lo="$BASE" -v hi="$MAX" '
+busy="$(printf '%s\n' "$listeners" |
+    awk -v lo="$BASE" -v hi="$MAX" '
         {
             # Local address is field 4, "addr:port" -- take the last colon so
             # an IPv6 address does not confuse the split.
