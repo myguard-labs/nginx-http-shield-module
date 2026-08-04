@@ -1,11 +1,16 @@
 name: Build cache
 description: >-
-  Restore the cached upstream nginx/angie source tarball for a build job.
-  Ported from the skeleton's build-cache action (cp4b), scoped down to what
-  this module's CI actually does today -- see "Divergence from skeleton"
-  below before adding more layers here.
+  Restore the ccache + nginx source/build caches for one build mode. Hybrid by
+  design: on a PERSISTENT self-hosted runner the on-disk dirs are already warm
+  and this is nearly a no-op; on an ephemeral or hosted runner actions/cache
+  repopulates them. Keep both paths -- see the "Why hybrid" note below.
 
 inputs:
+  mode:
+    description: >-
+      Build mode: debug | asan | module | coverage. MUST match the
+      ci-build.sh arg.
+    required: true
   nginx-version:
     description: "source version, e.g. 1.31.3 (nginx) or 1.12.0 (angie)"
     required: true
@@ -17,23 +22,120 @@ inputs:
 runs:
   using: composite
   steps:
+    # Why hybrid:
+    #   The self-hosted runners are persistent incus containers today, so
+    #   ~/.cache/ccache and .build/ survive between jobs on disk -- the fastest
+    #   possible cache, with no upload/download at all. But that is a property
+    #   of the CURRENT runner topology, not a guarantee: an ephemeral
+    #   conversion is already designed (see the repo's CI notes), and a hosted
+    #   fallback runner (fork PRs fall back to ubuntu-latest) never had it.
+    #
+    #   actions/cache is therefore the FALLBACK, not the primary. On a warm
+    #   persistent runner it costs one cheap key lookup; on an ephemeral one it
+    #   is the only thing standing between you and a cold build every job.
+    #   Deleting it "because the runners are persistent" is how this template
+    #   silently degrades the day that stops being true.
+    #
+    # BEFORE YOU "FIX" A CACHE MISS ON A PR -- read this.
+    #   GitHub scopes caches BY REF. A PR run writes to refs/pull/N/merge, an
+    #   isolated scope; a branch run writes to refs/heads/<branch>. Neither can
+    #   read the other's entries. Only caches on the DEFAULT branch are
+    #   inherited by every other ref.
+    #
+    #   Consequences, both of which look like "the cache is broken" and are not:
+    #     - The FIRST run of a new PR always misses. It has no scope to read
+    #       from until main has populated one. This is correct and expected.
+    #     - Comparing a PR run against a branch-dispatch run compares two
+    #       different scopes and will show a phantom miss.
+    #   To observe a warm hit, re-run on the SAME ref (push a second commit to
+    #   the PR branch, or re-run the workflow) and compare -- never a PR run
+    #   against a branch run.
+
+    # ccache is keyed by CONTENT (CCACHE_COMPILERCHECK=content in ci-build.sh),
+    # so a toolchain or flag change invalidates individual objects on its own.
+    # The restore-keys ladder is safe here: a stale ccache can only ever cause a
+    # miss, never a wrong object -- the opposite of the build-tree cache below.
+    #
+    # github.sha is deliberately in the primary key even though it can never hit
+    # on the run that writes it: actions/cache only SAVES when the primary key
+    # missed, so a stable primary key would freeze the cache at its first
+    # contents and never fold in newly-compiled objects. A per-commit primary +
+    # a restore-keys ladder is the documented way to get a rolling cache.
+    - name: Restore ccache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.cache/ccache
+        key: ccache-${{ runner.os }}-${{ inputs.mode }}-${{ inputs.flavor }}-${{ inputs.nginx-version }}-${{ github.sha }}
+        restore-keys: |
+          ccache-${{ runner.os }}-${{ inputs.mode }}-${{ inputs.flavor }}-${{ inputs.nginx-version }}-
+          ccache-${{ runner.os }}-${{ inputs.mode }}-${{ inputs.flavor }}-
+
     # The upstream tarball never changes for a given version -- key on version
     # alone, no restore-keys ladder (a "close" tarball is the wrong tarball).
-    # Same path/key as the two inline `actions/cache` sites this replaces
-    # (build-test.yml, codeql.yml): src-<flavor>-<version> ->
-    # .build/<flavor>-<version>.tar.gz. No behaviour change on adoption.
     - name: Cache source tarball
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: .build/${{ inputs.flavor }}-${{ inputs.nginx-version }}.tar.gz
         key: src-${{ inputs.flavor }}-${{ inputs.nginx-version }}
 
-    # Divergence from skeleton -- deliberate, not an oversight:
-    #   The reference action.yml also restores a ccache layer and an
-    #   exact-match build-tree layer (.build/<flavor>-<ver>-<mode>). This
-    #   module's ci/tools/ci-build.sh DOES give every mode its own unpacked
-    #   tree (.build/<flavor>-<ver>-<mode>/, cp7a) but has no ccache
-    #   integration, so only the tarball -- shared across modes -- is cached
-    #   here. Porting the ccache layer verbatim would no-op (nothing ever
-    #   populates ~/.cache/ccache). Add a per-mode build-tree cache layer only
-    #   alongside the ccache work itself, not as a silent copy-paste.
+    # THE DANGEROUS ONE. The build tree holds compiled objects, and debug/asan/
+    # coverage/module objects are NOT interchangeable -- restoring a debug
+    # objs/ into an asan job yields a green sanitizer job that checks nothing.
+    #
+    # Two defences, deliberately redundant:
+    #   1. `mode` is in the key AND in the tree path (.build/<flavor>-<ver>-<mode>,
+    #      cp7a part 1).
+    #   2. NO restore-keys ladder. A prefix match could hand this job a tree
+    #      built from different flags; an exact-match-or-nothing key means the
+    #      worst case is a cold build, never a wrong one.
+    #   The key also hashes ci-build.sh, config and src/** -- a flag or source
+    #   change invalidates the tree even when mode/version/flavor are unchanged.
+    # If you add restore-keys here to "improve the hit rate", you have
+    # reintroduced the bug. Don't.
+    - name: Cache build tree (exact-match only -- see comment)
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: .build/${{ inputs.flavor }}-${{ inputs.nginx-version }}-${{ inputs.mode }}
+        key: >-
+          buildtree-${{ runner.os }}-${{ inputs.mode }}-${{ inputs.flavor }}-${{ inputs.nginx-version }}-${{ hashFiles('ci/tools/ci-build.sh', 'config', 'src/**') }}
+
+    # Package layer: check-before-install, NOT an actions/cache layer, and
+    # deliberately still not one. actions/cache cannot safely cache
+    # /var/lib/dpkg -- it is system-wide, shared by every job on the same
+    # persistent runner, and a stale restore desyncs dpkg's own state, which
+    # is exactly the "cache serves a stale artifact into a green result"
+    # failure the caching rules forbid. So the only honest saving is not
+    # reinstalling what is already there: `apt-get` below runs only when
+    # `need` is non-empty, which on a persistent self-hosted runner is the
+    # first run and no other. On a hosted or freshly-rotated ephemeral runner
+    # it falls through to install, same as before -- the fix for THAT case is
+    # a pre-baked runner image, not a cache bolted on here.
+    #
+    # The presence test is `command -v`, not `dpkg -s`: `dpkg -s` exits 0 for a
+    # package in `rc` (deinstall ok config-files) state, whose binary is gone.
+    # `command -v` tests the thing we actually need, and is faster.
+    - name: Ensure ccache, mold and eatmydata are present
+      shell: bash
+      run: |
+        set -euo pipefail
+        need=()
+        for pkg in ccache mold eatmydata; do
+          command -v "$pkg" >/dev/null || need+=("$pkg")
+        done
+        if [ ${#need[@]} -gt 0 ]; then
+          sudo apt-get update
+          sudo apt-get install -y "${need[@]}"
+        fi
+        ccache --version | head -1
+
+    # What is cached now, and what deliberately is NOT:
+    #   Cached: ccache objects (content-hashed, ladder), the source tarball
+    #   (version-hashed, exact), the unpacked+built tree per mode
+    #   (exact-match only). Together with ci-build.sh's own configure-skip
+    #   stamp and mold linking, a warm second run of the same ref should show
+    #   most objects served from ccache and configure skipped outright.
+    #
+    #   NOT cached: apt/dpkg package state (see the note on the install step
+    #   above -- caching it risks a stale system-wide dpkg desync for a saving
+    #   that install-if-missing already gets almost for free on a persistent
+    #   runner).

@@ -107,9 +107,10 @@ jobs:
           sudo apt-get install -y \
             build-essential curl libpcre2-dev zlib1g-dev
 
-      - name: Cache source tarball
+      - name: Restore build cache (ccache + source + build tree)
         uses: ./.github/actions/build-cache
         with:
+          mode: debug
           nginx-version: ${{ env.NGINX_VERSION }}
 
       - name: Build server and dynamic module

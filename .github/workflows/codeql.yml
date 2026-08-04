@@ -55,13 +55,19 @@ jobs:
           # core -- so upstream nginx sources never enter the database.
 
       # CI-7: reuse the downloaded nginx tarball across runs.
-      - name: Cache source tarball
+      - name: Restore build cache (ccache + source + build tree)
         uses: ./.github/actions/build-cache
         with:
+          mode: module
           nginx-version: ${{ env.NGINX_VERSION }}
 
+      # NO_CACHE=1: CodeQL's tracer only sees a compile that actually invokes
+      # the compiler. ccache serves a hit without running cc, so a warm cache
+      # silently produces a database CodeQL can't populate -- "no source seen
+      # during build" -- while the build itself looks fine. Tracing needs a
+      # real compile every run; ccache and the CodeQL job are incompatible.
       - name: Build traced source (module only)
-        run: bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" module
+        run: NO_CACHE=1 bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" module
 
       - name: Analyze
         uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
