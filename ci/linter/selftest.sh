@@ -19,6 +19,19 @@
 # Extend: add a case() line. Keep each case asserting a specific exit status,
 # and prefer a case where the OLD, broken behaviour would have passed.
 
+# shellcheck disable=SC2016
+# File-scope on purpose. Nearly every case below hands a script to `bash -c`
+# as a SINGLE-QUOTED heredoc-ish literal, and the whole point is that those
+# `$root` / `$tmp` / `$1` expressions are expanded by the INNER shell, not by
+# this one. SC2016 fires on each of them and is wrong in every case here.
+#
+# It is file-scope rather than per-case because a directive attached to one
+# command does not cover a multi-line `bash -c '...'` argument consistently
+# across shellcheck versions: 0.10 (local) accepted a single directive above
+# the case, 0.9 (what build-test.yml installs on ubuntu-latest) still flagged
+# lines inside the quoted body. A per-case directive therefore passes locally
+# and fails in CI -- see lessons.md, the shellcheck severity/version entry.
+
 set -uo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -127,7 +140,6 @@ policy_ 1 verify-after-bind ports
 # asserts the WIRING -- that the wrapper actually calls through and forwards a
 # non-zero exit -- not the trust-boundary logic itself, which is
 # check-workflow-runners.sh's own concern and not re-tested here.
-# shellcheck disable=SC2016
 case_ 1 "lint-ci-runners forwards a failing check-workflow-runners.sh" \
     bash -c '
         set -e
