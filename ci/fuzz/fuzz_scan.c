@@ -46,6 +46,28 @@
  * shipped in production.
  *
  * Build: see fuzz/build.sh (needs nginx source headers under .build/).
+ *
+ * Regression replay -- negative control, observed 2026-08-04.
+ * `./fuzz_scan -runs=0 regressions` is the fast deterministic gate that runs
+ * before the time-boxed fresh run in fuzzing.yml. A gate is only worth its
+ * runtime if a reintroduced past bug actually turns it red, so that was
+ * measured rather than assumed:
+ *
+ *   Mutation: delete `out[v] |= out[f];` from the BFS in
+ *   src/ngx_http_shield_scan.c -- i.e. reintroduce the exact fail-link output
+ *   union bypass that the comment there records as "the detection bypass this
+ *   replaces". A signature accepted only at a fail state stops being reported.
+ *
+ *   Result: the replay stayed GREEN over the two regressions that existed at
+ *   the time (differential-traversal-masked, skip-mask-mod8-pair) -- the
+ *   corpus could not reach a state where a shorter signature accepts at the
+ *   fail state of a longer one. A fresh 120s run caught it in seconds. So the
+ *   replay was NOT a control for this bug class; only the fresh budget was.
+ *
+ *   Fix: the crasher the fresh run produced is committed as
+ *   regressions/ac-fail-link-output-union. With it present the replay exits
+ *   77 under the mutation and 0 with the line restored. Verified in both
+ *   directions before the mutation was reverted.
  */
 
 #include <ngx_config.h>
