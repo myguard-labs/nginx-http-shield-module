@@ -83,4 +83,4 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           bash ci/tools/soak.sh \
-            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" 60 4
+            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-asan/objs/nginx" 60 4

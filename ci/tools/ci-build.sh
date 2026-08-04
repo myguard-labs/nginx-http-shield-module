@@ -13,7 +13,9 @@
 # Every version this script is asked to build must have a matching sha256 in
 # .github/versions.env -- see the integrity block below.
 #
-# The built tree lives under ./.build. On success the paths of interest are:
+# The built tree lives under ./.build, one tree PER MODE so a mode switch
+# never reuses another mode's object files: .build/<flavor>-<version>-<mode>.
+# On success the paths of interest are:
 #   .build/<dir>/objs/nginx                         (server binary)
 #   .build/<dir>/objs/ngx_http_shield_module.so     (debug/module mode)
 #
@@ -64,17 +66,22 @@ ROOT="${BUILD_ROOT:-$PWD/.build}"
 case "$FLAVOR" in
     nginx)
         URL="https://nginx.org/download/nginx-${VERSION}.tar.gz"
-        DIR="nginx-${VERSION}"
+        TARBALL_STEM="nginx-${VERSION}"
         ;;
     angie)
         URL="https://download.angie.software/files/angie-${VERSION}.tar.gz"
-        DIR="angie-${VERSION}"
+        TARBALL_STEM="angie-${VERSION}"
         ;;
     *)
         echo "unsupported flavor: $FLAVOR" >&2
         exit 2
         ;;
 esac
+# The downloaded tarball is shared/cached across modes (identical bytes for a
+# given flavor+version), but the UNPACKED build tree is mode-specific: a
+# shared tree would let a mode switch reuse another mode's stale object
+# files (e.g. a coverage-instrumented .o silently linked into an asan build).
+DIR="${TARBALL_STEM}-${MODE}"
 
 # --- integrity: sha256 pins come from .github/versions.env -----------------
 # nginx.org serves plain HTTP-adjacent PGP signatures, not a sha256sum file, so
@@ -122,16 +129,26 @@ mkdir -p "$ROOT"
 # re-checks a tarball already present in .build/ rather than trusting it, so a
 # poisoned build cache is caught too -- a poisoned Actions cache is exactly as
 # dangerous as a poisoned mirror, and HTTPS stops neither.
+# The tarball itself is cached under its flavor+version stem, shared across
+# modes (identical bytes regardless of mode) -- only the unpacked tree below
+# is mode-specific.
 if ! bash "$MODULE_DIR/.github/scripts/fetch-verify.sh" \
-    "$URL" "$EXPECTED" "$ROOT/${DIR}.tar.gz"; then
+    "$URL" "$EXPECTED" "$ROOT/${TARBALL_STEM}.tar.gz"; then
     # A tarball that fails verification must not survive to be picked up as a
     # "cache hit" by the next run.
-    rm -f "$ROOT/${DIR}.tar.gz"
+    rm -f "$ROOT/${TARBALL_STEM}.tar.gz"
     exit 1
 fi
 
+# Unpack into a mode-specific tree: the tarball's own top-level dir is
+# $TARBALL_STEM (no mode suffix), so extract into a scratch dir and move it
+# into place under $DIR. This is what actually gives each mode its own object
+# files -- extracting straight to $ROOT would collide across modes.
 if [ ! -d "$ROOT/$DIR" ]; then
-    tar -xzf "$ROOT/${DIR}.tar.gz" -C "$ROOT"
+    scratch="$(mktemp -d "$ROOT/.unpack-XXXXXX")"
+    tar -xzf "$ROOT/${TARBALL_STEM}.tar.gz" -C "$scratch"
+    mv "$scratch/$TARBALL_STEM" "$ROOT/$DIR"
+    rmdir "$scratch"
 fi
 
 # --with-cc-opt applies to UPSTREAM CORE as well as to our module, so it must

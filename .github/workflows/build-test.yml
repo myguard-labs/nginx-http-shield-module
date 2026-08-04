@@ -115,7 +115,7 @@ jobs:
       - name: Build server and dynamic module
         run: |
           bash ci/tools/ci-build.sh nginx "$NGINX_VERSION"
-          build=".build/nginx-${NGINX_VERSION}/objs"
+          build=".build/nginx-${NGINX_VERSION}-debug/objs"
           test -f "$build/ngx_http_shield_module.so"
 
       # `-t` alone only proves a single minimal directive parses. `-T` dumps the
@@ -125,7 +125,7 @@ jobs:
       - name: Module directives survive a merged multi-context dump (-T)
         run: |
           set -euo pipefail
-          build="$PWD/.build/nginx-${NGINX_VERSION}"
+          build="$PWD/.build/nginx-${NGINX_VERSION}-debug"
           tp="$RUNNER_TEMP/dumptest"
           mkdir -p "$tp/logs"
           cat > "$tp/nginx.conf" <<EOF
@@ -157,7 +157,7 @@ jobs:
 
       - name: Strict module compile
         run: |
-          build=".build/nginx-${NGINX_VERSION}"
+          build=".build/nginx-${NGINX_VERSION}-debug"
           cflags=$(awk '/^CFLAGS[[:space:]]*=/{sub(/^CFLAGS[[:space:]]*=[[:space:]]*/,""); print; exit}' "$build/objs/Makefile")
           incs=$(awk '/^ALL_INCS[[:space:]]*=/{found=1} found{line=$0; sub(/^ALL_INCS[[:space:]]*=[[:space:]]*/,"",line); continued=(line ~ /\\$/); gsub(/\\$/, "", line); printf "%s ", line; if (!continued) exit}' "$build/objs/Makefile")
           # cflags and incs are compiler flag lists and must word-split.
@@ -230,8 +230,8 @@ jobs:
 
       - name: Run ci/t/
         env:
-          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
-          TEST_NGINX_LOAD_MODULES: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/ngx_http_shield_module.so
+          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}-debug/objs/nginx
+          TEST_NGINX_LOAD_MODULES: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}-debug/objs/ngx_http_shield_module.so
           TEST_NGINX_TIMEOUT: "20"
           # Test::Nginx defaults this to $CWD/t/servroot, which no longer
           # exists now that the suite lives under ci/t/.
@@ -286,7 +286,7 @@ jobs:
 
       - name: Run ci/t/ under ASan and UBSan
         env:
-          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
+          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}-asan/objs/nginx
           TEST_NGINX_TIMEOUT: "30"
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
@@ -426,6 +426,8 @@ jobs:
         run: SAN=$([ "${{ matrix.mode }}" = asan ] && echo 1 || echo 0) bash ci/t/harness/prober/build.sh
 
       - name: Run prober rules
+        env:
+          NGX_BUILD_MODE: ${{ matrix.mode }}
         run: bash ci/t/prober/run.sh "${{ matrix.flavor }}" "$VER"
 
   coverage:
@@ -479,7 +481,7 @@ jobs:
 
       - name: Run ci/t/ (populates .gcda counters)
         env:
-          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}/objs/nginx
+          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/nginx-${{ env.NGINX_VERSION }}-coverage/objs/nginx
           TEST_NGINX_TIMEOUT: "30"
           TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
           TEST_NGINX_PORT: ${{ env.TEST_BASE_PORT }}
@@ -492,6 +494,8 @@ jobs:
         run: bash ci/t/harness/prober/build.sh
 
       - name: Run prober rules (adds fault-injection coverage)
+        env:
+          NGX_BUILD_MODE: coverage
         run: bash ci/t/prober/run.sh nginx "$NGINX_VERSION"
 
       # The ban state engine's multi-node / eviction / window-slide / expiry
@@ -502,6 +506,7 @@ jobs:
       - name: Build and run ban unit harness (gcov)
         env:
           EXTRA_CFLAGS: "--coverage -fprofile-arcs -ftest-coverage"
+          NGX_BUILD_MODE: coverage
         run: bash ci/t/run-ban-unit.sh
 
       # ci/tests/unit's own gcda: the boundary/skip-mask/case-folding values
@@ -511,6 +516,7 @@ jobs:
       - name: Build and run scan-core unit tests (gcov)
         env:
           COVERAGE: 1
+          NGX_BUILD_MODE: coverage
         run: bash ci/tests/unit/run.sh
 
       # Harvest coverage for our translation unit only; upstream nginx .gcda is
@@ -560,6 +566,6 @@ jobs:
       - name: Run ci/tools/test_runtime.py
         run: |
           python3 ci/tools/test_runtime.py \
-            --nginx "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" \
-            --module "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/ngx_http_shield_module.so" \
+            --nginx "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/nginx" \
+            --module "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/ngx_http_shield_module.so" \
             --port "$TEST_BASE_PORT" -v

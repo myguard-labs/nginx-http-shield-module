@@ -21,7 +21,12 @@
 #   bash ci/tools/run-tests.sh nginx 1.31.3 -v  # extra args go to prove
 #   TEST_NGINX_PORT=9999 bash ci/tools/run-tests.sh # honoured, not overridden
 #
-# Needs a build: ci/tools/ci-build.sh <flavor> <version>
+# Needs a build: ci/tools/ci-build.sh <flavor> <version> [mode]
+#
+# NGX_BUILD_MODE selects which per-mode build tree to use (default: debug).
+# Each mode built by ci/tools/ci-build.sh lives in its own tree
+# (.build/<flavor>-<ver>-<mode>/) so a mode switch never reuses another
+# mode's object files.
 
 set -eu
 
@@ -33,22 +38,25 @@ FLAVOR="${1:-nginx}"
 VERSION="${1:-}"
 [ $# -gt 0 ] && shift
 
+NGX_BUILD_MODE="${NGX_BUILD_MODE:-debug}"
+
 # --- Locate the build tree. -------------------------------------------------
 if [ -z "$VERSION" ]; then
-    for d in "$REPO_ROOT"/.build/"$FLAVOR"-*/; do
+    for d in "$REPO_ROOT"/.build/"$FLAVOR"-*-"$NGX_BUILD_MODE"/; do
         [ -d "$d" ] || continue
         v=${d%/}
         v=${v##*/"$FLAVOR"-}
+        v=${v%"-$NGX_BUILD_MODE"}
         case "$v" in *.tar*) continue ;; esac
         VERSION=$v # last glob match wins; single tree in practice
     done
 fi
 if [ -z "$VERSION" ]; then
-    echo "ERROR: no .build/$FLAVOR-* tree; run ci/tools/ci-build.sh $FLAVOR <ver>" >&2
+    echo "ERROR: no .build/$FLAVOR-*-$NGX_BUILD_MODE tree; run ci/tools/ci-build.sh $FLAVOR <ver> $NGX_BUILD_MODE" >&2
     exit 1
 fi
 
-BUILD="$REPO_ROOT/.build/$FLAVOR-$VERSION"
+BUILD="$REPO_ROOT/.build/$FLAVOR-$VERSION-$NGX_BUILD_MODE"
 
 # angie ships objs/angie, nginx ships objs/nginx.
 BIN="$BUILD/objs/nginx"
@@ -57,7 +65,7 @@ MODULE="$BUILD/objs/ngx_http_shield_module.so"
 
 for f in "$BIN" "$MODULE"; do
     if [ ! -e "$f" ]; then
-        echo "ERROR: missing $f -- run: bash ci/tools/ci-build.sh $FLAVOR $VERSION" >&2
+        echo "ERROR: missing $f -- run: bash ci/tools/ci-build.sh $FLAVOR $VERSION $NGX_BUILD_MODE" >&2
         exit 1
     fi
 done
