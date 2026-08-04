@@ -1,3 +1,4 @@
+# sync-sha: 35fc309bcc4ec236d136d5573b65bc7142e39268a06b0f5faf9d17ad625d08a0
 name: Fuzzing
 
 # Fast fuzz regression gate on every PR — 120s on the scan core (normalize +

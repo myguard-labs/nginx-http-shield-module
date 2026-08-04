@@ -1,3 +1,4 @@
+# sync-sha: 9517d0849eaaf9f9e37596c424d0372add5178e6001ec9f08c098a712c089070
 name: Security scanners
 
 # Static/security scanners gate on every PR/push — flawfinder (gate on >=4),

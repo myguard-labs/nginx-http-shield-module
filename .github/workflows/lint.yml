@@ -26,8 +26,17 @@ jobs:
       - name: Install linters
         run: bash ci/linter/install-linters.sh
 
+      - name: Verify CI sync stamps are current
+        # Each stamped .github/ file carries a `# sync-sha:` of its own content,
+        # so a `--list` diff against nginx-skeleton-module names exactly which
+        # copies have drifted. The stamps are only worth reading if they cannot
+        # go stale, hence this gate: edit a workflow without running
+        # ci/tools/sync-stamp.sh and the PR goes red here.
+        run: bash ci/tools/sync-stamp.sh --check
+
       - name: Run ci/linter/ gate
         run: bash ci/linter/run-all.sh
 
       - name: Run ci/linter/ selftest
         run: bash ci/linter/selftest.sh
+# sync-sha: 61bb2fbe8d86418c3201ee9b868f267b0b5d2841b34ceb8401e34665524e6a97

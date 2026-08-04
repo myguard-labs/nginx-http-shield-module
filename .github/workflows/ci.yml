@@ -1,3 +1,4 @@
+# sync-sha: f9f7809382ae888348d7fc01377896d03eefb3aafdc12de40ac0f31ebce4cf90
 # Single entry point for the PR CI suite. This is the ONLY workflow with a
 # `pull_request:` trigger — the member workflows are reachable on a PR solely
 # as `workflow_call:` jobs from here, so each runs exactly once. Adding a

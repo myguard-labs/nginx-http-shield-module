@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# sync-sha: 379703e9e2907527d49803cf99d2a8e1aebf873aea574b075bbfec07244895cb
 # Copyright (C) 2026 Thijs Eilander
 # SPDX-License-Identifier: BSD-2-Clause
 #

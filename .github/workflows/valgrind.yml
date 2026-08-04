@@ -1,3 +1,4 @@
+# sync-sha: cd2f6d1177c0872f9647b46283db14b6324177daa299ffbf8874f24eecae9c19
 name: Valgrind
 
 # Valgrind memcheck lite soak on every PR/push — 60s memcheck of the debug

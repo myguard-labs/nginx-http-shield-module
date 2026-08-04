@@ -1,3 +1,4 @@
+# sync-sha: 4ef0a6075c5790461d5e6fab19765835aa8238ed17e0a42de993478ff4cce139
 name: Build cache
 description: >-
   Restore the ccache + nginx source/build caches for one build mode. Hybrid by
