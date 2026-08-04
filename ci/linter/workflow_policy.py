@@ -323,9 +323,76 @@ def check_docs() -> int:
     )
 
 
+# --------------------------------------------------------------------------
+# cadence
+
+
+def check_cadence() -> int:
+    """A PR-gate workflow must not also fire on push.
+
+    The repo gates on the PR only: the merge commit is identical to the tested
+    PR head, so a post-merge re-run buys nothing and just burns a runner. The
+    trap is that `workflow_call` does NOT suppress a standalone `push:` trigger
+    -- a file can be a well-behaved ci.yml member AND run again on every merge,
+    and the two use different concurrency keys so cancellation does not save it
+    either. Both runs are green, so nothing else in the repo notices.
+
+    Checked structurally rather than by name: any workflow reachable from the
+    `pull_request` entry point via `workflow_call` owes the property. `schedule`
+    is untouched -- a periodic scan (codeql) is not a merge gate.
+    """
+    errors: list[str] = []
+
+    # The PR entry point(s), and what they call. A member is identified by its
+    # `uses: ./.github/workflows/<file>` reference, so this follows the actual
+    # wiring instead of assuming every workflow_call file is a PR member.
+    members: set[str] = set()
+    for path in workflows():
+        doc = load(path)
+        if "pull_request" not in events(doc):
+            continue
+        for _job, node in jobs(doc):
+            uses = node.get("uses")
+            if isinstance(uses, str):
+                members.add(pathlib.PurePosixPath(uses.split("@")[0]).name)
+
+    if not members:
+        raise PolicyError(
+            "no pull_request workflow calls any member -- either the entry "
+            "point moved or this check is looking at the wrong tree; refusing "
+            "to report clean"
+        )
+
+    for path in workflows():
+        if path.name not in members:
+            continue
+        evs = events(load(path))
+        if "push" in evs:
+            errors.append(
+                f"{path.name} is a PR gate (called by the pull_request entry "
+                "point) but also triggers on `push` -- it would run a second "
+                "time on every merge, testing a commit identical to the PR "
+                "head. Drop the `push:` trigger; workflow_call does not "
+                "suppress it."
+            )
+        if "pull_request" in evs:
+            errors.append(
+                f"{path.name} is a called member but also declares its own "
+                "`pull_request` trigger -- that is a second entry point, so a "
+                "PR would run it twice"
+            )
+
+    return report(
+        "lint-ci-cadence",
+        errors,
+        f"{len(members)} PR member(s), none re-running on push",
+    )
+
+
 COMMANDS = {
     "ports": check_ports,
     "docs": check_docs,
+    "cadence": check_cadence,
 }
 
 

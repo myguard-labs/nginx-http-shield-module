@@ -6,7 +6,12 @@
  *
  * Split out of the HTTP module (see ngx_http_shield_ban.h) so it depends only
  * on <ngx_core.h> and can be unit-tested directly with synthetic addresses and
- * a synthetic clock. Every function here runs under a lock the caller holds.
+ * a synthetic clock.
+ *
+ * Every function that touches the shared zone runs under a lock the caller
+ * holds. ngx_http_shield_xff_last_token() is the exception and touches no
+ * shared state at all -- it lives here only because it is byte-level work that
+ * must link outside nginx, the same property that put the ban engine here.
  */
 
 #include "ngx_http_shield_ban.h"

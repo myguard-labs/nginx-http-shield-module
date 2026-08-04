@@ -605,12 +605,12 @@ are no lanes here to document; that's a skeleton-only concept.
 
 | Workflow | Trigger | Gates |
 |---|---|---|
-| `build-test.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
-| `lint.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | `ci/linter/run-all.sh` — shellcheck/shfmt, cppcheck-adjacent C style, Python (ruff), Perl (perlcritic), YAML (yamllint/actionlint), spelling (codespell) and the docs-drift/CI-policy checks below, plus `ci/linter/selftest.sh`'s negative controls on the gate itself |
-| `security-scanners.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), semgrep |
-| `fuzzing.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | 120s libFuzzer run of `fuzz_scan` (real normalize + Aho-Corasick core, differentially checked against a naive reference matcher) plus a 60s run of `fuzz_xff` over the ban-key token parse; each replays its committed corpus first |
-| `valgrind.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |
-| `codeql.yml` | `push` to `main` + monthly + `workflow_dispatch` (PR via `ci.yml`) | CodeQL `security-extended` C/C++ analysis |
+| `build-test.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
+| `lint.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | `ci/linter/run-all.sh` — shellcheck/shfmt, cppcheck-adjacent C style, Python (ruff), Perl (perlcritic), YAML (yamllint/actionlint), spelling (codespell) and the docs-drift/CI-policy checks below, plus `ci/linter/selftest.sh`'s negative controls on the gate itself |
+| `security-scanners.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), semgrep |
+| `fuzzing.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 120s libFuzzer run of `fuzz_scan` (real normalize + Aho-Corasick core, differentially checked against a naive reference matcher) plus a 60s run of `fuzz_xff` over the ban-key token parse; each replays its committed corpus first |
+| `valgrind.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |
+| `codeql.yml` | monthly + `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | CodeQL `security-extended` C/C++ analysis |
 | `asan.yml` | `workflow_call` only (PR via `ci.yml`) | 60s ASan+UBSan request-storm soak against the static build — distinct from `build-test.yml`'s single-pass Test::Nginx-under-sanitizer job |
 | `ci-deep.yml` | monthly + `workflow_dispatch` | 4h fuzz, 10 min Memcheck **and** Helgrind soaks, nginx mainline+stable+angie build matrix |
 | `bump.yml` | weekly + `workflow_dispatch` | checks nginx.org/angie.software for newer pins, moves Action sha pins and linter versions; opens a PR via `BUMP_PR_TOKEN` rather than pushing to `main` directly (a required-pull-request ruleset blocks direct pushes). Unlike the skeleton, this repo has no `ci/vendor/nginx-tests` submodule to update. **`BUMP_PR_TOKEN` is not yet provisioned** for this repo, so the scheduled run fails fast and loud at the token-check step by design — not a bug |

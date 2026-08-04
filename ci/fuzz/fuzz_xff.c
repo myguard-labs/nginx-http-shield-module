@@ -19,9 +19,10 @@
  * but the function does not rely on that and neither does this target.
  *
  * DIFFERENTIAL. xff_naive() below re-derives the same answer by a deliberately
- * different route: it copies the value, splits on commas by walking FORWARD
- * and remembering the last segment, then trims. The shipped implementation
- * scans BACKWARD from the end for the first comma and trims in place. Two
+ * different route: it walks FORWARD over the value remembering the offset after
+ * the last comma, then trims. The shipped implementation scans BACKWARD from
+ * the end for the first comma. Both read the same buffer in place; what differs
+ * is the traversal and the arithmetic (offsets rather than pointers). Two
  * directions over the same grammar should agree on every input; where they do
  * not, one of them mishandles an edge (a trailing comma, an all-whitespace
  * element, an empty value) and libFuzzer records it.

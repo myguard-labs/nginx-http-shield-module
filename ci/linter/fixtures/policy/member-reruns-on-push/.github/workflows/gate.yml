@@ -1,0 +1,12 @@
+---
+name: gate
+# The bypass: a legitimate member that ALSO fires on every merge.
+on:
+  push:
+    branches: [main]
+  workflow_call:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo gate

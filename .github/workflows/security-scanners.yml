@@ -14,8 +14,6 @@ env:
   SEMGREP_VERSION: "1.169.0"
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch: {}
   workflow_call: {}
 
