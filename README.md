@@ -569,8 +569,8 @@ USE_VALGRIND=1 ci/tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
 A failure surfaces as a red run plus the uploaded artifact — no chat
 notifications wired.
 
-Only `ci.yml` has a `pull_request` trigger. The five PR-time workflows below
-are `workflow_call` members it triggers directly — six parallel jobs, no
+Only `ci.yml` has a `pull_request` trigger. The seven PR-time workflows below
+are `workflow_call` members it triggers directly — seven parallel jobs, no
 `needs:` chaining between them, so a PR is one run wide, not a lane map. There
 are no lanes here to document; that's a skeleton-only concept.
 

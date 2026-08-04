@@ -42,7 +42,10 @@ jobs:
           # git ls-files emits one path per line; iterate safely, no glob split.
           while IFS= read -r s; do
             bash -n "$s"
-            shellcheck "$s"
+            # -x follows sourced files (ci/linter/* all source lib.sh), and
+            # must stay identical to ci/linter/lint-sh.sh's invocation -- that
+            # script exists to predict THIS step, so the two move together.
+            shellcheck -x "$s"
             shfmt -i 4 -ci -d "$s"
           done < <(git ls-files '*.sh')
           cppcheck \
