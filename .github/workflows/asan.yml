@@ -1,3 +1,4 @@
+# sync-sha: 0c66503a9020d631567633119890fdd1e408bfbe51323e45d8738bb86fca9db5
 name: ASan soak
 
 # Dedicated ASan+UBSan request-storm soak -- distinct from build-test.yml's

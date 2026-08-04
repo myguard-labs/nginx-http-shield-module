@@ -1,3 +1,4 @@
+# sync-sha: aae7efb85c48480f0a4eb772c4a1418b6e418fcd8d840cd7c950efaa5870afd9
 name: CI Deep
 
 # Exhaustive dynamic analysis — monthly cron + on-demand only, NEVER on PR.
