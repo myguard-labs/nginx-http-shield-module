@@ -10,7 +10,7 @@
 # Usage: ci/linter/lint-sh.sh [files...]   Env: LINT_MODE=staged|all
 # Extend: raise to -S info only together with a pass that fixes the backlog.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 # .githooks/* has no extension but is bash; an unchecked commit hook is the

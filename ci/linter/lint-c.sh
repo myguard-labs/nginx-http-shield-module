@@ -28,7 +28,7 @@
 # Extend: add a scanner as one more block below; keep the CI mirror comment
 # accurate or the header above becomes a lie.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '^src/.*\.[ch]$' "$@")

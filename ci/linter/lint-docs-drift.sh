@@ -24,7 +24,7 @@
 # Usage: ci/linter/lint-docs-drift.sh [files...]   Env: LINT_MODE=staged|all
 # Extend: add a structural fact to check_docs(); resist adding a count.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '^(\.github/workflows/.*\.ya?ml|README\.md)$' "$@")

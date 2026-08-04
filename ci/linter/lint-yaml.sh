@@ -53,7 +53,7 @@
 #                                             LINT_YAML_ZIZMOR=1 (see above)
 # Extend: yamllint rules live in .yamllint at the repo root.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '\.ya?ml$' "$@")

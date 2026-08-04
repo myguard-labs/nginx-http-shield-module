@@ -36,7 +36,7 @@
 #   ci/linter/lint-spelling.sh _p.sh                # expect a finding, exit 65
 #   rm _p.sh
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '.' "$@")

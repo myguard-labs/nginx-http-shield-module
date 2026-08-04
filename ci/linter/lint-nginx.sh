@@ -37,7 +37,7 @@
 #                                              LINT_NGINX_WIDTH=1 (see above)
 # Extend: add a rule as one more `rule <name> <regex> <message>` call.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '^src/.*\.[ch]$' "$@")

@@ -27,7 +27,7 @@
 # A new self-hosted label or workflow needs no change here -- this wrapper
 # only forwards the tool's verdict.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '^\.github/workflows/.*\.ya?ml$' "$@")

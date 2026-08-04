@@ -14,7 +14,7 @@
 # Extend: per-rule config goes in a [tool.ruff] block in pyproject.toml at the
 # repo root, not in flags here, so editors and CI see the same rules.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '\.py$' "$@")

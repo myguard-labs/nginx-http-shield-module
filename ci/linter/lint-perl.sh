@@ -15,7 +15,7 @@
 # Extend: repo-wide policy exceptions belong in a .perlcriticrc at the repo
 # root so editors agree with this script.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '\.(t|pl|pm)$' "$@")

@@ -22,7 +22,7 @@
 # Extend: the band width and the driver's default live in
 # ci/tools/test_runtime.py and ci/tools/max-port.sh; this only checks the wiring.
 
-# shellcheck source=ci/linter/lib.sh
+# shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
 mapfile -t FILES < <(lint_files '^\.github/workflows/.*\.ya?ml$' "$@")

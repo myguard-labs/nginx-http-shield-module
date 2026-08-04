@@ -37,7 +37,9 @@ case_() {
         echo "ok   $desc (exit $got)"
     else
         echo "FAIL $desc: expected exit $want, got $got" >&2
-        echo "$out" | sed 's/^/       | /' >&2
+        while IFS= read -r outline; do
+            printf '       | %s\n' "$outline" >&2
+        done <<<"$out"
         rc=1
     fi
 }
