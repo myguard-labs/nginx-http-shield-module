@@ -5,9 +5,10 @@
  * ngx_shield_probe_hooks.c -- shield's module-specific half of the test probe.
  *
  * Everything generic -- flavor, pid, connections, fds, cycle-pool stats, the
- * zone's name/size/slab page accounting, and the whole fault_slab= query parser
- * -- now comes from ci/t/harness (nginx-test-harness). What remains here is only
- * what a generic probe cannot know: the SEMANTICS of shield's shared memory.
+ * zone's name/size/slab page accounting, and the whole fault_slab= query
+ * parser -- now comes from ci/t/harness (nginx-test-harness). What remains
+ * here is only what a generic probe cannot know: the SEMANTICS of shield's
+ * shared memory.
  *
  * Two hooks, matching ngx_test_probe_hooks_t:
  *

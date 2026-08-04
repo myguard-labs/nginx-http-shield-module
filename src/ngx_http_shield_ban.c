@@ -4,9 +4,9 @@
  *
  * ngx_http_shield_ban.c -- shared-memory state engine for shield_ban.
  *
- * Split out of the HTTP module (see ngx_http_shield_ban.h) so it depends only on
- * <ngx_core.h> and can be unit-tested directly with synthetic addresses and a
- * synthetic clock. Every function here runs under a lock the caller holds.
+ * Split out of the HTTP module (see ngx_http_shield_ban.h) so it depends only
+ * on <ngx_core.h> and can be unit-tested directly with synthetic addresses and
+ * a synthetic clock. Every function here runs under a lock the caller holds.
  */
 
 #include "ngx_http_shield_ban.h"
@@ -161,28 +161,28 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
      * window. A node is skipped (not evicted) when either deadline is still in
      * the future.
      *
-     * We must NOT stop at the first live node. The tail is LRU-oldest by *touch*
-     * time, but "oldest touched" is not "soonest to expire": a below-threshold
-     * node under a long window can be touched-older yet expire later than a
-     * banned node under a short bantime. Evicting a below-threshold node that
-     * still has a live window would let an attacker defeat the ban by rotating
-     * source addresses to keep the zone at the eviction margin -- no single IP
-     * ever accumulates enough hits to arm (S27-1). So we scan past live nodes
-     * looking for a stale one.
+     * We must NOT stop at the first live node. The tail is LRU-oldest by
+     * *touch* time, but "oldest touched" is not "soonest to expire": a
+     * below-threshold node under a long window can be touched-older yet expire
+     * later than a banned node under a short bantime. Evicting a
+     * below-threshold node that still has a live window would let an attacker
+     * defeat the ban by rotating source addresses to keep the zone at the
+     * eviction margin -- no single IP ever accumulates enough hits to arm
+     * (S27-1). So we scan past live nodes looking for a stale one.
      *
      * Two separate budgets, not one shared iteration cap. If a single "scan up
      * to N" cap counted skips and evictions together, a cluster of >=N live
      * nodes at the tail would consume the whole cap on skips and the call would
-     * reclaim nothing even though stale nodes sit just past them. So SCAN bounds
-     * how far we look and EVICT bounds how many we actually free.
+     * reclaim nothing even though stale nodes sit just past them. So SCAN
+     * bounds how far we look and EVICT bounds how many we actually free.
      *
      * That split is still not sufficient on its own: a live cluster LARGER than
-     * SCAN parked at the tail exhausts the scan budget on skips, and because the
-     * walk restarts at the same tail every call, the zone can never reclaim --
-     * new attackers stop being recorded and the ban fails OPEN (S30-1). Banned
-     * nodes form exactly such a cluster: they are only touched while they keep
-     * sending, and under the documented count=5 window=1m bantime=1h they stay
-     * live 60x longer than a counting node.
+     * SCAN parked at the tail exhausts the scan budget on skips, and because
+     * the walk restarts at the same tail every call, the zone can never reclaim
+     * -- new attackers stop being recorded and the ban fails OPEN (S30-1).
+     * Banned nodes form exactly such a cluster: they are only touched while
+     * they keep sending, and under the documented count=5 window=1m bantime=1h
+     * they stay live 60x longer than a counting node.
      *
      * The previous fix ROTATED every skipped live node to the LRU head, so the
      * next call would start on unexamined nodes. That works only while nothing
@@ -197,8 +197,9 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
      * records where the last call stopped, and the next call RESUMES there
      * instead of restarting at the tail. Nodes the cursor has already passed
      * are not re-examined until it wraps, whatever traffic does to the ordering
-     * in the meantime. Rotation is gone with it: skipping is a read again, which
-     * also retires the S32-5 note about rotation dirtying shm under the mutex.
+     * in the meantime. Rotation is gone with it: skipping is a read again,
+     * which also retires the S32-5 note about rotation dirtying shm under the
+     * mutex.
      *
      * The cursor is a pointer INTO the queue, so it must never be left pointing
      * at freed memory. ONE rule keeps that true, and it is the store at the end
@@ -225,7 +226,8 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
 
     if (q == ngx_queue_sentinel(&ctx->sh->queue)) {
         q = ngx_queue_last(&ctx->sh->queue);
-        wrapped = 1;   /* already starting from the tail; nothing left to wrap */
+        wrapped = 1;   /* already starting from the tail; nothing left
+                        to wrap */
     }
 
     while (scanned < NGX_HTTP_SHIELD_BAN_EXPIRE_SCAN
@@ -236,9 +238,9 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
              * order, but without this it would still be SENSITIVE to it:
              * ban_lookup() re-heads any node on a hit, including the one the
              * cursor is parked on, so a call can resume near the head, run out
-             * of queue, and return with most of its SCAN budget unspent. Wrap to
-             * the tail and spend the remainder here instead of deferring it to
-             * the next call.
+             * of queue, and return with most of its SCAN budget unspent. Wrap
+             * to the tail and spend the remainder here instead of deferring it
+             * to the next call.
              *
              * EFFICIENCY, not correctness: reclaim already completed without
              * this, because a call that ends at the sentinel still parks there
@@ -272,18 +274,18 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
          * live config always governs, and a reload takes effect at once.
          *
          * The two clocks are EXCLUSIVE, not OR-ed. An armed node is governed by
-         * banned_until alone; only an unarmed (counting) node is governed by its
-         * window. Deriving the deadline made window_start load-bearing for
-         * eviction, but ban_record_locked still stamps `window_start = now` when
-         * it arms -- there purely to reset the counter cleanly. OR-ing the two
-         * therefore let that counter-hygiene write silently re-arm a SECOND
-         * liveness clock, and the node's real lifetime became
-         * max(bantime, window) instead of bantime: with count=1 window=1000
-         * bantime=100 the ban lapsed at t=100 but the node stayed unevictable
-         * until t=1100, 11x bantime, on any config where window > bantime
-         * (nothing validates against one). Checking banned_until FIRST and
-         * falling through to the window only when the node is unarmed keeps each
-         * node under exactly one deadline (S32-1).
+         * banned_until alone; only an unarmed (counting) node is governed by
+         * its window. Deriving the deadline made window_start load-bearing for
+         * eviction, but ban_record_locked still stamps `window_start = now`
+         * when it arms -- there purely to reset the counter cleanly. OR-ing the
+         * two therefore let that counter-hygiene write silently re-arm a SECOND
+         * liveness clock, and the node's real lifetime became max(bantime,
+         * window) instead of bantime: with count=1 window=1000 bantime=100 the
+         * ban lapsed at t=100 but the node stayed unevictable until t=1100, 11x
+         * bantime, on any config where window > bantime (nothing validates
+         * against one). Checking banned_until FIRST and falling through to the
+         * window only when the node is unarmed keeps each node under exactly
+         * one deadline (S32-1).
          *
          * `now < bn->window_start` mirrors the same guard in record(): a
          * backward wall-clock step would otherwise leave a window_start in the
@@ -397,18 +399,19 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
      * future and quietly widen the hit-count leniency window. */
     /* Retire a LAPSED ban as soon as we see one, INDEPENDENT of the window roll
      * below. banned_until is what marks a node "armed" for eviction purposes
-     * (see ban_expire), so a stale past value keeps the node off the window arm:
-     * an address that was banned once and came back would be counting under a
-     * window that ban_expire no longer honours, and could be evicted mid-count
-     * -- the eviction-bypass shape from S27-1, reachable a second way.
+     * (see ban_expire), so a stale past value keeps the node off the window
+     * arm: an address that was banned once and came back would be counting
+     * under a window that ban_expire no longer honours, and could be evicted
+     * mid-count -- the eviction-bypass shape from S27-1, reachable a second
+     * way.
      *
-     * This must NOT be folded into the window-roll branch below. When
-     * ban_time < window the ban lapses INSIDE the current window, so a return
-     * between banned_until and window_start + window rolls nothing and would
-     * leave the stale armed state in place for the rest of the window -- exactly
-     * the interval in which the node is rebuilding its hit count and most needs
-     * the window arm. A still-live ban is left alone: ban_expire keeps that node
-     * on banned_until, which is the whole point of the S32-1 split. */
+     * This must NOT be folded into the window-roll branch below. When ban_time
+     * < window the ban lapses INSIDE the current window, so a return between
+     * banned_until and window_start + window rolls nothing and would leave the
+     * stale armed state in place for the rest of the window -- exactly the
+     * interval in which the node is rebuilding its hit count and most needs the
+     * window arm. A still-live ban is left alone: ban_expire keeps that node on
+     * banned_until, which is the whole point of the S32-1 split. */
     if (bn->banned_until != 0 && bn->banned_until <= now) {
         bn->banned_until = 0;
     }
