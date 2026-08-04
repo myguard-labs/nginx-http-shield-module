@@ -587,6 +587,21 @@ are no lanes here to document; that's a skeleton-only concept.
 | `bump.yml` | weekly + `workflow_dispatch` | checks nginx.org/angie.software for newer pins, moves Action sha pins and linter versions; opens a PR via `BUMP_PR_TOKEN` rather than pushing to `main` directly (a required-pull-request ruleset blocks direct pushes). Unlike the skeleton, this repo has no `ci/vendor/nginx-tests` submodule to update. **`BUMP_PR_TOKEN` is not yet provisioned** for this repo, so the scheduled run fails fast and loud at the token-check step by design — not a bug |
 | `ci/tools/check-workflow-runners.sh` | pre-commit + local gate (no workflow, no badge) | enforces the runner trust boundary: fails the build if any `pull_request`-triggered workflow is set to run on a self-hosted runner, since that would hand a fork PR author code execution on the build host |
 
+### Build caching
+
+`build-test.yml`'s `build` job and `codeql.yml` restore a ccache + per-mode
+build-tree cache via `.github/actions/build-cache` before calling
+`ci/tools/ci-build.sh` (`NO_CACHE=1` for `codeql.yml` — ccache serves a hit
+without invoking the compiler, which CodeQL's tracer can't see, so that job
+always builds cold). On a warm second run of the same ref, `configure` is
+skipped outright (stamped against the exact argv) and object compiles are
+served from ccache — locally, a same-mode rebuild after touching a source
+file went from a ~4.3s build to a ~0.06s no-op. The other build jobs
+(`test-nginx`, `asan`, `ban-unit`, `prober`, `coverage`, `runtime-tests`) call
+`ci-build.sh` directly and are not wired to this action yet. `apt`/`dpkg`
+package state is deliberately never cached — see the comment in
+`.github/actions/build-cache/action.yml`.
+
 ## See also
 
 - [nginx-http-shield-module: Block Ancient Exploits Without a WAF](https://deb.myguard.nl/articles/nginx-http-shield-module/)

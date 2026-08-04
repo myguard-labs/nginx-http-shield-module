@@ -63,6 +63,11 @@ case "$MODE" in
 esac
 ROOT="${BUILD_ROOT:-$PWD/.build}"
 
+# NO_CACHE=1 forces a genuine from-scratch build: wipe the mode-specific tree
+# below and skip every cache-shortcut (ccache/mold/eatmydata/configure-stamp)
+# added further down. Opt-out, not opt-in -- default behaviour is unchanged.
+NO_CACHE="${NO_CACHE:-0}"
+
 case "$FLAVOR" in
     nginx)
         URL="https://nginx.org/download/nginx-${VERSION}.tar.gz"
@@ -140,6 +145,12 @@ if ! bash "$MODULE_DIR/.github/scripts/fetch-verify.sh" \
     exit 1
 fi
 
+# NO_CACHE=1: drop the mode-specific tree so the unpack below is genuinely
+# from scratch, not a reuse of whatever objs/ is already sitting there.
+if [ "$NO_CACHE" = "1" ]; then
+    rm -rf "${ROOT:?}/$DIR"
+fi
+
 # Unpack into a mode-specific tree: the tarball's own top-level dir is
 # $TARBALL_STEM (no mode suffix), so extract into a scratch dir and move it
 # into place under $DIR. This is what actually gives each mode its own object
@@ -208,13 +219,72 @@ if [ "$FLAVOR" = "angie" ]; then
     BIN="angie"
 fi
 
+# --- ccache ---------------------------------------------------------------
+# nginx's configure IGNORES a bare `CC=` env var, so the usual `CC="ccache cc"`
+# trick silently does nothing here -- it must go through --with-cc. That is the
+# difference between a warm cache and a cache that never gets a single hit.
+BASE_CC="${CC:-cc}"
+WITH_CC="$BASE_CC"
+if [ "$NO_CACHE" != "1" ] && command -v ccache >/dev/null 2>&1; then
+    WITH_CC="ccache $BASE_CC"
+    # Compiler identity is content-hashed, so a toolchain bump invalidates
+    # correctly on its own; no manual key bumping needed.
+    export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"
+    export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-2G}"
+    # Sanitizer/coverage flags are part of the hash, so an asan or coverage
+    # object can never be served to a debug build (or vice versa) -- belt and
+    # braces alongside the per-mode tree.
+    export CCACHE_COMPILERCHECK=content
+    ccache --set-config=max_size="$CCACHE_MAXSIZE" 2>/dev/null || true
+fi
+
+# --- mold -------------------------------------------------------------------
+# Skipped under asan: the sanitizer runtimes want the default linker.
+if [ "$NO_CACHE" != "1" ] && [ "$MODE" != "asan" ] &&
+    command -v mold >/dev/null 2>&1; then
+    LD_OPT="$LD_OPT -fuse-ld=mold"
+fi
+
 cd "$ROOT/$DIR"
 
-./configure \
-    --with-compat \
-    --with-cc-opt="$CC_OPT" \
-    --with-ld-opt="$LD_OPT" \
-    "$ADD_MODULE"
+# --- configure skip ---------------------------------------------------------
+# configure is several seconds of SERIAL shell that ccache cannot touch. Skip
+# it when the resulting objs/Makefile was produced by an identical invocation.
+# Keying on the exact argv (not just mode/version) is what makes this safe:
+# change any flag -- including TEST_HARNESS's -DNGX_TEST_HARNESS, which is
+# folded into CC_OPT above -- change the stamp, get a reconfigure.
+CONF_ARGS="--with-compat --with-cc=${WITH_CC} --with-cc-opt=${CC_OPT} --with-ld-opt=${LD_OPT} ${ADD_MODULE}"
+STAMP="objs/.conf-stamp"
+
+# --- eatmydata ----------------------------------------------------------
+# Wraps ./configure ONLY -- never `make`: the compiled objects are what the
+# build-tree/ccache layers actually persist and later restore into other
+# jobs, so durability matters there. configure's own tiny writes+fsyncs
+# (probe files, autoconf.err, Makefile fragments) touch only scratch under
+# objs/, rebuilt from src/ on any failure.
+# Skipped under asan for a harder reason than mold's: eatmydata works by
+# LD_PRELOAD-ing libeatmydata.so, and an ASan-instrumented binary aborts
+# unless the ASan runtime is first in the preload list -- every one of
+# configure's probe binaries is instrumented in asan mode, so they all die at
+# startup and configure reports the symptom rather than the cause.
+EATMYDATA=""
+if [ "$NO_CACHE" != "1" ] && [ "$MODE" != "asan" ] &&
+    command -v eatmydata >/dev/null 2>&1; then
+    EATMYDATA="eatmydata"
+fi
+
+if [ "$NO_CACHE" != "1" ] && [ -f objs/Makefile ] && [ -f "$STAMP" ] &&
+    [ "$(cat "$STAMP")" = "$CONF_ARGS" ]; then
+    echo "configure: cached (identical flags) -- skipping"
+else
+    $EATMYDATA ./configure \
+        --with-compat \
+        --with-cc="$WITH_CC" \
+        --with-cc-opt="$CC_OPT" \
+        --with-ld-opt="$LD_OPT" \
+        "$ADD_MODULE"
+    printf '%s' "$CONF_ARGS" >"$STAMP"
+fi
 
 case "$MODE" in
     asan | coverage)
@@ -233,3 +303,12 @@ case "$MODE" in
         echo "built: $ROOT/$DIR/objs/$BIN"
         ;;
 esac
+
+# A cache that silently stops hitting is worse than no cache: you keep paying
+# for it (keys, restore steps, disk) and get nothing back. Print the hit rate
+# so a regression is visible in the job log instead of invisible.
+if [ "$NO_CACHE" != "1" ] && command -v ccache >/dev/null 2>&1; then
+    echo "--- ccache"
+    ccache --show-stats 2>/dev/null |
+        grep -Ei 'hits|misses|cache size' || true
+fi
