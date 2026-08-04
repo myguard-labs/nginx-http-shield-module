@@ -64,7 +64,7 @@
  *   fail state of a longer one. A fresh 120s run caught it in seconds. So the
  *   replay was NOT a control for this bug class; only the fresh budget was.
  *
- *   Fix: the crasher the fresh run produced is committed as
+ *   Fix: the crasher the fresh run produced is committed as  (codespell:ignore crasher)
  *   regressions/ac-fail-link-output-union. With it present the replay exits
  *   77 under the mutation and 0 with the line restored. Verified in both
  *   directions before the mutation was reverted.

@@ -34,17 +34,17 @@ spec.loader.exec_module(mod)
         ("8.8.8.8", True),
         ("1.2.3.4", True),
         ("2606:4700:4700::1111", True),
-        ("10.0.0.1", False),          # RFC1918
-        ("192.168.1.1", False),       # RFC1918
-        ("172.16.5.5", False),        # RFC1918
-        ("127.0.0.1", False),         # loopback
-        ("169.254.0.1", False),       # link-local
-        ("::1", False),               # loopback v6
-        ("fe80::1", False),           # link-local v6
-        ("fd00::1", False),           # ULA (private v6)
-        ("0.0.0.0", False),           # unspecified
-        ("224.0.0.1", False),         # multicast
-        ("not-an-ip", False),         # garbage
+        ("10.0.0.1", False),  # RFC1918
+        ("192.168.1.1", False),  # RFC1918
+        ("172.16.5.5", False),  # RFC1918
+        ("127.0.0.1", False),  # loopback
+        ("169.254.0.1", False),  # link-local
+        ("::1", False),  # loopback v6
+        ("fe80::1", False),  # link-local v6
+        ("fd00::1", False),  # ULA (private v6)
+        ("0.0.0.0", False),  # unspecified
+        ("224.0.0.1", False),  # multicast
+        ("not-an-ip", False),  # garbage
         ("", False),
     ],
 )
@@ -134,7 +134,7 @@ def test_sanitize_req_asterisk_form():
 def test_sanitize_req_length_caps():
     long_seg = "/" + "a" * 5000
     out = mod.sanitize_req("GET " + long_seg + "?x=1")
-    method, path = out.split(" ", 1)
+    _method, path = out.split(" ", 1)
     assert len(path) <= 128
 
 
@@ -142,8 +142,12 @@ def test_sanitize_req_length_caps():
 # build_comment
 # --------------------------------------------------------------------------- #
 def test_build_comment_shape_and_no_query_leak():
-    entry = {"cat": "sqli", "src": "uri",
-             "req": "GET /x?password=hunter2 HTTP/1.1", "ip": "8.8.8.8"}
+    entry = {
+        "cat": "sqli",
+        "src": "uri",
+        "req": "GET /x?password=hunter2 HTTP/1.1",
+        "ip": "8.8.8.8",
+    }
     c = mod.build_comment(entry)
     assert c.startswith("nginx-http-shield: sqli attack in uri; GET /x")
     assert "hunter2" not in c
@@ -169,10 +173,10 @@ def test_suppressor_dedup_window():
     assert ok
     sup.record("8.8.8.8", now=1000.0)
 
-    ok, why = sup.allow("8.8.8.8", now=1000.0 + 899)   # inside window
+    ok, why = sup.allow("8.8.8.8", now=1000.0 + 899)  # inside window
     assert not ok and why == "deduped"
 
-    ok, _ = sup.allow("8.8.8.8", now=1000.0 + 901)      # past window
+    ok, _ = sup.allow("8.8.8.8", now=1000.0 + 901)  # past window
     assert ok
 
 
@@ -190,7 +194,7 @@ def test_suppressor_daily_cap():
         ok, _ = sup.allow(f"8.8.8.{i}", now)
         assert ok
         sup.record(f"8.8.8.{i}", now)
-        now += 10          # past the 1s window so dedup doesn't interfere
+        now += 10  # past the 1s window so dedup doesn't interfere
     ok, why = sup.allow("8.8.8.9", now)
     assert not ok and why == "daily-cap"
 
@@ -198,7 +202,7 @@ def test_suppressor_daily_cap():
 def test_suppressor_day_roll_resets_count():
     sup = mod.Suppressor(window_s=1, daily_cap=1)
     # day 0
-    day0 = 0.0                         # 1970-01-01 UTC
+    day0 = 0.0  # 1970-01-01 UTC
     ok, _ = sup.allow("8.8.8.8", day0)
     assert ok
     sup.record("8.8.8.8", day0)
@@ -213,7 +217,7 @@ def test_suppressor_day_roll_resets_count():
 def test_suppressor_persists_across_restart(tmp_path):
     state = str(tmp_path / "suppress.json")
     sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
-    sup.allow("8.8.8.8", now=1000.0)     # sets _day (real call order)
+    sup.allow("8.8.8.8", now=1000.0)  # sets _day (real call order)
     sup.record("8.8.8.8", now=1000.0)
     assert os.path.exists(state)
 
@@ -229,8 +233,8 @@ def test_suppressor_record_without_allow_sets_day(tmp_path):
     # else state persists day=null and reload wipes count/window on day-roll.
     state = str(tmp_path / "suppress.json")
     sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
-    sup.record("8.8.8.8", now=1000.0)     # no allow() first
-    assert sup._day == "1970-01-01"       # now=1000.0 -> that UTC day, stamped
+    sup.record("8.8.8.8", now=1000.0)  # no allow() first
+    assert sup._day == "1970-01-01"  # now=1000.0 -> that UTC day, stamped
 
     sup2 = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
     # same day on reload -> count/window survive, not wiped
@@ -262,10 +266,12 @@ def test_suppressor_prune_bounds_map():
 # --------------------------------------------------------------------------- #
 def test_reporter_dry_run_sends_nothing():
     r = mod.Reporter(api_key="", timeout=1.0, dry_run=True)
-    outcome, detail = r.report("8.8.8.8", [21], "c", "2026-01-01T00:00:00+00:00", now=0.0)
+    outcome, detail = r.report(
+        "8.8.8.8", [21], "c", "2026-01-01T00:00:00+00:00", now=0.0
+    )
     assert outcome == mod.Reporter.OK
     assert detail.startswith("dry-run ")
-    payload = json.loads(detail[len("dry-run "):])
+    payload = json.loads(detail[len("dry-run ") :])
     assert payload["ip"] == "8.8.8.8"
     assert payload["categories"] == "21"
     assert payload["timestamp"] == "2026-01-01T00:00:00+00:00"
@@ -276,11 +282,11 @@ def test_reporter_backoff_grows_and_resets():
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     r._note_failure(now=0.0, retry_after=None)
     first = r.in_cooldown(now=0.0)
-    assert first == mod.Reporter.BACKOFF_BASE           # 5s
+    assert first == mod.Reporter.BACKOFF_BASE  # 5s
 
     r._note_failure(now=0.0, retry_after=None)
     second = r.in_cooldown(now=0.0)
-    assert second == mod.Reporter.BACKOFF_BASE * 2       # 10s
+    assert second == mod.Reporter.BACKOFF_BASE * 2  # 10s
 
     # capped
     for _ in range(20):
@@ -341,7 +347,7 @@ def test_parse_retry_after_past_http_date_is_zero():
     assert mod._parse_retry_after(when, now=now) == 0.0
 
 
-def test_parse_retry_after_unparseable_is_none():
+def test_parse_retry_after_unparsable_is_none():
     for bad in (None, "", "   ", "soon", "-30", "12.5", "Wed, 99 Xxx 9999"):
         assert mod._parse_retry_after(bad, now=0.0) is None
 
@@ -362,14 +368,18 @@ def test_reporter_429_unicode_retry_after_does_not_crash(monkeypatch):
 
     def boom(req, timeout):
         raise urllib.error.HTTPError(
-            mod.API_URL, 429, "Too Many",
-            {"Retry-After": "²"}, _FakeBody(b'{"errors":[]}'))
+            mod.API_URL,
+            429,
+            "Too Many",
+            {"Retry-After": "²"},
+            _FakeBody(b'{"errors":[]}'),
+        )
 
     monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     outcome, _ = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.RETRY
-    # Unparseable Retry-After -> exponential backoff base, not a stall/crash.
+    # Unparsable Retry-After -> exponential backoff base, not a stall/crash.
     assert r.in_cooldown(now=0.0) == mod.Reporter.BACKOFF_BASE
 
 
@@ -382,10 +392,17 @@ def test_noredirect_refuses_every_3xx():
     h = mod._NoRedirect()
     req = mod.urllib.request.Request(mod.API_URL, method="POST")
     for code in (301, 302, 303, 307, 308):
-        assert h.redirect_request(
-            req, _FakeBody(b""), code, "redir",
-            {"Location": "https://evil.example/"},
-            "https://evil.example/") is None
+        assert (
+            h.redirect_request(
+                req,
+                _FakeBody(b""),
+                code,
+                "redir",
+                {"Location": "https://evil.example/"},
+                "https://evil.example/",
+            )
+            is None
+        )
 
 
 def test_reporter_redirect_is_dropped_key_not_resent(monkeypatch):
@@ -401,14 +418,18 @@ def test_reporter_redirect_is_dropped_key_not_resent(monkeypatch):
         # proving the guard fires BEFORE any redirect target could receive it.
         assert req.get_header("Key") == "k"
         raise urllib.error.HTTPError(
-            mod.API_URL, 302, "Found",
-            {"Location": "https://evil.example/"}, _FakeBody(b""))
+            mod.API_URL,
+            302,
+            "Found",
+            {"Location": "https://evil.example/"},
+            _FakeBody(b""),
+        )
 
     monkeypatch.setattr(mod._OPENER, "open", redir)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     outcome, _ = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.DROP
-    assert r.in_cooldown(now=0.0) == 0.0     # DROP sets no cooldown
+    assert r.in_cooldown(now=0.0) == 0.0  # DROP sets no cooldown
 
 
 def test_reporter_429_http_date_retry_after(monkeypatch):
@@ -419,9 +440,12 @@ def test_reporter_429_http_date_retry_after(monkeypatch):
 
     def boom(req, timeout):
         raise urllib.error.HTTPError(
-            mod.API_URL, 429, "Too Many",
+            mod.API_URL,
+            429,
+            "Too Many",
             {"Retry-After": "Wed, 21 Oct 2015 07:29:00 GMT"},
-            _FakeBody(b'{"errors":[]}'))
+            _FakeBody(b'{"errors":[]}'),
+        )
 
     monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
@@ -434,8 +458,13 @@ def test_reporter_429_is_retry_with_cooldown(monkeypatch):
     import urllib.error
 
     def boom(req, timeout):
-        raise urllib.error.HTTPError(mod.API_URL, 429, "Too Many", {"Retry-After": "30"},
-                                     _FakeBody(b'{"errors":[]}'))
+        raise urllib.error.HTTPError(
+            mod.API_URL,
+            429,
+            "Too Many",
+            {"Retry-After": "30"},
+            _FakeBody(b'{"errors":[]}'),
+        )
 
     monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
@@ -452,9 +481,11 @@ def test_reporter_permanent_4xx_is_dropped(monkeypatch):
     import urllib.error
 
     for code in (400, 401, 403, 422):
+
         def boom(req, timeout, _code=code):
-            raise urllib.error.HTTPError(mod.API_URL, _code, "Bad", {},
-                                         _FakeBody(b'{"errors":[]}'))
+            raise urllib.error.HTTPError(
+                mod.API_URL, _code, "Bad", {}, _FakeBody(b'{"errors":[]}')
+            )
 
         monkeypatch.setattr(mod._OPENER, "open", boom)
         r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
@@ -473,8 +504,7 @@ def test_reporter_3xx_is_dropped(monkeypatch):
     import urllib.error
 
     def boom(req, timeout):
-        raise urllib.error.HTTPError(mod.API_URL, 302, "Found", {},
-                                     _FakeBody(b'{}'))
+        raise urllib.error.HTTPError(mod.API_URL, 302, "Found", {}, _FakeBody(b"{}"))
 
     monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
@@ -490,8 +520,9 @@ def test_reporter_5xx_is_retry(monkeypatch):
     import urllib.error
 
     def boom(req, timeout):
-        raise urllib.error.HTTPError(mod.API_URL, 503, "Down", {},
-                                     _FakeBody(b'{"errors":[]}'))
+        raise urllib.error.HTTPError(
+            mod.API_URL, 503, "Down", {}, _FakeBody(b'{"errors":[]}')
+        )
 
     monkeypatch.setattr(mod._OPENER, "open", boom)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
@@ -520,7 +551,7 @@ def test_reporter_success_clears_cooldown(monkeypatch):
         return _FakeResp(b'{"data":{"abuseConfidenceScore":42}}')
 
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
-    r._note_failure(now=0.0, retry_after=None)          # arm a cooldown
+    r._note_failure(now=0.0, retry_after=None)  # arm a cooldown
     monkeypatch.setattr(mod._OPENER, "open", okresp)
     outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.OK
@@ -536,7 +567,7 @@ def test_offset_roundtrip(tmp_path):
     log = str(tmp_path / "shield.json")
     Path(log).write_text("")
 
-    assert mod.load_offset(state, log) == (0, -1)       # nothing saved yet
+    assert mod.load_offset(state, log) == (0, -1)  # nothing saved yet
     mod.save_offset(state, log, offset=1234, inode=99)
     assert mod.load_offset(state, log) == (1234, 99)
 
@@ -565,8 +596,15 @@ def test_process_line_reports_and_records():
     sup = mod.Suppressor(window_s=900, daily_cap=1000)
     r = _dry_reporter()
     logs = []
-    entry = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "src": "uri",
-                        "req": "GET /x?p=1 HTTP/1.1", "ts": "2026-01-01T00:00:00+00:00"})
+    entry = json.dumps(
+        {
+            "ip": "8.8.8.8",
+            "cat": "sqli",
+            "src": "uri",
+            "req": "GET /x?p=1 HTTP/1.1",
+            "ts": "2026-01-01T00:00:00+00:00",
+        }
+    )
     done = mod.process_line(entry, sup, r, now=1000.0, log=logs.append)
     assert done is True
     # recorded -> a repeat is now deduped
@@ -581,7 +619,7 @@ def test_process_line_skips_private_ip():
     entry = json.dumps({"ip": "10.0.0.5", "cat": "sqli", "req": "GET /x"})
     done = mod.process_line(entry, sup, r, now=1000.0, log=lambda m: None)
     assert done is True
-    assert sup._count == 0          # never recorded
+    assert sup._count == 0  # never recorded
 
 
 def test_process_line_malformed_json_dropped():
@@ -589,7 +627,7 @@ def test_process_line_malformed_json_dropped():
     r = _dry_reporter()
     logs = []
     done = mod.process_line("{ not json", sup, r, now=1000.0, log=logs.append)
-    assert done is True             # dropped, not retried
+    assert done is True  # dropped, not retried
     assert any("malformed JSON" in m for m in logs)
 
 
@@ -605,11 +643,12 @@ def test_process_line_deduped_not_retried():
     r = _dry_reporter()
     entry = json.dumps({"ip": "8.8.8.8", "cat": "xss", "req": "GET /x"})
     done = mod.process_line(entry, sup, r, now=1000.0 + 10, log=lambda m: None)
-    assert done is True             # deduped -> dropped, offset advances
+    assert done is True  # deduped -> dropped, offset advances
 
 
 def test_process_line_send_failure_retried(monkeypatch):
     import urllib.error
+
     sup = mod.Suppressor(window_s=900, daily_cap=1000)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
 
@@ -620,8 +659,8 @@ def test_process_line_send_failure_retried(monkeypatch):
     logs = []
     entry = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"})
     done = mod.process_line(entry, sup, r, now=1000.0, log=logs.append)
-    assert done is False            # must be retried -> offset kept
-    assert sup._count == 0          # NOT recorded (at-least-once delivery)
+    assert done is False  # must be retried -> offset kept
+    assert sup._count == 0  # NOT recorded (at-least-once delivery)
     assert any("FAILED" in m for m in logs)
 
 
@@ -629,20 +668,22 @@ def test_process_line_permanent_4xx_advances(monkeypatch):
     # A permanent 4xx must advance the offset (return True) so the daemon does
     # not wedge on a poison record -- but must NOT record it as a sent report.
     import urllib.error
+
     sup = mod.Suppressor(window_s=900, daily_cap=1000)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
 
     def boom(req, timeout):
-        raise urllib.error.HTTPError(mod.API_URL, 422, "Unprocessable", {},
-                                     _FakeBody(b'{"errors":[]}'))
+        raise urllib.error.HTTPError(
+            mod.API_URL, 422, "Unprocessable", {}, _FakeBody(b'{"errors":[]}')
+        )
 
     monkeypatch.setattr(mod._OPENER, "open", boom)
     logs = []
     entry = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"})
     done = mod.process_line(entry, sup, r, now=1000.0, log=logs.append)
-    assert done is True             # advance past the poison record
-    assert sup._count == 0          # not counted as a real report
-    assert r.in_cooldown(now=1000.0) == 0.0     # no queue-wide stall
+    assert done is True  # advance past the poison record
+    assert sup._count == 0  # not counted as a real report
+    assert r.in_cooldown(now=1000.0) == 0.0  # no queue-wide stall
     assert any("DROP" in m for m in logs)
 
 
@@ -695,6 +736,7 @@ def test_handle_stop_sets_flag():
 # --------------------------------------------------------------------------- #
 def _mk_args(tmp_path, **over):
     import argparse
+
     a = argparse.Namespace(
         logfile=str(tmp_path / "shield.log"),
         state=str(tmp_path / "offset.json"),
@@ -744,9 +786,15 @@ def test_follow_missing_logfile_waits_then_stops(tmp_path, monkeypatch):
 
 def test_follow_processes_a_line(tmp_path, monkeypatch):
     args = _mk_args(tmp_path)
-    entry = {"ts": "2026-07-17T00:00:00Z", "ip": "8.8.8.8",
-             "cat": "sqli", "src": "uri",
-             "req": "GET /x HTTP/1.1", "mode": "block", "status": 403}
+    entry = {
+        "ts": "2026-07-17T00:00:00Z",
+        "ip": "8.8.8.8",
+        "cat": "sqli",
+        "src": "uri",
+        "req": "GET /x HTTP/1.1",
+        "mode": "block",
+        "status": 403,
+    }
     Path(args.logfile).write_text(json.dumps(entry) + "\n")
     # one readline processes the line, next readline hits EOF -> sleep -> stop
     _stopping_sleep(monkeypatch, after=1)
@@ -759,16 +807,21 @@ def test_follow_processes_a_line(tmp_path, monkeypatch):
 
 def test_follow_rewinds_on_failed_send(tmp_path, monkeypatch):
     args = _mk_args(tmp_path, dry_run=False)
-    entry = {"ts": "2026-07-17T00:00:00Z", "ip": "8.8.8.8",
-             "cat": "sqli", "src": "uri",
-             "req": "GET /x HTTP/1.1", "mode": "block", "status": 403}
+    entry = {
+        "ts": "2026-07-17T00:00:00Z",
+        "ip": "8.8.8.8",
+        "cat": "sqli",
+        "src": "uri",
+        "req": "GET /x HTTP/1.1",
+        "mode": "block",
+        "status": 403,
+    }
     Path(args.logfile).write_text(json.dumps(entry) + "\n")
     mod._stop = False
     logs = []
     rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     # force report() to fail -> process_line returns False -> follow rewinds
-    monkeypatch.setattr(rep, "report",
-                        lambda *a, **k: (mod.Reporter.RETRY, "boom"))
+    monkeypatch.setattr(rep, "report", lambda *a, **k: (mod.Reporter.RETRY, "boom"))
     sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
     _stopping_sleep(monkeypatch, after=1)
     try:
@@ -785,18 +838,28 @@ def test_follow_respects_cooldown(tmp_path, monkeypatch):
     # A real, reportable line: if the cooldown check were absent, follow() would
     # consume it and call report(). An empty file would pass this test even with
     # the cooldown removed, so it must carry a genuine hit.
-    Path(args.logfile).write_text(json.dumps({
-        "ip": "8.8.8.8", "cat": "sqli", "src": "uri",
-        "req": "GET /x HTTP/1.1", "mode": "block", "status": 403,
-    }) + "\n")
+    Path(args.logfile).write_text(
+        json.dumps(
+            {
+                "ip": "8.8.8.8",
+                "cat": "sqli",
+                "src": "uri",
+                "req": "GET /x HTTP/1.1",
+                "mode": "block",
+                "status": 403,
+            }
+        )
+        + "\n"
+    )
     mod._stop = False
     logs = []
     rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
     # pretend we're in a cooldown so the in_cooldown>0 branch is taken
     monkeypatch.setattr(rep, "in_cooldown", lambda now: 5.0)
     called = []
-    monkeypatch.setattr(rep, "report",
-                        lambda *a, **k: called.append(a) or (mod.Reporter.OK, "ok"))
+    monkeypatch.setattr(
+        rep, "report", lambda *a, **k: called.append(a) or (mod.Reporter.OK, "ok")
+    )
     sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
     _stopping_sleep(monkeypatch, after=1)
     try:
@@ -816,8 +879,9 @@ def test_follow_respects_cooldown(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_main_requires_api_key_when_not_dry_run(tmp_path, monkeypatch):
     monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
-    rc = mod.main([str(tmp_path / "shield.log"),
-                   "--state", str(tmp_path / "st" / "offset.json")])
+    rc = mod.main(
+        [str(tmp_path / "shield.log"), "--state", str(tmp_path / "st" / "offset.json")]
+    )
     assert rc == 2
 
 
@@ -832,9 +896,16 @@ def test_main_dry_run_runs_and_returns_zero(tmp_path, monkeypatch):
     _stopping_sleep(monkeypatch, after=1)
     mod._stop = False
     try:
-        rc = mod.main([str(logfile),
-                       "--state", str(tmp_path / "st" / "offset.json"),
-                       "--dry-run", "--poll", "0.01"])
+        rc = mod.main(
+            [
+                str(logfile),
+                "--state",
+                str(tmp_path / "st" / "offset.json"),
+                "--dry-run",
+                "--poll",
+                "0.01",
+            ]
+        )
     finally:
         mod._stop = False
     assert rc == 0
@@ -848,7 +919,7 @@ def test_suppressor_save_swallows_open_oserror(tmp_path, monkeypatch):
     # _save must never raise when opening the temp file fails.
     sup = mod.Suppressor(900, 1000, str(tmp_path / "sup.json"))
     monkeypatch.setattr(mod, "open", _boom, raising=False)
-    sup.record("8.8.8.8", now=0.0)   # triggers _save internally, must not raise
+    sup.record("8.8.8.8", now=0.0)  # triggers _save internally, must not raise
 
 
 def test_suppressor_save_swallows_replace_oserror(tmp_path, monkeypatch):
@@ -858,7 +929,7 @@ def test_suppressor_save_swallows_replace_oserror(tmp_path, monkeypatch):
     # here even though the open-failure test still passes.
     sup = mod.Suppressor(900, 1000, str(tmp_path / "sup.json"))
     monkeypatch.setattr(os, "replace", _boom)
-    sup.record("8.8.8.8", now=0.0)   # triggers _save internally, must not raise
+    sup.record("8.8.8.8", now=0.0)  # triggers _save internally, must not raise
 
 
 def test_follow_resumes_from_saved_offset(tmp_path, monkeypatch):
@@ -877,15 +948,19 @@ def _persistent_new_inode(args, real_stat, delta=12345, extra_size=0):
     """os.stat replacement that ALWAYS reports a different inode for the log
     path (a rotation that stays rotated), so the grace loop eventually switches.
     Other paths pass through unchanged."""
+
     def fake_stat(p, *a, **k):
         st = real_stat(p, *a, **k)
         if str(p) == args.logfile:
+
             class S:
                 st_ino = st.st_ino + delta
                 st_size = st.st_size + extra_size
                 st_mode = st.st_mode
+
             return S()
         return st
+
     return fake_stat
 
 
@@ -894,7 +969,7 @@ def test_follow_detects_rotation(tmp_path, monkeypatch):
     # polls). Empty file + a persistently-new inode -> grace elapses -> switch.
     args = _mk_args(tmp_path)
     logfile = Path(args.logfile)
-    logfile.write_text("")   # empty: open ok, readline is EOF each pass
+    logfile.write_text("")  # empty: open ok, readline is EOF each pass
 
     mod._stop = False
     logs = []
@@ -935,20 +1010,24 @@ def test_follow_truncation_reopens_immediately(tmp_path, monkeypatch):
         st = real_stat(p, *a, **k)
         if str(p) == args.logfile:
             calls["n"] += 1
-            if calls["n"] == 1:              # report truncation ONCE, then real
+            if calls["n"] == 1:  # report truncation ONCE, then real
+
                 class S:
-                    st_ino = st.st_ino        # SAME inode
-                    st_size = 0               # shrank below offset
+                    st_ino = st.st_ino  # SAME inode
+                    st_size = 0  # shrank below offset
                     st_mode = st.st_mode
+
                 return S()
         return st
 
     monkeypatch.setattr(os, "stat", fake_stat)
+
     # Stop the moment truncation is logged, so the post-reopen loop can't spin.
     def stop_on_trunc(msg):
         logs.append(msg)
         if "truncation detected" in msg:
             mod._stop = True
+
     _stopping_sleep(monkeypatch, after=3)
     try:
         mod.follow(args, rep, sup, stop_on_trunc)
@@ -966,17 +1045,27 @@ def test_follow_drains_late_lines_before_rotating(tmp_path, monkeypatch):
     # (and the grace count restarts on any late read).
     args = _mk_args(tmp_path, dry_run=True)
     logfile = Path(args.logfile)
-    logfile.write_text("")   # empty: open ok, first readline is EOF
+    logfile.write_text("")  # empty: open ok, first readline is EOF
 
     mod._stop = False
     logs = []
     rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
     sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
 
-    late = json.dumps({"ts": "2026-07-17T00:00:00Z", "ip": "8.8.8.8",
-                       "cat": "sqli", "src": "uri",
-                       "req": "GET /x HTTP/1.1", "mode": "block",
-                       "status": 403}) + "\n"
+    late = (
+        json.dumps(
+            {
+                "ts": "2026-07-17T00:00:00Z",
+                "ip": "8.8.8.8",
+                "cat": "sqli",
+                "src": "uri",
+                "req": "GET /x HTTP/1.1",
+                "mode": "block",
+                "status": 403,
+            }
+        )
+        + "\n"
+    )
 
     real_stat = os.stat
     calls = {"n": 0}
@@ -993,9 +1082,10 @@ def test_follow_drains_late_lines_before_rotating(tmp_path, monkeypatch):
             new_size = real_stat(args.logfile).st_size
 
             class S:
-                st_ino = st.st_ino + 12345   # persistently rotated
+                st_ino = st.st_ino + 12345  # persistently rotated
                 st_size = new_size
                 st_mode = st.st_mode
+
             return S()
         return st
 
@@ -1020,17 +1110,27 @@ def test_follow_drains_late_lines_when_path_absent(tmp_path, monkeypatch):
     # still consumed before we switch to the (eventually recreated) path.
     args = _mk_args(tmp_path, dry_run=True)
     logfile = Path(args.logfile)
-    logfile.write_text("")   # empty: open ok, first readline is EOF
+    logfile.write_text("")  # empty: open ok, first readline is EOF
 
     mod._stop = False
     logs = []
     rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=True)
     sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
 
-    late = json.dumps({"ts": "2026-07-17T00:00:00Z", "ip": "9.9.9.9",
-                       "cat": "sqli", "src": "uri",
-                       "req": "GET /y HTTP/1.1", "mode": "block",
-                       "status": 403}) + "\n"
+    late = (
+        json.dumps(
+            {
+                "ts": "2026-07-17T00:00:00Z",
+                "ip": "9.9.9.9",
+                "cat": "sqli",
+                "src": "uri",
+                "req": "GET /y HTTP/1.1",
+                "mode": "block",
+                "status": 403,
+            }
+        )
+        + "\n"
+    )
 
     real_stat = os.stat
     calls = {"n": 0}
