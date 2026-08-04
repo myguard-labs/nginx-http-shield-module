@@ -26,7 +26,10 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      security-events: write
+      # Required by github/codeql-action/upload-sarif to publish results to the
+      # repo's Code Scanning tab (Security > Code scanning alerts); without it
+      # the analysis runs but the SARIF upload step fails with 403.
+      security-events: write # needed for github/codeql-action/upload-sarif (see comment above)
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5

@@ -36,21 +36,17 @@
 # --offline: no API calls from a commit hook. The online audits need a token and
 # only add repo-settings context, which belongs in a periodic review, not here.
 #
-# LINT_YAML_ZIZMOR=1 -- zizmor is OFF by default, unlike yamllint and
-# actionlint above (both clean on this tree today and gate unconditionally).
-# At --persona=pedantic zizmor reports 24 low-severity findings on this repo's
-# EXISTING workflows as of the checker's introduction (cp7b-1): mostly
-# template-injection (unescaped ${{ github.* }} interpolated into Discord-
-# webhook `curl` payloads in ci-deep.yml/build-test.yml/security-scanners.yml)
-# plus one undocumented `permissions:` in codeql.yml. Fixing those is a CI
-# security-posture change -- routing interpolations through `env:`, adding
-# permission-comment justifications -- that deserves its own review and its
-# own CI run, not a drive-by inside a linter-porting change. Tracked as its
-# own backlog item (memory/labs/nginx-http-shield-module/TODO.md). Set
-# LINT_YAML_ZIZMOR=1 to include it; do this once that item lands.
+# zizmor runs unconditionally, same as yamllint and actionlint above. All
+# workflow-level template-injection findings it once reported (unescaped
+# ${{ github.* }} / ${{ matrix.* }} interpolated straight into `run:` blocks,
+# including the Discord-webhook curl payloads in ci-deep.yml/build-test.yml)
+# are fixed by routing every interpolation through a step `env:` var. The two
+# survivors are genuine and carry an inline `# zizmor: ignore[rule]` with a
+# reason at the flagged line: the computed `env[matrix.version_key]` index in
+# build-test.yml/ci-deep.yml, and the documented `security-events: write` on
+# the CodeQL job in codeql.yml.
 #
 # Usage: ci/linter/lint-yaml.sh [files...]   Env: LINT_MODE=staged|all
-#                                             LINT_YAML_ZIZMOR=1 (see above)
 # Extend: yamllint rules live in .yamllint at the repo root.
 
 # shellcheck source=ci/linter/lib.sh disable=SC1091
@@ -76,13 +72,9 @@ if [ "${#WF[@]}" -gt 0 ]; then
     SHELLCHECK_OPTS=-Swarning \
         actionlint -ignore 'label ".+" is unknown' "${WF[@]}" || rc=1
 
-    if [ -n "${LINT_YAML_ZIZMOR:-}" ]; then
-        need zizmor "pipx install zizmor"
-        say "zizmor (workflow security, pedantic)"
-        zizmor --offline --persona=pedantic --no-progress "${WF[@]}" || rc=1
-    else
-        say "zizmor SKIPPED (LINT_YAML_ZIZMOR unset) -- see header, tracked in TODO.md"
-    fi
+    need zizmor "pipx install zizmor"
+    say "zizmor (workflow security, pedantic)"
+    zizmor --offline --persona=pedantic --no-progress "${WF[@]}" || rc=1
 fi
 
 exit "$rc"

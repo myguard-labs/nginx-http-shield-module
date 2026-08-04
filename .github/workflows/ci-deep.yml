@@ -96,10 +96,15 @@ jobs:
       # shape zizmor fails the Validation job on.
       - name: Resolve version
         env:
-          RESOLVED_VERSION: ${{ env[matrix.version_key] }}
+          # Computed env index is intentional: version_key picks which
+          # pinned-version var applies to this matrix leg. Both keys and
+          # values come from the matrix `include:` above, not from any
+          # external input.
+          RESOLVED_VERSION: ${{ env[matrix.version_key] }} # zizmor: ignore[obfuscation]
+          MATRIX_VERSION_KEY: ${{ matrix.version_key }}
         run: |
           if [ -z "$RESOLVED_VERSION" ]; then
-            echo "::error::${{ matrix.version_key }} is not set in .github/versions.env"
+            echo "::error::${MATRIX_VERSION_KEY} is not set in .github/versions.env"
             exit 1
           fi
           echo "VER=$RESOLVED_VERSION" >> "$GITHUB_ENV"
@@ -129,12 +134,14 @@ jobs:
           sudo cpanm --notest --quiet "$tgz"
 
       - name: Build server and dynamic module
+        env:
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
         run: |
-          bash ci/tools/ci-build.sh "${{ matrix.flavor }}" "$VER"
-          build=".build/${{ matrix.flavor }}-${VER}-debug/objs"
+          bash ci/tools/ci-build.sh "$MATRIX_FLAVOR" "$VER"
+          build=".build/${MATRIX_FLAVOR}-${VER}-debug/objs"
           test -f "$build/ngx_http_shield_module.so"
           # angie names its binary objs/angie; nginx names it objs/nginx.
-          test -f "$build/${{ matrix.flavor }}"
+          test -f "$build/${MATRIX_FLAVOR}"
 
       # angie is build-only, deliberately. Stock Test::Nginx::Socket probes the
       # server with -V and requires "nginx version: .../<x>.<y>" (Util.pm:1365);
@@ -171,9 +178,11 @@ jobs:
 
       - name: Load the module (angie build-only smoke check)
         if: matrix.flavor == 'angie'
+        env:
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
         run: |
           set -euo pipefail
-          build="$PWD/.build/${{ matrix.flavor }}-${VER}-debug"
+          build="$PWD/.build/${MATRIX_FLAVOR}-${VER}-debug"
           tp="$RUNNER_TEMP/angie-smoke"
           mkdir -p "$tp/logs"
           cat > "$tp/nginx.conf" <<EOF
@@ -286,12 +295,17 @@ jobs:
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_BUILDS: ${{ secrets.DISCORD_CHANNEL_BUILDS }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_SERVER_URL: ${{ github.server_url }}
+          GH_RUN_ID: ${{ github.run_id }}
         run: |
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
+          msg="🔴 ${GH_REPOSITORY} — CI Deep / fuzz FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
+          payload="$(jq -n --arg content "$msg" '{content: $content}')"
           curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
-            -d "{\"content\":\"🔴 ${{ github.repository }} — CI Deep / fuzz FAILED. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" || true
+            -d "$payload" || true
 
   memcheck:
     name: Valgrind Memcheck soak
@@ -323,12 +337,17 @@ jobs:
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_BUILDS: ${{ secrets.DISCORD_CHANNEL_BUILDS }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_SERVER_URL: ${{ github.server_url }}
+          GH_RUN_ID: ${{ github.run_id }}
         run: |
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
+          msg="🔴 ${GH_REPOSITORY} — CI Deep / memcheck FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
+          payload="$(jq -n --arg content "$msg" '{content: $content}')"
           curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
-            -d "{\"content\":\"🔴 ${{ github.repository }} — CI Deep / memcheck FAILED. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" || true
+            -d "$payload" || true
 
   helgrind:
     name: Valgrind Helgrind soak
@@ -360,12 +379,17 @@ jobs:
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_BUILDS: ${{ secrets.DISCORD_CHANNEL_BUILDS }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_SERVER_URL: ${{ github.server_url }}
+          GH_RUN_ID: ${{ github.run_id }}
         run: |
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
+          msg="🔴 ${GH_REPOSITORY} — CI Deep / helgrind FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
+          payload="$(jq -n --arg content "$msg" '{content: $content}')"
           curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
-            -d "{\"content\":\"🔴 ${{ github.repository }} — CI Deep / helgrind FAILED. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" || true
+            -d "$payload" || true
 
   scanners:
     name: Security scanners

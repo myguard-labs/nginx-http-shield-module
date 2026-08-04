@@ -408,7 +408,11 @@ jobs:
       # fails the Validation job on.
       - name: Resolve version
         env:
-          RESOLVED_VERSION: ${{ env[matrix.version_key] }}
+          # Computed env index is intentional: version_key picks which
+          # pinned-version var (NGINX_VERSION / ANGIE_VERSION) applies to this
+          # matrix leg. Both keys and values come from the matrix `include:`
+          # above, not from any external input.
+          RESOLVED_VERSION: ${{ env[matrix.version_key] }} # zizmor: ignore[obfuscation]
         run: echo "VER=$RESOLVED_VERSION" >> "$GITHUB_ENV"
 
       # This is the angie leg's whole point. Stock Test::Nginx::Socket refuses to
@@ -418,18 +422,24 @@ jobs:
       # build-and-load only. The prober reads no banner, so angie gets the same
       # functional coverage nginx does.
       - name: Build server with the test harness
-        run: TEST_HARNESS=1 bash ci/tools/ci-build.sh "${{ matrix.flavor }}" "$VER" "${{ matrix.mode }}"
+        env:
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
+          MATRIX_MODE: ${{ matrix.mode }}
+        run: TEST_HARNESS=1 bash ci/tools/ci-build.sh "$MATRIX_FLAVOR" "$VER" "$MATRIX_MODE"
 
       # SAN=1 puts the prober itself under ASan/UBSan on the sanitized leg: it
       # parses rule files and raw socket bytes, so it gets the same treatment as
       # the module it is testing.
       - name: Build the prober
-        run: SAN=$([ "${{ matrix.mode }}" = asan ] && echo 1 || echo 0) bash ci/t/harness/prober/build.sh
+        env:
+          MATRIX_MODE: ${{ matrix.mode }}
+        run: SAN=$([ "$MATRIX_MODE" = asan ] && echo 1 || echo 0) bash ci/t/harness/prober/build.sh
 
       - name: Run prober rules
         env:
           NGX_BUILD_MODE: ${{ matrix.mode }}
-        run: bash ci/t/prober/run.sh "${{ matrix.flavor }}" "$VER"
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
+        run: bash ci/t/prober/run.sh "$MATRIX_FLAVOR" "$VER"
 
   coverage:
     name: C line coverage
