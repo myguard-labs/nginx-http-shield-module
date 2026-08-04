@@ -27,10 +27,10 @@
 #
 # Harvests coverage for the module's translation unit only, across three
 # --directory args: the module TU built into nginx
-# (.build/nginx-$NGINX_VERSION/objs/addon/src), the ban harness's object under
-# ci/t/, and the scan-core harness's object under ci/tests/unit/. Upstream
-# nginx .gcda is captured too (core is instrumented under the coverage build)
-# but discarded by the --extract filter below.
+# (.build/nginx-$NGINX_VERSION-coverage/objs/addon/src), the ban harness's
+# object under ci/t/, and the scan-core harness's object under ci/tests/unit/.
+# Upstream nginx .gcda is captured too (core is instrumented under the
+# coverage build) but discarded by the --extract filter below.
 #
 # The remaining uncovered lines after a full harness run are config-time
 # NGX_CONF_ERROR arms and OOM/alloc-failure returns that cannot be driven
