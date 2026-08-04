@@ -66,10 +66,54 @@ esac
 # Prints the NUL-delimited list on stdout, non-zero if any find failed. The
 # caller redirects this to a file rather than capturing it: a command
 # substitution would strip the NUL bytes that keep the paths apart.
+#
+# REQUIRED vs OPTIONAL. .github/workflows must exist -- it is where the gate
+# itself lives, so a checkout without it is broken rather than differently
+# shaped. .github/scripts and .github/actions are genuinely optional: a module
+# with no composite action and no shell script under .github/ is a normal,
+# complete layout. Five of this family's repos have neither.
+#
+# Absence is tested EXPLICITLY rather than inferred from find's exit status,
+# because find cannot tell the cases apart -- a missing directory and an
+# unreadable one both exit 1 (verified on GNU findutils and on bfs). Testing
+# first means a directory that exists but cannot be scanned (permissions, I/O
+# error) still fails hard and still trips the "refusing to report a partial
+# result" guard below. That guard is the property that makes this variant
+# canonical, and tolerating a missing path must not weaken it.
+# Only "the path is simply not there" is tolerated.
+#
+# Three states, and only the last one is forgiven:
+#   -d          a directory (or a symlink to one)  -> scan it
+#   -L, not -d  a symlink that does not resolve to a directory, including a
+#               dangling one                       -> error
+#   -e, not -d  present but not a directory        -> error
+#   none        genuinely absent                   -> contribute nothing
+#
+# The -L arm is not theoretical tidiness. Both -d and -e follow symlinks, so a
+# dangling .github/scripts symlink fails both and would otherwise be read as
+# "absent" -- the gate would skip a directory somebody meant to be there.
+# `find` is no help either: it exits 0 on a dangling symlink at the top level.
+optional_find() {
+    local d="$1"
+    shift
+    if [ -d "$d" ]; then
+        find "$d" "$@" -print0
+        return
+    fi
+    # Present but not a directory: `find` over a regular file SUCCEEDS and
+    # matches nothing, so an -e test alone would let a stray `.github/scripts`
+    # file read as "no scripts here" and silently shrink the gate.
+    if [ -e "$d" ] || [ -L "$d" ]; then
+        echo "sync-stamp: $d exists but is not a directory" >&2
+        return 1
+    fi
+    return 0
+}
+
 targets() {
     find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) -print0 &&
-        find .github/scripts -maxdepth 1 -name '*.sh' -print0 &&
-        find .github/actions \( -name 'action.yml' -o -name 'action.yaml' \) -print0
+        optional_find .github/scripts -maxdepth 1 -name '*.sh' &&
+        optional_find .github/actions \( -name 'action.yml' -o -name 'action.yaml' \)
 }
 
 # The digest of a file with its own stamp line stripped -- see THE
