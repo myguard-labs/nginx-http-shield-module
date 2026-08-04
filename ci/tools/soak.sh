@@ -142,8 +142,17 @@ saw_dead="$WORK/logs/saw_dead"
 # malloc'ing its scratch (see its "A pool allocation would round up and hide a
 # one-byte overrun" note) -- this is the runtime counterpart of that decision.
 #
-# Keep every LARGE_* value comfortably over 4096 if the page size changes.
-LARGE_FILL="$(head -c 6000 /dev/zero | tr '\0' 'a')"
+# A benign oversized request is as load-bearing as an attacking one: the no-hit
+# path runs the same normalize and scan over the same buffers, so an overrun
+# reachable only when nothing matches needs a large allocation to be visible.
+#
+# Sized from the RUNNING kernel's page size rather than a hardcoded 6000: on a
+# 16K or 64K-page arm64/ppc64le kernel, pool->max rises with it and a fixed
+# 6000-byte payload silently falls back into the small path -- restoring the
+# exact blindness this exists to remove, with a green job and no signal. Two
+# pages clears NGX_MAX_ALLOC_FROM_POOL (one page - 1) on any of them.
+LARGE_LEN="$(($(getconf PAGESIZE) * 2))"
+LARGE_FILL="$(head -c "$LARGE_LEN" /dev/zero | tr '\0' 'a')"
 
 # URL-encoded attack payloads across many categories (spaces -> %20; the
 # harness/curl would otherwise mangle the request line). Each is something the
@@ -176,10 +185,6 @@ BODY_ATTACKS=(
     '{"$where":"1==1"}'
     "pad=$LARGE_FILL&id=1' or 1=1--"
 )
-# The oversized benign entry matters as much as the oversized attack one: the
-# clean path runs the same normalize + scan over the same scratch buffers, and
-# a scratch overrun that only shows on a no-hit input would otherwise be
-# unreachable at a sanitizer-visible allocation size.
 BENIGN=(
     "/ok"
     "/index.html"
