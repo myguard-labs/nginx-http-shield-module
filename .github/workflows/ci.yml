@@ -1,6 +1,6 @@
 # Single entry point for the PR CI suite. This is the ONLY workflow with a
-# `pull_request:` trigger — the five members are reachable on a PR solely as
-# `workflow_call:` jobs from here, so each runs exactly once. Adding a
+# `pull_request:` trigger — the member workflows are reachable on a PR solely
+# as `workflow_call:` jobs from here, so each runs exactly once. Adding a
 # `pull_request:` to a member would resurrect the double-run; add the job here
 # instead.
 
@@ -22,6 +22,12 @@ jobs:
   build-test:
     name: Build&Test
     uses: ./.github/workflows/build-test.yml
+    permissions:
+      contents: read
+
+  lint:
+    name: Lint
+    uses: ./.github/workflows/lint.yml
     permissions:
       contents: read
 

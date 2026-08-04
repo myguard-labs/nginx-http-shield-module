@@ -569,14 +569,15 @@ USE_VALGRIND=1 ci/tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
 A failure surfaces as a red run plus the uploaded artifact — no chat
 notifications wired.
 
-Only `ci.yml` has a `pull_request` trigger. The five PR-time workflows below
-are `workflow_call` members it triggers directly — six parallel jobs, no
+Only `ci.yml` has a `pull_request` trigger. The seven PR-time workflows below
+are `workflow_call` members it triggers directly — seven parallel jobs, no
 `needs:` chaining between them, so a PR is one run wide, not a lane map. There
 are no lanes here to document; that's a skeleton-only concept.
 
 | Workflow | Trigger | Gates |
 |---|---|---|
 | `build-test.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
+| `lint.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | `ci/linter/run-all.sh` — shellcheck/shfmt, cppcheck-adjacent C style, Python (ruff), Perl (perlcritic), YAML (yamllint/actionlint), spelling (codespell) and the docs-drift/CI-policy checks below, plus `ci/linter/selftest.sh`'s negative controls on the gate itself |
 | `security-scanners.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), semgrep |
 | `fuzzing.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | 120s libFuzzer run of `fuzz_scan` — real normalize + Aho-Corasick core, differentially checked against a naive reference matcher |
 | `valgrind.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit -- run ci/linter/run-all.sh over staged files before a
+# commit lands, so the cheap half of the CI lint gate is caught locally
+# instead of burning a remote round-trip.
+#
+# Not active by default: git only looks in .git/hooks/ unless core.hooksPath
+# points here. Activate once per clone with:
+#
+#   git config core.hooksPath .githooks
+#
+# This script is itself linted -- ci/linter/lint-sh.sh's file selector
+# matches '^\.githooks/' even though this file has no .sh extension, so a bug
+# here cannot silently disable the check it exists to run.
+#
+# Bypass a single commit with `git commit --no-verify`.
+
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || exit 1
+
+exec ci/linter/run-all.sh --staged

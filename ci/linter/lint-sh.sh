@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # ci/linter/lint-sh.sh -- shellcheck over every *.sh / *.bash in the tree.
 #
-# -S warning, not info: the info tier (SC2015, SC2086 in safe positions) fires
-# on existing build scripts and would land this gate red on arrival, which only
-# teaches everyone to --no-verify. Same floor as the shellcheck the actionlint
-# hook runs inside `run:` blocks (SHELLCHECK_OPTS=-Swarning), so an SC2164 is
-# not ignored in a .sh file while blocking in a workflow.
+# Bare severity (shellcheck's default, i.e. info and up), matching exactly
+# what build-test.yml's "Validate scripts and source" step runs remotely
+# (bare `shellcheck "$s"`, no -S). This gate exists to PREDICT that remote
+# gate, so the two invocations must move together: an info-level finding
+# invisible here but fatal there is the exact mismatch that turned PR #91 red
+# twice. If build-test.yml's severity or -x usage ever changes, change this
+# script in the same commit -- never let them drift apart again.
 #
 # Usage: ci/linter/lint-sh.sh [files...]   Env: LINT_MODE=staged|all
-# Extend: raise to -S info only together with a pass that fixes the backlog.
 
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
@@ -23,5 +24,5 @@ mapfile -t FILES < <(lint_files '\.(sh|bash)$|^\.githooks/' "$@")
 
 echo "lint-sh: ${#FILES[@]} file(s)"
 need shellcheck "apt-get install shellcheck"
-shellcheck -S warning -x "${FILES[@]}"
+shellcheck -x "${FILES[@]}"
 say "clean"
