@@ -13,6 +13,11 @@
 # the core headers and ngx_rbtree.c. Honours CC / EXTRA_CFLAGS (the CI coverage
 # job passes --coverage so ban.c's gcda merges into the module floor).
 #
+# NGX_BUILD_MODE selects which per-mode build tree to use (default: debug).
+# Each mode built by ci/tools/ci-build.sh lives in its own tree
+# (.build/nginx-<ver>-<mode>/) so a mode switch never reuses another mode's
+# object files.
+#
 # Usage:
 #   bash ci/t/run-ban-unit.sh           # build + run
 #   CC=clang EXTRA_CFLAGS="-fsanitize=address,undefined" bash ci/t/run-ban-unit.sh
@@ -23,11 +28,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # --- Locate a configured nginx source tree. --------------------------------
+NGX_BUILD_MODE="${NGX_BUILD_MODE:-debug}"
 if [ -z "${NGINX_VERSION:-}" ]; then
-    for d in "$REPO_ROOT"/.build/nginx-*/; do
+    for d in "$REPO_ROOT"/.build/nginx-*-"$NGX_BUILD_MODE"/; do
         [ -d "$d" ] || continue
         v=${d%/}
         v=${v##*/nginx-}
+        v=${v%"-$NGX_BUILD_MODE"}
         case "$v" in *.tar*) continue ;; esac
         NGINX_VERSION=$v # last glob match wins; single tree in practice
     done
@@ -37,10 +44,10 @@ if [ -z "${NGINX_VERSION:-}" ]; then
     exit 1
 fi
 
-NGX_SRC="$REPO_ROOT/.build/nginx-$NGINX_VERSION"
+NGX_SRC="$REPO_ROOT/.build/nginx-$NGINX_VERSION-$NGX_BUILD_MODE"
 if [ ! -d "$NGX_SRC/objs" ]; then
     echo "ERROR: nginx not configured ($NGX_SRC/objs missing)." >&2
-    echo "       Run: bash ci/tools/ci-build.sh nginx $NGINX_VERSION" >&2
+    echo "       Run: bash ci/tools/ci-build.sh nginx $NGINX_VERSION $NGX_BUILD_MODE" >&2
     exit 1
 fi
 

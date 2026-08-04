@@ -30,11 +30,10 @@ runs:
 
     # Divergence from skeleton -- deliberate, not an oversight:
     #   The reference action.yml also restores a ccache layer and an
-    #   exact-match build-tree layer (.build/<flavor>-<ver>-<mode>), and
-    #   installs ccache/mold/eatmydata on a hosted runner. `ci/tools/ci-build.sh`
-    #   in THIS module has no ccache integration and no `mode` in its build-tree
-    #   path (always `.build/<flavor>-<ver>/`, not `.build/<flavor>-<ver>-<mode>/`)
-    #   -- porting those layers verbatim would either no-op (nothing ever
-    #   populates ~/.cache/ccache) or key against a path this build never
-    #   writes. Add them here only alongside the ccache/per-mode build-tree
-    #   work itself, not as a silent copy-paste.
+    #   exact-match build-tree layer (.build/<flavor>-<ver>-<mode>). This
+    #   module's ci/tools/ci-build.sh DOES give every mode its own unpacked
+    #   tree (.build/<flavor>-<ver>-<mode>/, cp7a) but has no ccache
+    #   integration, so only the tarball -- shared across modes -- is cached
+    #   here. Porting the ccache layer verbatim would no-op (nothing ever
+    #   populates ~/.cache/ccache). Add a per-mode build-tree cache layer only
+    #   alongside the ccache work itself, not as a silent copy-paste.

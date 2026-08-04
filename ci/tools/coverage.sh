@@ -7,9 +7,14 @@
 #   ci/tools/coverage.sh
 #
 # Env:
-#   NGINX_VERSION        : required. Selects .build/nginx-$NGINX_VERSION as
-#                           the coverage build tree (same variable the rest of
-#                           ci/tools/*.sh and the workflow use).
+#   NGINX_VERSION        : required. Selects .build/nginx-$NGINX_VERSION-coverage
+#                           as the coverage build tree (same variable the rest
+#                           of ci/tools/*.sh and the workflow use). The
+#                           "-coverage" suffix is hardcoded here because this
+#                           script only ever runs against a coverage-mode
+#                           build -- ci/tools/ci-build.sh gives every mode its
+#                           own tree so a mode switch never reuses another
+#                           mode's object files.
 #   COVERAGE_FAIL_UNDER   : optional. Minimum acceptable module line coverage
 #                           percentage. Default 92 -- the historical floor
 #                           this script's inline predecessor enforced; changing
@@ -22,10 +27,10 @@
 #
 # Harvests coverage for the module's translation unit only, across three
 # --directory args: the module TU built into nginx
-# (.build/nginx-$NGINX_VERSION/objs/addon/src), the ban harness's object under
-# ci/t/, and the scan-core harness's object under ci/tests/unit/. Upstream
-# nginx .gcda is captured too (core is instrumented under the coverage build)
-# but discarded by the --extract filter below.
+# (.build/nginx-$NGINX_VERSION-coverage/objs/addon/src), the ban harness's
+# object under ci/t/, and the scan-core harness's object under ci/tests/unit/.
+# Upstream nginx .gcda is captured too (core is instrumented under the
+# coverage build) but discarded by the --extract filter below.
 #
 # The remaining uncovered lines after a full harness run are config-time
 # NGX_CONF_ERROR arms and OOM/alloc-failure returns that cannot be driven
@@ -52,7 +57,7 @@
 # tree) --
 #   $ NGINX_VERSION=1.27.4 ci/tools/coverage.sh   # run against a tree with
 #                                                  # no .gcda anywhere
-#   FATAL: no .gcda files found under .build/nginx-1.27.4/objs/addon/src,
+#   FATAL: no .gcda files found under .build/nginx-1.27.4-coverage/objs/addon/src,
 #   ci/t, ci/tests/unit -- coverage build/harness did not run; refusing to
 #   report a false 0%
 #   (exit 1, no cov.info produced)
@@ -62,7 +67,7 @@ set -euo pipefail
 : "${NGINX_VERSION:?coverage.sh: NGINX_VERSION must be set}"
 COVERAGE_FAIL_UNDER="${COVERAGE_FAIL_UNDER:-92}"
 
-build=".build/nginx-${NGINX_VERSION}"
+build=".build/nginx-${NGINX_VERSION}-coverage"
 dir_addon="$build/objs/addon/src"
 dir_t="ci/t"
 dir_unit="ci/tests/unit"

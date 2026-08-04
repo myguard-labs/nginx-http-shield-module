@@ -131,7 +131,7 @@ jobs:
       - name: Build server and dynamic module
         run: |
           bash ci/tools/ci-build.sh "${{ matrix.flavor }}" "$VER"
-          build=".build/${{ matrix.flavor }}-${VER}/objs"
+          build=".build/${{ matrix.flavor }}-${VER}-debug/objs"
           test -f "$build/ngx_http_shield_module.so"
           # angie names its binary objs/angie; nginx names it objs/nginx.
           test -f "$build/${{ matrix.flavor }}"
@@ -158,8 +158,8 @@ jobs:
       - name: Run ci/t/
         if: matrix.flavor == 'nginx'
         env:
-          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/${{ matrix.flavor }}-${{ env.VER }}/objs/nginx
-          TEST_NGINX_LOAD_MODULES: ${{ github.workspace }}/.build/${{ matrix.flavor }}-${{ env.VER }}/objs/ngx_http_shield_module.so
+          TEST_NGINX_BINARY: ${{ github.workspace }}/.build/${{ matrix.flavor }}-${{ env.VER }}-debug/objs/nginx
+          TEST_NGINX_LOAD_MODULES: ${{ github.workspace }}/.build/${{ matrix.flavor }}-${{ env.VER }}-debug/objs/ngx_http_shield_module.so
           # Must be 20, not the ~2s Test::Nginx::Socket default — see the
           # identical setting in build-test.yml.
           TEST_NGINX_TIMEOUT: "20"
@@ -173,7 +173,7 @@ jobs:
         if: matrix.flavor == 'angie'
         run: |
           set -euo pipefail
-          build="$PWD/.build/${{ matrix.flavor }}-${VER}"
+          build="$PWD/.build/${{ matrix.flavor }}-${VER}-debug"
           tp="$RUNNER_TEMP/angie-smoke"
           mkdir -p "$tp/logs"
           cat > "$tp/nginx.conf" <<EOF
@@ -317,7 +317,7 @@ jobs:
           USE_VALGRIND: "1"
         run: |
           bash ci/tools/soak.sh \
-            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" 600 4
+            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/nginx" 600 4
       - name: Notify Discord on failure
         if: failure() && github.event_name == 'schedule'
         env:
@@ -354,7 +354,7 @@ jobs:
           USE_HELGRIND: "1"
         run: |
           bash ci/tools/soak.sh \
-            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" 600 4
+            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/nginx" 600 4
       - name: Notify Discord on failure
         if: failure() && github.event_name == 'schedule'
         env:

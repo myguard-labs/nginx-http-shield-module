@@ -9,10 +9,13 @@
 #   bash ci/fuzz/build.sh clean    # remove built fuzz binaries
 #
 # Requirements: clang with -fsanitize=fuzzer support.
-# The nginx source tree must be present at .build/nginx-<VER>/ (as populated
-# by ci/tools/ci-build.sh or a prior module build) -- the scan target links
-# nginx's real ngx_unescape_uri()/ngx_strlow() out of src/core/ngx_string.c,
-# so the decoder under test is production code, not a stub.
+# The nginx source tree must be present at .build/nginx-<VER>-<mode>/ (as
+# populated by ci/tools/ci-build.sh or a prior module build) -- the scan
+# target links nginx's real ngx_unescape_uri()/ngx_strlow() out of
+# src/core/ngx_string.c, so the decoder under test is production code, not a
+# stub. NGX_BUILD_MODE selects which per-mode tree to use (default: debug) --
+# each mode lives in its own tree so a mode switch never reuses another
+# mode's object files.
 
 set -eu
 
@@ -27,11 +30,13 @@ if [ "${1:-}" = "clean" ]; then
 fi
 
 # --- Locate nginx source headers. ------------------------------------------
+NGX_BUILD_MODE="${NGX_BUILD_MODE:-debug}"
 if [ -z "${NGINX_VERSION:-}" ]; then
-    for d in "$REPO_ROOT"/.build/nginx-*/; do
+    for d in "$REPO_ROOT"/.build/nginx-*-"$NGX_BUILD_MODE"/; do
         [ -d "$d" ] || continue
         v=${d%/}
         v=${v##*/nginx-}
+        v=${v%"-$NGX_BUILD_MODE"}
         case "$v" in *.tar*) continue ;; esac
         NGINX_VERSION=$v # last glob match wins; single tree in practice
     done
@@ -41,10 +46,10 @@ if [ -z "${NGINX_VERSION:-}" ]; then
     exit 1
 fi
 
-NGX_SRC="$REPO_ROOT/.build/nginx-$NGINX_VERSION"
+NGX_SRC="$REPO_ROOT/.build/nginx-$NGINX_VERSION-$NGX_BUILD_MODE"
 if [ ! -d "$NGX_SRC/src/core" ]; then
     echo "ERROR: nginx source not found at $NGX_SRC" >&2
-    echo "       Run: bash ci/tools/ci-build.sh nginx $NGINX_VERSION" >&2
+    echo "       Run: bash ci/tools/ci-build.sh nginx $NGINX_VERSION $NGX_BUILD_MODE" >&2
     exit 1
 fi
 if [ ! -d "$NGX_SRC/objs" ]; then

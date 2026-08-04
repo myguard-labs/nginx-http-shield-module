@@ -12,10 +12,15 @@
 # Env:
 #   CC                 compiler (default cc). Takes a full driver line, so
 #                      CC="gcc -m32" runs the suite as a 32-bit binary.
-#   NGINX_VERSION      which .build/nginx-<ver>/ tree to take headers and
-#                      ngx_string.c/ngx_palloc.c/ngx_alloc.c from. Autodetected
-#                      by globbing .build/nginx-*/ the same way
-#                      ci/t/run-ban-unit.sh and ci/fuzz/build.sh do, when unset.
+#   NGINX_VERSION      which .build/nginx-<ver>-<mode>/ tree to take headers
+#                      and ngx_string.c/ngx_palloc.c/ngx_alloc.c from.
+#                      Autodetected by globbing .build/nginx-*-$NGX_BUILD_MODE/
+#                      the same way ci/t/run-ban-unit.sh and ci/fuzz/build.sh
+#                      do, when unset.
+#   NGX_BUILD_MODE     which per-mode build tree to use (default: debug). Each
+#                      mode built by ci/tools/ci-build.sh lives in its own
+#                      tree (.build/nginx-<ver>-<mode>/) so a mode switch never
+#                      reuses another mode's object files.
 #
 # Exit: 0 all checks passed, 1 a check failed or the build failed.
 #
@@ -142,11 +147,13 @@ fi
 # --- Locate a configured nginx source tree, same lookup as
 # ci/t/run-ban-unit.sh and ci/fuzz/build.sh (no ci/tools/nginx-tree.sh exists
 # in this module -- do not invent one here). ------------------------------
+NGX_BUILD_MODE="${NGX_BUILD_MODE:-debug}"
 if [ -z "${NGINX_VERSION:-}" ]; then
-    for d in "$ROOT"/.build/nginx-*/; do
+    for d in "$ROOT"/.build/nginx-*-"$NGX_BUILD_MODE"/; do
         [ -d "$d" ] || continue
         v=${d%/}
         v=${v##*/nginx-}
+        v=${v%"-$NGX_BUILD_MODE"}
         case "$v" in *.tar*) continue ;; esac
         NGINX_VERSION=$v # last glob match wins; single tree in practice
     done
@@ -156,10 +163,10 @@ if [ -z "${NGINX_VERSION:-}" ]; then
     exit 1
 fi
 
-NGX_SRC="$ROOT/.build/nginx-$NGINX_VERSION"
+NGX_SRC="$ROOT/.build/nginx-$NGINX_VERSION-$NGX_BUILD_MODE"
 if [ ! -d "$NGX_SRC/objs" ]; then
     echo "ERROR: nginx not configured ($NGX_SRC/objs missing)." >&2
-    echo "       Run: bash ci/tools/ci-build.sh nginx $NGINX_VERSION" >&2
+    echo "       Run: bash ci/tools/ci-build.sh nginx $NGINX_VERSION $NGX_BUILD_MODE" >&2
     exit 1
 fi
 echo "Using nginx source: $NGX_SRC"

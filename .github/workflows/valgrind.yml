@@ -53,4 +53,4 @@ jobs:
           USE_VALGRIND: "1"
         run: |
           bash ci/tools/soak.sh \
-            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}/objs/nginx" 60 4
+            "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/nginx" 60 4

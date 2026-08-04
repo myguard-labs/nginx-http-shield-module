@@ -6,6 +6,11 @@
 #     flavor : nginx (default) | angie
 #     version: source version; must match what ci/tools/ci-build.sh fetched
 #
+# NGX_BUILD_MODE selects which per-mode build tree to use (default: debug).
+# ci/tools/ci-build.sh gives every mode its own tree
+# (.build/<flavor>-<version>-<mode>/) so a mode switch never reuses another
+# mode's object files; this is passed through to the harness as PROBER_BUILD.
+#
 # The engine lives in ci/t/harness (nginx-test-harness) and knows nothing about
 # shield: this only supplies the four things that are shield's -- which .so to
 # look in, which directive proves the harness build, and where the conf and
@@ -37,6 +42,15 @@ export PROBER_RULES="$HERE/rules/*.rule"
 # instead of being masked by export's own success.
 PROBER_ROOT="$(cd ../../.. && pwd)"
 export PROBER_ROOT
+
+# ci/tools/ci-build.sh builds each mode into its own tree
+# (.build/<flavor>-<version>-<mode>/) -- point the harness at the right one
+# instead of letting it default to the unsuffixed (nonexistent) path.
+FLAVOR="${1:-nginx}"
+VERSION="${2:-1.31.3}"
+NGX_BUILD_MODE="${NGX_BUILD_MODE:-debug}"
+PROBER_BUILD="${PROBER_BUILD:-$PROBER_ROOT/.build/${FLAVOR}-${VERSION}-${NGX_BUILD_MODE}}"
+export PROBER_BUILD
 
 # NOT setting PROBER_ALLOW_LOG on purpose. 04-fault.rule drives the slab
 # allocator to failure, which is the kind of thing that usually has to be
