@@ -13,7 +13,7 @@
 #   libc-num     atoi/atol/strtol on request data -> ngx_atoi/ngx_atoof
 #   libc-io      bare printf/fprintf(stderr)     -> ngx_log_error
 #   tabs         hard tab in source              -> nginx style is 4 spaces
-#   width        line >80 columns                -> nginx style limit (OPT-IN, see below)
+#   width        line >80 columns                -> nginx style limit
 #   trailing     trailing whitespace
 #   include      .c must include ngx_config.h before ngx_core.h
 #
@@ -21,20 +21,13 @@
 # Suppressing a whole rule is not supported on purpose: the exception belongs
 # next to the code that needs it, where review can see the reason.
 #
-# LINT_NGINX_WIDTH=1 -- the 80-column rule is OFF by default, unlike every
-# other rule here. This repo's src/*.[ch] predates this checker and carries
-# long single-line rationale/CVE-context comments and one wide signature/URL
-# table (ngx_http_shield_patterns.h) that were never written to an 80-column
-# limit: 127 pre-existing hits across all 8 files as of the checker's
-# introduction (cp7b-1). Reflowing that prose risks silently changing meaning
-# in security-sensitive comments and is tracked as its own backlog item
-# (memory/labs/nginx-http-shield-module/TODO.md) rather than bundled into a
-# linter-porting change. Every OTHER rule in this file is clean today and
-# gates unconditionally -- this is a scoped, documented exception on ONE rule,
-# not a disabled checker: set LINT_NGINX_WIDTH=1 to include it.
+# width gates unconditionally like every other rule here. The 127
+# pre-existing hits present at the checker's introduction (cp7b-1) were
+# reflowed (memory/labs/nginx-http-shield-module/TODO.md); the one
+# signature-table row that cannot be reflowed without altering the
+# detection literal carries an inline NOLINT-nginx instead.
 #
 # Usage: ci/linter/lint-nginx.sh [files...]   Env: LINT_MODE=staged|all
-#                                              LINT_NGINX_WIDTH=1 (see above)
 # Extend: add a rule as one more `rule <name> <regex> <message>` call.
 
 # shellcheck source=ci/linter/lib.sh disable=SC1091
@@ -84,11 +77,7 @@ rule libc-io '(^|[^_[:alnum:]])(printf|fprintf|perror)\(' \
     'use ngx_log_error/ngx_conf_log_error'
 rule tabs $'\t' 'nginx style is 4 spaces, no hard tabs'
 rule trailing '[[:space:]]+$' 'trailing whitespace'
-if [ -n "${LINT_NGINX_WIDTH:-}" ]; then
-    rule width '^.{81,}$' 'nginx style limit is 80 columns'
-else
-    say "width rule SKIPPED (LINT_NGINX_WIDTH unset) -- see header, tracked in TODO.md"
-fi
+rule width '^.{81,}$' 'nginx style limit is 80 columns'
 
 for f in "${FILES[@]}"; do
     case "$f" in

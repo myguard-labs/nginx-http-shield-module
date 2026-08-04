@@ -81,20 +81,22 @@ typedef struct {
  * NGX_HTTP_SHIELD_NO_QUERY: scan the request PATH and the scanned headers with
  * this category, but NOT the query string.
  *
- * The request target is one buffer -- path, "?", then query -- and the query is
- * an arbitrary user-controlled VALUE (a search term, a docs lookup, a URL echoed
- * back). Path-shaped and code-shaped tokens have no benign reading in a path
- * component ("/etc/passwd" as a path is a file being served; "<script>" in a
- * path is nonsense) but are ordinary content as a query value ("?q=/etc/passwd"
- * is a code-search box, "?q=<script>" is a site search echoing the term).
+ * The request target is one buffer -- path, "?", then query -- and the query
+ * is an arbitrary user-controlled VALUE (a search term, a docs lookup, a URL
+ * echoed back). Path-shaped and code-shaped tokens have no benign reading in
+ * a path component ("/etc/passwd" as a path is a file being served;
+ * "<script>" in a path is nonsense) but are ordinary content as a query
+ * value ("?q=/etc/passwd" is a code-search box, "?q=<script>" is a site
+ * search echoing the term).
  *
- * This is the query analogue of NGX_HTTP_SHIELD_NO_BODY, one level finer than
- * per-category-body: the meaning of a token depends on WHERE in the target it
- * sits. Only categories whose attack delivery does NOT legitimately arrive as a
- * query value carry it -- xss (reflected query XSS is a WAF's job and the single
- * largest false-positive class this module deliberately declines) and
- * sensitive_file (a filename in a query value is a search term; the file
- * actually being read arrives in the PATH or via lfi, both still scanned).
+ * This is the query analogue of NGX_HTTP_SHIELD_NO_BODY, one level finer
+ * than per-category-body: the meaning of a token depends on WHERE in the
+ * target it sits. Only categories whose attack delivery does NOT
+ * legitimately arrive as a query value carry it -- xss (reflected query XSS
+ * is a WAF's job and the single largest false-positive class this module
+ * deliberately declines) and sensitive_file (a filename in a query value is
+ * a search term; the file actually being read arrives in the PATH or via
+ * lfi, both still scanned).
  * Categories with real query-delivered attacks (traversal ?file=../, lfi
  * ?f=http://, sqli) stay query-eligible.
  */
@@ -215,7 +217,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sqli[] = {
     NGX_HTTP_SHIELD_SIG("utl_http.request"),
     NGX_HTTP_SHIELD_SIG("json_arrayagg("),
     NGX_HTTP_SHIELD_SIG("/**/union/**/"),
-    NGX_HTTP_SHIELD_SIG("/*!50000"),          /* MySQL versioned-comment bypass */
+    NGX_HTTP_SHIELD_SIG("/*!50000"), /* MySQL versioned-comment bypass */
     NGX_HTTP_SHIELD_SIG("0x53514c"),
 };
 
@@ -320,7 +322,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_overlong[] = {
     NGX_HTTP_SHIELD_SIG("%f0%80%80%af"),
     NGX_HTTP_SHIELD_SIG("%f8%80%80%80%af"),
     NGX_HTTP_SHIELD_SIG("%fc%80%80%80%80%af"),
-    /* '/' with the trailing byte left as a literal ASCII '/' percent-encoded. */
+    /* '/' with the trailing byte left as a literal ASCII '/'
+     * percent-encoded. */
     NGX_HTTP_SHIELD_SIG("%c0%2f"),
     NGX_HTTP_SHIELD_SIG("%e0%80%2f"),
     /* '\' -- the Windows separator, 2 and 3 byte overlong forms. */
@@ -492,8 +495,10 @@ static const ngx_http_shield_sig_t  ngx_http_shield_template[] = {
     NGX_HTTP_SHIELD_SIG("${date:"),
     NGX_HTTP_SHIELD_SIG("${ctx:"),
     NGX_HTTP_SHIELD_SIG("${main:"),
-    NGX_HTTP_SHIELD_SIG("${base64:"),     /* Log4j Base64Lookup jndi reconstruction */
-    NGX_HTTP_SHIELD_SIG("${marker:"),     /* Log4j MarkerLookup nesting gadget      */
+    NGX_HTTP_SHIELD_SIG("${base64:"),
+                        /* Log4j Base64Lookup jndi reconstruction */
+    NGX_HTTP_SHIELD_SIG("${marker:"),
+                        /* Log4j MarkerLookup nesting gadget      */
     NGX_HTTP_SHIELD_SIG("${::-"),         /* Log4Shell defanging bypass     */
     NGX_HTTP_SHIELD_SIG("${${"),          /* nested obfuscation             */
     NGX_HTTP_SHIELD_SIG("${${lower:"),
@@ -504,8 +509,10 @@ static const ngx_http_shield_sig_t  ngx_http_shield_template[] = {
 static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
     NGX_HTTP_SHIELD_SIG("ro0ab"),         /* base64 of Java stream header    */
     NGX_HTTP_SHIELD_SIG("aced0005"),      /* hex of Java stream header       */
-    NGX_HTTP_SHIELD_SIG("o:21:\"jdatabasedrivermysqli\""), /* Joomla 2015-8562 */
-    NGX_HTTP_SHIELD_SIG("o:24:\"guzzlehttp"), /* phpggc Guzzle PSR7 POP chain -- length+ns bound */
+    NGX_HTTP_SHIELD_SIG("o:21:\"jdatabasedrivermysqli\""),
+                        /* Joomla 2015-8562 */
+    NGX_HTTP_SHIELD_SIG("o:24:\"guzzlehttp"),
+                        /* phpggc Guzzle PSR7 POP chain -- length+ns bound */
     /* Well-known Java deserialization gadget classes -- no legitimate request
      * carries these by name. */
     NGX_HTTP_SHIELD_SIG("jdbcrowsetimpl"),
@@ -521,7 +528,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
     NGX_HTTP_SHIELD_SIG("bsh.interpreter"),               /* BeanShell RCE    */
     NGX_HTTP_SHIELD_SIG("groovy.lang.groovyshell"),
     NGX_HTTP_SHIELD_SIG("javax.el.elprocessor"),
-    NGX_HTTP_SHIELD_SIG("<java.lang.processbuilder"), /* XStream CVE-2017-9805 */
+    NGX_HTTP_SHIELD_SIG("<java.lang.processbuilder"),
+                        /* XStream CVE-2017-9805 */
     NGX_HTTP_SHIELD_SIG("<work:workcontext"),         /* WebLogic 2017-10271  */
     /* "wls-wsat/coordinatorporttype" is not a deserialization gadget, it is the
      * WebLogic SOAP ENDPOINT PATH -- the same string exploit_path already
@@ -541,10 +549,11 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
      * "<!DOCTYPE") is an ordinary XML construct -- an internal entity
      * "<!ENTITY company \"Acme\">" is used by SOAP templates, XHTML, config and
      * docs -- so it is deliberately NOT a signature: it 403'd every benign XML
-     * body that declared an internal entity (ci/t/05 TEST 74). What no benign body
-     * carries is a SYSTEM reference to a file: or http: URI; those signatures
-     * below match real external-entity and out-of-band (parameter-entity + remote
-     * DTD) XXE independent of the "<!ENTITY" token (ci/t/04 TESTS 15/15b). */
+     * body that declared an internal entity (ci/t/05 TEST 74). What no benign
+     * body carries is a SYSTEM reference to a file: or http: URI; those
+     * signatures below match real external-entity and out-of-band
+     * (parameter-entity + remote DTD) XXE independent of the "<!ENTITY" token
+     * (ci/t/04 TESTS 15/15b). */
     NGX_HTTP_SHIELD_SIG("system \"file:"),
     NGX_HTTP_SHIELD_SIG("system 'file:"),
     NGX_HTTP_SHIELD_SIG("system \"http:"),
@@ -606,7 +615,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_php_rce[] = {
     NGX_HTTP_SHIELD_SIG("-d allow_url_fopen"),
     NGX_HTTP_SHIELD_SIG("-dsafe_mode"),
     NGX_HTTP_SHIELD_SIG("eval-stdin.php"),              /* CVE-2017-9841    */
-    NGX_HTTP_SHIELD_SIG("invokefunction&function=call_user_func_array"), /* ThinkPHP */
+    NGX_HTTP_SHIELD_SIG("invokefunction&function=call_user_func_array"),
+                        /* ThinkPHP */
     NGX_HTTP_SHIELD_SIG("s=/index/\\think"),
     NGX_HTTP_SHIELD_SIG("think\\app/invokefunction"),
     NGX_HTTP_SHIELD_SIG("?a=fetch&content=<?php"),
@@ -650,10 +660,10 @@ static const ngx_http_shield_sig_t  ngx_http_shield_java_eval[] = {
     NGX_HTTP_SHIELD_SIG("runtime.getruntime"),
     NGX_HTTP_SHIELD_SIG("java.lang.processbuilder"),
     NGX_HTTP_SHIELD_SIG("new processbuilder"),
-    NGX_HTTP_SHIELD_SIG("t(java.lang.runtime)"),        /* ES Groovy 2015-1427 */
+    NGX_HTTP_SHIELD_SIG("t(java.lang.runtime)"), /* ES Groovy 2015-1427 */
     NGX_HTTP_SHIELD_SIG("javax.script.scriptengine"),
     NGX_HTTP_SHIELD_SIG("freemarker.template.utility.execute"),
-    NGX_HTTP_SHIELD_SIG("<#assign"),                    /* Freemarker SSTI     */
+    NGX_HTTP_SHIELD_SIG("<#assign"), /* Freemarker SSTI     */
     NGX_HTTP_SHIELD_SIG("com.opensymphony.xwork2"),
     NGX_HTTP_SHIELD_SIG("javax.naming.initialcontext"),
 };
@@ -920,7 +930,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_ssrf_meta[] = {
     NGX_HTTP_SHIELD_SIG("metadata.packet.net/userdata"),
     NGX_HTTP_SHIELD_SIG("/2009-04-04/meta-data/"), /* OpenStack/HP Helion    */
     NGX_HTTP_SHIELD_SIG("rancher-metadata/"),
-    NGX_HTTP_SHIELD_SIG("/latest/api/token"),     /* AWS IMDSv2 token endpoint */
+    NGX_HTTP_SHIELD_SIG("/latest/api/token"), /* AWS IMDSv2 token endpoint */
     NGX_HTTP_SHIELD_SIG("/latest/meta-data/iam/security-credentials/"),
     NGX_HTTP_SHIELD_SIG("metadata-flavor: google"), /* GCP IMDS header form   */
     NGX_HTTP_SHIELD_SIG("metadata-flavor:google"),
@@ -977,7 +987,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_ssti[] = {
 
 /* ---- 28. Known n-day exploit paths ------------------------------------- */
 /* Fixed request paths that only appear in mass-scan exploitation of specific
- * long-patched products. No legitimate client on a general host requests them. */
+ * long-patched products. No legitimate client on a general host requests them.
+ * */
 static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("/wls-wsat/"),               /* WebLogic 2017-10271  */
     NGX_HTTP_SHIELD_SIG("/mgmt/tm/util/bash"),       /* F5 CVE-2021-22986    */
@@ -1004,18 +1015,22 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
     NGX_HTTP_SHIELD_SIG("autodiscover.json%3f@"),
     NGX_HTTP_SHIELD_SIG("/owa/auth/x."),             /* ProxyLogon probe     */
     NGX_HTTP_SHIELD_SIG("/vpns/portal/scripts"),     /* Citrix 2019-19781    */
-    NGX_HTTP_SHIELD_SIG("/securityrealm/user/admin/descriptorbyname"), /* Jenkins */
+    NGX_HTTP_SHIELD_SIG("/securityrealm/user/admin/descriptorbyname"),
+                        /* Jenkins */
     NGX_HTTP_SHIELD_SIG("/config/getuser?index="),   /* Zyxel 2020-29583     */
     NGX_HTTP_SHIELD_SIG("/tmui/login.jsp/..;/"),     /* F5 BIG-IP 2020-5902  */
     NGX_HTTP_SHIELD_SIG("/hsqldb%0a"),               /* F5 TMUI probe        */
-    NGX_HTTP_SHIELD_SIG("/ui/vropspluginui/rest/services/uploadova"), /* vCenter 2021-21972 */
+    NGX_HTTP_SHIELD_SIG("/ui/vropspluginui/rest/services/uploadova"),
+                        /* vCenter 2021-21972 */
     NGX_HTTP_SHIELD_SIG("/ui/vropspluginui/rest/services/getstatus"),
-    NGX_HTTP_SHIELD_SIG("/analytics/telemetry/ph/api/hyper/send"), /* vCenter 2021-22005 */
+    NGX_HTTP_SHIELD_SIG("/analytics/telemetry/ph/api/hyper/send"),
+                        /* vCenter 2021-22005 */
     /* Grafana CVE-2021-43798 is caught by the traversal category (../ under
      * /public/plugins/); a bare "/public/plugins/" matches legit plugin assets
      * and is therefore NOT listed here (would break ci/t/05 FP guard). */
     NGX_HTTP_SHIELD_SIG("/webtools/control/xmlrpc"), /* OFBiz 2020-9496      */
-    NGX_HTTP_SHIELD_SIG("/webtools/control/programexport"), /* OFBiz 2023-49070 */
+    NGX_HTTP_SHIELD_SIG("/webtools/control/programexport"),
+                        /* OFBiz 2023-49070 */
     /* OFBiz requirePasswordChange=Y and Metabase /api/setup/validate are both
      * reachable on legitimate flows (password change / first-run install), so
      * neither is a standalone signature. Both are covered as AND-rules
@@ -1023,38 +1038,52 @@ static const ngx_http_shield_sig_t  ngx_http_shield_exploit_path[] = {
      * that makes them attack-only. */
     NGX_HTTP_SHIELD_SIG("/gwtest/formssso?event="),  /* Citrix 2023-3519     */
     NGX_HTTP_SHIELD_SIG("/vpn/../vpns/"),            /* Citrix 2019-19781    */
-    NGX_HTTP_SHIELD_SIG("/newbm.pl"),                /* Citrix bookmark smuggle */
-    NGX_HTTP_SHIELD_SIG("/remote/fgt_lang?lang=/../"), /* Fortinet 2018-13379 tail */
-    NGX_HTTP_SHIELD_SIG("sslvpn_websession"),        /* Fortinet 2018-13379 target */
-    NGX_HTTP_SHIELD_SIG("/api/v1/totp/user-backup-code/../"), /* Ivanti 2024-21887 */
+    NGX_HTTP_SHIELD_SIG("/newbm.pl"), /* Citrix bookmark smuggle */
+    NGX_HTTP_SHIELD_SIG("/remote/fgt_lang?lang=/../"),
+                        /* Fortinet 2018-13379 tail */
+    NGX_HTTP_SHIELD_SIG("sslvpn_websession"), /* Fortinet 2018-13379 target */
+    NGX_HTTP_SHIELD_SIG("/api/v1/totp/user-backup-code/../"),
+                        /* Ivanti 2024-21887 */
     /* Phase-4 CVE sweep: mass-exploited n-day endpoints. Each is a request
      * PATH that only a scanner requests -- attack-only in the target, and
      * exempt from the body scan (exploit_path carries NO_BODY), so a writeup
      * naming any of them in prose is not blocked. */
-    NGX_HTTP_SHIELD_SIG("/moveitisapi/moveitisapi.dll"), /* MOVEit 2023-34362  */
-    NGX_HTTP_SHIELD_SIG("/guestaccess.aspx"),            /* MOVEit 2023-34362  */
-    NGX_HTTP_SHIELD_SIG("/app/rest/debug/authenticationtest.jsp"), /* TeamCity 2023-42793 */
-    NGX_HTTP_SHIELD_SIG("/json/setup-restore"),          /* Confluence 2023-22518 */
-    NGX_HTTP_SHIELD_SIG("/setup/setupadministrator.action"), /* Confluence 2023-22515 */
-    NGX_HTTP_SHIELD_SIG("/dana-ws/saml20.ws"),           /* Ivanti 2024-21893  */
-    NGX_HTTP_SHIELD_SIG("/_async/asyncresponseservice"), /* WebLogic 2019-2725 */
-    NGX_HTTP_SHIELD_SIG("/goform/set_limitclient_cfg"), /* router botnet probe */
+    NGX_HTTP_SHIELD_SIG("/moveitisapi/moveitisapi.dll"),
+                        /* MOVEit 2023-34362  */
+    NGX_HTTP_SHIELD_SIG("/guestaccess.aspx"), /* MOVEit 2023-34362  */
+    NGX_HTTP_SHIELD_SIG("/app/rest/debug/authenticationtest.jsp"),
+                        /* TeamCity 2023-42793 */
+    NGX_HTTP_SHIELD_SIG("/json/setup-restore"), /* Confluence 2023-22518 */
+    NGX_HTTP_SHIELD_SIG("/setup/setupadministrator.action"),
+                        /* Confluence 2023-22515 */
+    NGX_HTTP_SHIELD_SIG("/dana-ws/saml20.ws"), /* Ivanti 2024-21893  */
+    NGX_HTTP_SHIELD_SIG("/_async/asyncresponseservice"),
+                        /* WebLogic 2019-2725 */
+    NGX_HTTP_SHIELD_SIG("/goform/set_limitclient_cfg"),
+                        /* router botnet probe */
     /* Session-13 sweep: 2024-2025 CISA-KEV, mass-exploited n-days. Same
      * TARGET bar -- fixed distinctive path, no legitimate client sends it. */
-    NGX_HTTP_SHIELD_SIG("/setupwizard.aspx/"),       /* ScreenConnect 2024-1709 */
-    NGX_HTTP_SHIELD_SIG(";.jsp"),                    /* TeamCity 2024-27198 path-param trick */
-    NGX_HTTP_SHIELD_SIG("/res/../admin/diagnostic.jsp"), /* TeamCity 2024-27199 */
-    NGX_HTTP_SHIELD_SIG("/oauth/idp/.well-known/openid-configuration"), /* Citrix Bleed 1+2, 2023-4966 / 2025-5777 */
-    NGX_HTTP_SHIELD_SIG("/databases/upgrademysqlstatus"), /* CyberPanel 2024-51567 */
-    NGX_HTTP_SHIELD_SIG("/developmentserver/metadatauploader"), /* SAP NetWeaver 2025-31324 */
-    NGX_HTTP_SHIELD_SIG("/_layouts/15/toolpane.aspx"), /* SharePoint ToolShell 2025-53770 */
-    NGX_HTTP_SHIELD_SIG("/apps/graphapi/vendor/microsoft/"), /* ownCloud graphapi phpinfo 2023-49103 */
-    NGX_HTTP_SHIELD_SIG("/nmapi/recurringreport"),   /* WhatsUp Gold 2024-4885 */
+    NGX_HTTP_SHIELD_SIG("/setupwizard.aspx/"), /* ScreenConnect 2024-1709 */
+    NGX_HTTP_SHIELD_SIG(";.jsp"), /* TeamCity 2024-27198 path-param trick */
+    NGX_HTTP_SHIELD_SIG("/res/../admin/diagnostic.jsp"),
+                        /* TeamCity 2024-27199 */
+    NGX_HTTP_SHIELD_SIG("/oauth/idp/.well-known/openid-configuration"),
+                        /* Citrix Bleed 1+2, 2023-4966 / 2025-5777 */
+    NGX_HTTP_SHIELD_SIG("/databases/upgrademysqlstatus"),
+                        /* CyberPanel 2024-51567 */
+    NGX_HTTP_SHIELD_SIG("/developmentserver/metadatauploader"),
+                        /* SAP NetWeaver 2025-31324 */
+    NGX_HTTP_SHIELD_SIG("/_layouts/15/toolpane.aspx"),
+                        /* SharePoint ToolShell 2025-53770 */
+    NGX_HTTP_SHIELD_SIG("/apps/graphapi/vendor/microsoft/"),
+                        /* ownCloud graphapi phpinfo 2023-49103 */
+    NGX_HTTP_SHIELD_SIG("/nmapi/recurringreport"), /* WhatsUp Gold 2024-4885 */
 };
 
 /* One row per signature-table category. Structural categories are not listed
  * here -- they have no table. Their authoritative list is the call block in
- * ngx_http_shield_inspect_prebody() (httpoxy, range_dos, ctrl_char, dotfile). */
+ * ngx_http_shield_inspect_prebody() (httpoxy, range_dos, ctrl_char, dotfile).
+ * */
 typedef struct {
     ngx_http_shield_cat_e         cat;
     const char                   *name;   /* shield_skip token + log label   */
@@ -1076,19 +1105,19 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
      * (..%2f, ..%5c, .%%32%65) whose whole point is the still-encoded bytes.
      *
      * traversal carries NO_BODY. Its signatures are pure gadgets ("../", "..\\"
-     * and their encoded variants) with no sensitive-filename targets left (those
-     * moved to sensitive_file in the phase-3 pass). The "no legitimate client
-     * sends this" property holds in the request TARGET: nginx collapses "../" in
-     * the PATH component during normalization (so a real path-traversal probe
-     * only reaches PRECONTENT if it is ENCODED -- "..%2f" -- which no client emits
-     * by accident), while a literal or encoded "../" in a QUERY value is passed
-     * through unnormalized and stays scanned -- an argument like ?f=../../etc/passwd
-     * is an attack, not content (ci/t/06 TEST 11/69 pin both survive-and-block). In a
-     * request BODY the same bytes are ordinary relative-path CONTENT: JSON asset
-     * maps ({"path":"../logo.png"}),
+     * and their encoded variants) with no sensitive-filename targets left
+     * (those moved to sensitive_file in the phase-3 pass). The "no legitimate
+     * client sends this" property holds in the request TARGET: nginx collapses
+     * "../" in the PATH component during normalization (so a real
+     * path-traversal probe only reaches PRECONTENT if it is ENCODED -- "..%2f"
+     * -- which no client emits by accident), while a literal or encoded "../"
+     * in a QUERY value is passed through unnormalized and stays scanned -- an
+     * argument like ?f=../../etc/passwd is an attack, not content (ci/t/06 TEST
+     * 11/69 pin both survive-and-block). In a request BODY the same bytes are
+     * ordinary relative-path CONTENT: JSON asset maps ({"path":"../logo.png"}),
      * JS/CSS imports, Markdown links, config files. Scanning bodies for "../"
-     * buys no real detection -- path traversal is delivered in the target, not a
-     * body field -- and costs a false positive on any request that stores a
+     * buys no real detection -- path traversal is delivered in the target, not
+     * a body field -- and costs a false positive on any request that stores a
      * relative path. Same reasoning as the code-shaped categories and
      * exploit_path; traversal has no body-delivered AND-rule (none of the five
      * rules report under it), so the metabase constraint does not apply. */
@@ -1294,8 +1323,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ofbiz[] = {
  * The gadget term is "init=", NOT a bare "jdbc:h2:" DSN. Requiring any H2 DSN
  * on its own blocked every benign shape carrying an in-memory H2 connection
  * string -- a legitimate first-run install, a health probe, the DSN quoted in
- * documentation ("jdbc:h2:mem:test" with no INIT script, ci/t/05 TEST 73). The H2
- * DSN term stays so an INIT clause against a non-H2 engine (where it is not
+ * documentation ("jdbc:h2:mem:test" with no INIT script, ci/t/05 TEST 73). The
+ * H2 DSN term stays so an INIT clause against a non-H2 engine (where it is not
  * this RCE) does not match.
  *
  * The Metabase endpoint is deliberately NOT a term (S32-2). AND-rule terms must
@@ -1312,7 +1341,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ofbiz[] = {
  * 73 asserts), and an INIT clause on an H2 connection string IS the RCE
  * primitive regardless of which endpoint receives it -- the H2 SQL-injection
  * shape (CVE-2021-42392 and friends) is the same gadget. Keying on the gadget
- * rather than one product's path also covers the non-Metabase consumers of it. */
+ * rather than one product's path also covers the non-Metabase consumers of it.
+ * */
 static const ngx_http_shield_sig_t  ngx_http_shield_rule_metabase[] = {
     NGX_HTTP_SHIELD_SIG("jdbc:h2:"),
     NGX_HTTP_SHIELD_SIG("init="),
@@ -1321,14 +1351,14 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_metabase[] = {
 /* No "sqli_time_based" AND-rule ("sleep(" + "select "). Both terms are ordinary
  * English that co-occur in perfectly normal traffic -- a product search naming
  * a plan next to a timer parameter, an SQL tutorial search, two unrelated
- * cookies on one Cookie line -- and the rule fired on all of them (ci/t/05 TESTS
- * 64-67 pin those shapes). It also added no detection: every real time-based
- * SQLi carries the call in quote or operator context, which the standalone sqli
- * table above already matches: "' and sleep(", ") or sleep(", ";sleep(",
- * "select sleep(", the inline-comment evasion forms, plus pg_sleep(,
- * benchmark( and "waitfor delay".
- * There is no request where this rule fired but a standalone sig did not, so it
- * was pure FP surface -- the same reasoning that removed grafana_plugin_lfi.
+ * cookies on one Cookie line -- and the rule fired on all of them (ci/t/05
+ * TESTS 64-67 pin those shapes). It also added no detection: every real
+ * time-based SQLi carries the call in quote or operator context, which the
+ * standalone sqli table above already matches: "' and sleep(", ") or sleep(",
+ * ";sleep(", "select sleep(", the inline-comment evasion forms, plus pg_sleep(,
+ * benchmark( and "waitfor delay". There is no request where this rule fired but
+ * a standalone sig did not, so it was pure FP surface -- the same reasoning
+ * that removed grafana_plugin_lfi.
  *
  * Proximity (requiring the terms within N bytes) does NOT rescue it: benign
  * gaps measured 16-24 bytes and real attack gaps 7-20+, so the ranges overlap
@@ -1382,9 +1412,9 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ssrf_wildcard_dns[] = {
 /* No wp.getUsersBlogs rule. The obvious pairing -- wp.getUsersBlogs AND a
  * <methodCall> wrapper -- is worthless: <methodCall> is the XML-RPC envelope
  * EVERY client sends for EVERY method, so the rule would block the legitimate
- * call (ci/t/05 TEST 24 catches exactly that). What distinguishes the brute-force
- * from a real client is request VOLUME, which no same-buffer term set can
- * express. The amplifier it rides on, system.multicall, is a standalone
+ * call (ci/t/05 TEST 24 catches exactly that). What distinguishes the
+ * brute-force from a real client is request VOLUME, which no same-buffer term
+ * set can express. The amplifier it rides on, system.multicall, is a standalone
  * signature and stays blocked. Left out until there is a term that actually
  * separates the two. */
 
@@ -1394,12 +1424,16 @@ static const ngx_http_shield_sig_t  ngx_http_shield_rule_ssrf_wildcard_dns[] = {
  * "_cfclient=true" parameter, which switches the endpoint into the vulnerable
  * cfclient code path -- a switch no legitimate filemanager fetch sends.
  *
- * Both terms land in the request target (path + query), so they are same-buffer.
- * "iedit.cfc" is only the display anchor of the writeups, NOT a term: a bare
- * component fetch is legitimate. Requiring the path AND the _cfclient switch is
- * attack-only. */
-static const ngx_http_shield_sig_t  ngx_http_shield_rule_coldfusion_cfclient[] = {
-    NGX_HTTP_SHIELD_SIG("/cf_scripts/scripts/ajax/ckeditor/plugins/filemanager/"),
+ * Both terms land in the request target (path + query), so they are
+ * same-buffer. "iedit.cfc" is only the display anchor of the writeups, NOT a
+ * term: a bare component fetch is legitimate. Requiring the path AND the
+ * _cfclient switch is attack-only. */
+static const ngx_http_shield_sig_t
+    ngx_http_shield_rule_coldfusion_cfclient[] = {
+    /* Literal is 79 bytes; NGX_HTTP_SHIELD_SIG(...), wrapper pushes the
+     * line to 82 cols. Cannot be split without altering the detection
+     * string, so this ONE line carries a width exemption. */
+    NGX_HTTP_SHIELD_SIG("/cf_scripts/scripts/ajax/ckeditor/plugins/filemanager/"), /* NOLINT-nginx */
     NGX_HTTP_SHIELD_SIG("_cfclient=true"),
 };
 
@@ -1425,8 +1459,9 @@ static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
         ngx_http_shield_rule_vmware_ssti, NGX_HTTP_SHIELD_MATCH_DECODED),
     NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_SSRF_META, "ssrf_wildcard_dns",
         ngx_http_shield_rule_ssrf_wildcard_dns, NGX_HTTP_SHIELD_MATCH_DECODED),
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "coldfusion_cfclient",
-        ngx_http_shield_rule_coldfusion_cfclient, NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH,
+        "coldfusion_cfclient", ngx_http_shield_rule_coldfusion_cfclient,
+        NGX_HTTP_SHIELD_MATCH_DECODED),
 };
 
 #define NGX_HTTP_SHIELD_NRULES                                                \

@@ -162,7 +162,8 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
         }
 
         for (j = 0; j < NGX_HTTP_SHIELD_NCATEGORIES; j++) {
-            if (ngx_http_shield_categories[j].cat == ngx_http_shield_rules[i].cat)
+            if (ngx_http_shield_categories[j].cat
+                == ngx_http_shield_rules[i].cat)
             {
                 ac->row[ngx_http_shield_rules[i].cat] = (ngx_uint_t) j;
                 break;
@@ -199,7 +200,8 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
 
             /* Accept for THIS category, without evicting any other category
              * that also accepts here (two categories may share a signature
-             * string). ac_scan resolves a multi-category state by table order. */
+             * string). ac_scan resolves a multi-category state by table
+             * order. */
             out[s] |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
         }
     }
@@ -216,7 +218,8 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
         ac->need[i] = 0;
 
         for (j = 0; j < ngx_http_shield_rules[i].nterms; j++, term++) {
-            const ngx_http_shield_sig_t  *t = &ngx_http_shield_rules[i].terms[j];
+            const ngx_http_shield_sig_t  *t =
+                &ngx_http_shield_rules[i].terms[j];
 
             if (!(ngx_http_shield_rules[i].match & match)) {
                 continue;

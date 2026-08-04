@@ -74,9 +74,9 @@ typedef struct {
     ngx_uint_t   status;      /* status returned in BLOCK mode              */
     uint64_t     skip;        /* bitmask of disabled categories             */
     ngx_open_file_t *log;     /* JSON hit log file; NULL = disabled         */
-    time_t       log_error_time;    /* last file-sink write-fail alert (rate-limit) */
-    time_t       log_disk_full_time;/* last second ENOSPC seen on the file sink     */
-    ngx_syslog_peer_t *syslog_peer; /* JSON hit log to a syslog server; NULL off */
+    time_t       log_error_time;    /* last write-fail alert (rate-limit) */
+    time_t       log_disk_full_time;/* last second ENOSPC on the file sink */
+    ngx_syslog_peer_t *syslog_peer; /* JSON hit log to syslog; NULL off */
 
     ngx_shm_zone_t *ban_zone; /* shield_ban shm zone; NULL/UNSET = no banning */
     ngx_uint_t   ban_count;   /* hits within ban_window that trigger a ban    */
@@ -484,12 +484,13 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
     req = r->request_line;
 
     /* Bound the request line BEFORE escaping so the finished record always fits
-     * a syslog datagram (4096) whole -- truncating the serialized JSON after the
-     * fact could split a \uXXXX escape and emit invalid JSON. Worst-case blowup
-     * is 6x (every byte -> \uXXXX); leave generous room for the syslog header
-     * and the fixed scaffolding. The escape loop's own `p < last - 6` guard then
-     * guarantees it never stops mid-escape. Bounding on an input byte boundary
-     * (not a UTF-8 char boundary) is safe: each source byte escapes independently.
+     * a syslog datagram (4096) whole -- truncating the serialized JSON after
+     * the fact could split a \uXXXX escape and emit invalid JSON. Worst-case
+     * blowup is 6x (every byte -> \uXXXX); leave generous room for the syslog
+     * header and the fixed scaffolding. The escape loop's own `p < last - 6`
+     * guard then guarantees it never stops mid-escape. Bounding on an input
+     * byte boundary (not a UTF-8 char boundary) is safe: each source byte
+     * escapes independently.
      */
     if (req.len > 600) {
         req.len = 600;
@@ -822,9 +823,10 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
             /* LCOV_EXCL_START -- unreachable from HTTP, kept as defence in
              * depth: ngx_http_parse_complex_uri() percent-decodes AND resolves
              * dot-segments before r->uri, so neither "." nor ".." survives to
-             * here. ci/t/11-dotfile.t TEST 23/24 pin the observable contract (no
-             * dotfile hit for either) rather than these lines. A future caller
-             * passing a non-normalized URI would still be handled correctly. */
+             * here. ci/t/11-dotfile.t TEST 23/24 pin the observable contract
+             * (no dotfile hit for either) rather than these lines. A future
+             * caller passing a non-normalized URI would still be handled
+             * correctly. */
             if ((rest == 1)
                 || (rest >= 2 && r->uri.data[i + 1] == '/'))
             {
@@ -843,7 +845,8 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
 
             /* ".well-known" -- exactly, and only as a whole segment, so
              * ".well-knownXYZ" is still a dotfile. Advance past the segment
-             * and keep walking: a dotfile DEEPER in the namespace still hits. */
+             * and keep walking: a dotfile DEEPER in the namespace still
+             * hits. */
             if (rest >= sizeof(NGX_HTTP_SHIELD_WELL_KNOWN) - 1
                 && ngx_strncmp(&r->uri.data[i], NGX_HTTP_SHIELD_WELL_KNOWN,
                                sizeof(NGX_HTTP_SHIELD_WELL_KNOWN) - 1) == 0
@@ -906,22 +909,25 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
      *
      * Path and query mean different things: the path is a resource locator, the
      * query is an arbitrary user-controlled VALUE (a search term, a URL echoed
-     * back). A few categories -- xss, sensitive_file (ngx_http_shield_no_query_mask())
-     * -- have no benign reading in a path but are ordinary content as a query
-     * value, so they must not fire on the query.
+     * back). A few categories -- xss, sensitive_file
+     * (ngx_http_shield_no_query_mask()) -- have no benign reading in a path but
+     * are ordinary content as a query value, so they must not fire on the
+     * query.
      *
      * Done as TWO passes over the same buffer rather than by splitting it, so
      * that AND-rules keep working: a rule like jenkins_cli_read pairs the term
-     * "/cli?" (which straddles the path/query boundary) with "remoting=true"
-     * (a query param). Splitting the buffer on '?' would put those two terms in
+     * "/cli?" (which straddles the path/query boundary) with "remoting=true" (a
+     * query param). Splitting the buffer on '?' would put those two terms in
      * different scans and the rule could never fire. AND-rule terms live in a
-     * separate id space (rout[]) that the category skip mask does not touch, so:
+     * separate id space (rout[]) that the category skip mask does not touch,
+     * so:
      *
-     *  1. scan the WHOLE target with the query categories masked out -- every
-     *     standalone category except xss/sensitive_file, plus ALL AND-rules
-     *     (whose terms may span the boundary), match here;
-     *  2. scan the PATH component only, at full strength, to recover xss and
-     *     sensitive_file where they DO have attack meaning (in the path).
+     *  1. scan the WHOLE target with the query categories masked out --
+     *     every standalone category except xss/sensitive_file, plus ALL
+     *     AND-rules (whose terms may span the boundary), match here;
+     *  2. scan the PATH component only, at full strength, to recover xss
+     *     and sensitive_file where they DO have attack meaning (in the
+     *     path).
      *
      * xss/sensitive_file in the query are masked out of pass 1 and outside the
      * buffer of pass 2, so they are deliberately not detected there. */
@@ -1217,7 +1223,10 @@ ngx_http_shield_content_type_is(ngx_str_t *v, const char *type, size_t len)
         return 0;
     }
 
-    for (i = len; i < v->len && (v->data[i] == ' ' || v->data[i] == '\t'); i++) {
+    for (i = len;
+         i < v->len && (v->data[i] == ' ' || v->data[i] == '\t');
+         i++)
+    {
         /* void */
     }
 
@@ -1411,9 +1420,10 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     /* skip: a child that names ANY shield_skip token replaces the parent mask
      * wholesale (masks do not union). A child that names none (conf->skip == 0)
      * inherits the parent's mask. Consequence: an empty child CANNOT explicitly
-     * clear an inherited mask -- zero means "unset, inherit", not "skip nothing"
-     * -- so to disable inherited skips a child must re-state the categories it
-     * DOES want skipped, or none survives only if the parent had none. */
+     * clear an inherited mask -- zero means "unset, inherit", not "skip
+     * nothing" -- so to disable inherited skips a child must re-state the
+     * categories it DOES want skipped, or none survives only if the parent had
+     * none. */
     if (conf->skip == 0) {
         conf->skip = prev->skip;
     }
@@ -1423,12 +1433,14 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
      * move together (a single directive sets both). */
     if (conf->log == NGX_CONF_UNSET_PTR) {
         conf->log = (prev->log == NGX_CONF_UNSET_PTR) ? NULL : prev->log;
-        conf->syslog_peer = (prev->syslog_peer == NGX_CONF_UNSET_PTR) ? NULL : prev->syslog_peer;
+        conf->syslog_peer = (prev->syslog_peer == NGX_CONF_UNSET_PTR)
+                             ? NULL : prev->syslog_peer;
     }
 
-    /* shield_ban: inherit the whole policy as a unit. A location either sets its
-     * own shield_ban (all four fields together, enforced by the directive) or
-     * inherits the parent's. NGX_CONF_UNSET_PTR ban_zone => never set here. */
+    /* shield_ban: inherit the whole policy as a unit. A location either
+     * sets its own shield_ban (all four fields together, enforced by the
+     * directive) or inherits the parent's. NGX_CONF_UNSET_PTR ban_zone =>
+     * never set here. */
     if (conf->ban_zone == NGX_CONF_UNSET_PTR) {
         if (prev->ban_zone == NGX_CONF_UNSET_PTR) {
             /* Nobody up the chain set shield_ban. Leave banning off and give
@@ -1620,7 +1632,7 @@ ngx_http_shield_ban_sockaddr_bytes(struct sockaddr *sa, u_char *addr,
 #endif
 
     default:
-        return NGX_DECLINED;  /* LCOV_EXCL_LINE -- non-inet family (unix sock) */
+        return NGX_DECLINED;  /* LCOV_EXCL_LINE -- non-inet (unix sock) */
     }
 }
 
@@ -1701,12 +1713,13 @@ ngx_http_shield_ban_addr(ngx_http_request_t *r, u_char *addr, u_char *len)
      * This is load-bearing for the trust model, not tidiness. A proxy that
      * appends its own header LINE (rather than extending the client's) leaves
      * the client's forged line at the head of the chain. Reading only that head
-     * hands the ban key straight back to the attacker: rotating the forged value
-     * makes every request a distinct key, nothing ever reaches the threshold,
-     * and the real client is never banned. Verified against a live server --
-     * with the head-only read, two attacks plus a probe returned 200 (evaded);
-     * walking to the tail returns 403. The last line is the one the nearest
-     * trusted proxy wrote, which is the only line in the chain it vouches for. */
+     * hands the ban key straight back to the attacker: rotating the forged
+     * value makes every request a distinct key, nothing ever reaches the
+     * threshold, and the real client is never banned. Verified against a live
+     * server -- with the head-only read, two attacks plus a probe returned 200
+     * (evaded); walking to the tail returns 403. The last line is the one the
+     * nearest trusted proxy wrote, which is the only line in the chain it
+     * vouches for. */
     while (h->next != NULL) {
         h = h->next;
     }
@@ -1822,10 +1835,11 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 
     if (rc == NGX_ERROR) {
-        /* Reachable under test: ci/t/prober/rules/04-fault.rule arms a slab fault
-         * via the probe endpoint and drives this path. It used to carry an
-         * LCOV_EXCL because filling a real zone would need thousands of
-         * distinct source addresses the loopback harness cannot produce. */
+        /* Reachable under test: ci/t/prober/rules/04-fault.rule arms a slab
+         * fault via the probe endpoint and drives this path. It used to
+         * carry an LCOV_EXCL because filling a real zone would need
+         * thousands of distinct source addresses the loopback harness
+         * cannot produce. */
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "shield_ban zone \"%V\" is full; hit not counted",
                       &slcf->ban_zone->shm.name);
@@ -1834,8 +1848,8 @@ ngx_http_shield_ban_record(ngx_http_request_t *r,
 
 
 /*
- * Count one hit for shield_ban_status: per-category, plus the blocked total when
- * this hit actually denies the request. Separate from ban_record() because
+ * Count one hit for shield_ban_status: per-category, plus the blocked total
+ * when this hit actually denies the request. Separate from ban_record() because
  * counting is reporting, not policy -- it must happen for every hit regardless
  * of what the ban engine decides to do with it.
  */
@@ -1848,7 +1862,7 @@ ngx_http_shield_ban_count(ngx_http_request_t *r,
     ctx = slcf->ban_zone->data;
 
     if (ctx->sh == NULL || ctx->shpool == NULL) {
-        return;   /* LCOV_EXCL_LINE -- zone not yet initialised in this worker */
+        return;   /* LCOV_EXCL_LINE -- zone not yet init in this worker */
     }
 
     ngx_shmtx_lock(&ctx->shpool->mutex);
@@ -1885,7 +1899,7 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     ctx->shpool = (ngx_slab_pool_t *) shm_zone->shm.addr;
 
     if (shm_zone->shm.exists) {
-        ctx->sh = ctx->shpool->data;   /* LCOV_EXCL_LINE -- pre-existing segment */
+        ctx->sh = ctx->shpool->data;   /* LCOV_EXCL_LINE -- pre-existing seg */
         return NGX_OK;                 /* LCOV_EXCL_LINE */
     }
 
@@ -2162,7 +2176,8 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             n = ngx_atoi(value[i].data + 6, value[i].len - 6);
             if (n == NGX_ERROR || n <= 0) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "invalid shield_ban count \"%V\"", &value[i]);
+                                   "invalid shield_ban count \"%V\"",
+                                   &value[i]);
                 return NGX_CONF_ERROR;
             }
             continue;
