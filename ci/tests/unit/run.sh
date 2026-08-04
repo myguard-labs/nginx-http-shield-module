@@ -57,10 +57,12 @@
 #
 #   * matcher never fires -- `return NULL;` at the top of
 #     ngx_http_shield_ac_scan(), right after the `ac->nstates == 0` guard
-#       -> 32 of 41 checks FAIL: every positive-hit case in case_category_
+#       -> 39 of 48 checks FAIL: every positive-hit case in case_category_
 #          hits, case_percent_decoding, case_case_folding, case_skip_mask
-#          (skip==0), case_malformed_and_embedded_nul and case_raw_vs_
-#          decoded_split. The 9 that stay green are exactly the ones that
+#          (skip==0), case_malformed_and_embedded_nul, case_raw_vs_
+#          decoded_split and all 7 of case_category_tiebreak (a matcher that
+#          never fires cannot reach a tiebreak). The 9 that stay green are
+#          exactly the ones that
 #          assert CLEAN/DECLINED (case_clean_baseline in full, the
 #          double-encoding non-match, the skip_sqli-declined check, the two
 #          malformed-tail checks, and the "no bare '/.' signature" negative
@@ -109,21 +111,35 @@
 #          NGX_HTTP_SHIELD_CAT_N (one past the last real category, never a
 #          genuine hit) instead of zero.
 #
-# ONE MUTATION TRIED AND NOT REACHABLE FROM THIS FILE, recorded so the next
-# person does not mistake it for a gap: inverting the category tiebreak
-# (`if (row < best)` -> `if (row > best)`, with `best` initialized to `0`
-# instead of `NGX_HTTP_SHIELD_NCATEGORIES` so the loop still converges) --
-# taking the HIGHEST accepting table row instead of the lowest when one
-# automaton state accepts more than one category -- left all 41 checks
-# green. None of this file's fixtures land on a state where two DIFFERENT
-# categories both accept: every category-identity check here reaches its
-# accepting state by a path unique to that category's own table row, so the
-# tiebreak is simply never exercised. This is a REAL gap, not a non-finding:
-# a fixture built from two signatures that share a common suffix across two
-# categories (out[v] |= out[fail[v]] in ngx_http_shield_ac_build(), see the
-# comment there) would reach it. Left unclaimed rather than shipped as a
-# checked-but-unreachable row: a mutation row this file cannot reach asserts
-# nothing and must not be claimed as a check.
+#   * category tiebreak inverted -- `if (row < best)` -> `if (row > best)` in
+#     ngx_http_shield_ac_scan(), with `best` initialized to `0` instead of
+#     NGX_HTTP_SHIELD_NCATEGORIES so the loop still converges: report the
+#     HIGHEST accepting table row instead of the lowest when one automaton
+#     state accepts more than one category
+#       -> exactly 2 of case_category_tiebreak's 7 checks FAIL ("the
+#          multi-category state resolves to the LOWEST table row" and "the
+#          tiebreak winner's NAME is reported"): the shared state reports
+#          java_eval (row 13) instead of deserial (row 9). The case's other
+#          5 checks stay green on purpose -- the two fixture-liveness checks
+#          assert the suffix alone still reports java_eval (true under both
+#          implementations), and the two skip checks assert the runner-up is
+#          reported once the winner is masked out, which the inversion also
+#          preserves. That asymmetry is what proves the TIEBREAK is under
+#          test rather than the matcher or the skip mask.
+#
+#          This mutation was UNREACHABLE from this file until 2026-08-04 and
+#          was recorded here as a known gap: every other fixture reaches its
+#          accepting state by a path unique to one category's own table row,
+#          so inverting the tiebreak left all 41 checks green. Closing it
+#          needed a fixture built from two signatures that share a common
+#          suffix ACROSS categories (out[v] |= out[fail[v]] in
+#          ngx_http_shield_ac_build()). There is no seam to inject synthetic
+#          signatures -- the automata are built from the production tables --
+#          so the fixture is a real shipped pair, deserial's
+#          "<java.lang.processbuilder" over java_eval's
+#          "java.lang.processbuilder". See case_category_tiebreak()'s comment
+#          in test_scan.c, including what goes stale if either literal is
+#          ever edited out of ngx_http_shield_patterns.h.
 #
 # Extend: add a CASE() to test_scan.c and one line to its main(). New source
 # file in src/ -> add it to the compile list below.

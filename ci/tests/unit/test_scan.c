@@ -490,6 +490,80 @@ case_raw_vs_decoded_split(void)
 }
 
 
+/*
+ * The category TIEBREAK: which category is reported when one automaton state
+ * accepts more than one of them at once.
+ *
+ * ngx_http_shield_ac_build() unions output sets along the fail links
+ * (out[v] |= out[fail[v]]), so a state ending a long signature ALSO accepts
+ * every shorter signature that is a suffix of it -- including ones belonging
+ * to a different category. ngx_http_shield_ac_scan() resolves that by taking
+ * the lowest CATEGORY TABLE ROW, deliberately NOT the lowest bit position:
+ * the bit tracks the enum, and the enum and ngx_http_shield_categories[] are
+ * free to diverge.
+ *
+ * The fixture is a REAL cross-category suffix pair out of the shipped tables,
+ * not a synthetic one -- there is no seam to inject signatures, the automata
+ * are built from the production tables:
+ *
+ *   deserial  (table row 9)  "<java.lang.processbuilder"
+ *   java_eval (table row 13)  "java.lang.processbuilder"
+ *
+ * The second is a proper suffix of the first and both are MATCH_DECODED, so
+ * scanning the longer string lands on a state whose out[] mask carries BOTH
+ * categories. Row 9 < row 13, so the correct engine reports deserial.
+ *
+ * WHY THIS CASE EXISTS: every other fixture in this file reaches its
+ * accepting state by a path unique to one category's own table row, so the
+ * tiebreak branch is never exercised by them -- inverting it left all 41
+ * checks green. Confirmed non-vacuous on 2026-08-04 by applying that
+ * inversion (`row < best` -> `row > best`, `best` initialized to 0) and
+ * observing this case report java_eval (cat 13) instead of deserial (cat 9).
+ *
+ * If a future signature edit removes either literal, this case starts
+ * asserting nothing rather than failing loudly -- so it checks BOTH that the
+ * multi-accept state is genuinely reached (the java_eval suffix alone still
+ * reports java_eval) and that the shared state resolves to deserial. The
+ * first check is what detects the fixture having gone stale.
+ */
+static void
+case_category_tiebreak(void)
+{
+    ngx_http_shield_hit_t  hit;
+
+    /* Fixture liveness: the SHORTER signature on its own must still report
+     * its own category. If this ever fails, the pair below stopped being a
+     * shared-suffix pair and the tiebreak assertion has gone vacuous. */
+    check(scan_str("x=java.lang.processbuilder", &hit) == NGX_OK,
+          "tiebreak fixture: the java_eval suffix alone still matches");
+    check(hit.cat == NGX_HTTP_SHIELD_CAT_JAVA_EVAL,
+          "tiebreak fixture: the suffix alone reports CAT_JAVA_EVAL");
+
+    /* The tiebreak itself: the longer deserial signature ends at a state that
+     * accepts java_eval too. The lower TABLE ROW (deserial) must win. */
+    check(scan_str("x=<java.lang.processbuilder", &hit) == NGX_OK,
+          "a state accepting two categories still reports a match");
+    check(hit.cat == NGX_HTTP_SHIELD_CAT_DESERIAL,
+          "the multi-category state resolves to the LOWEST table row "
+          "(deserial, row 9), not the highest (java_eval, row 13)");
+    check(hit.category != NULL && strcmp(hit.category, "deserial") == 0,
+          "the tiebreak winner's NAME is reported, not the loser's");
+
+    /* Skipping the winner must hand the hit to the OTHER category rather than
+     * going clean: ~skip is applied to out[] BEFORE the tiebreak runs, so a
+     * skipped category can neither be reported nor mask a live one sharing
+     * its state. This distinguishes "the tiebreak picked deserial" from "only
+     * deserial was ever a candidate". */
+    check(scan_str_skip("x=<java.lang.processbuilder",
+                         (uint64_t) 1 << NGX_HTTP_SHIELD_CAT_DESERIAL, &hit)
+              == NGX_OK,
+          "skipping the tiebreak winner leaves the shared state matching");
+    check(hit.cat == NGX_HTTP_SHIELD_CAT_JAVA_EVAL,
+          "with deserial skipped, the same state reports the runner-up "
+          "(java_eval) -- proving both categories really accept there");
+}
+
+
 int
 main(void)
 {
@@ -502,6 +576,7 @@ main(void)
     case_case_folding();
     case_malformed_and_embedded_nul();
     case_raw_vs_decoded_split();
+    case_category_tiebreak();
 
     printf("\n%d check(s), %d failure(s)\n", checks, failures);
 
