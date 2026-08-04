@@ -1,3 +1,4 @@
+# sync-sha: 61bb2fbe8d86418c3201ee9b868f267b0b5d2841b34ceb8401e34665524e6a97
 name: Lint
 
 on:
@@ -39,4 +40,3 @@ jobs:
 
       - name: Run ci/linter/ selftest
         run: bash ci/linter/selftest.sh
-# sync-sha: 61bb2fbe8d86418c3201ee9b868f267b0b5d2841b34ceb8401e34665524e6a97

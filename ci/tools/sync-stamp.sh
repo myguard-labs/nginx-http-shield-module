@@ -156,10 +156,16 @@ insert_stamp() {
     # RETURN, not EXIT: this runs per file, and an EXIT trap here would replace
     # the one guarding $raw_list.
     trap 'rm -f "$tmp"' RETURN
+    # Keyed on the first SURVIVING line, not on NR == 1. Stripping an existing
+    # stamp with `next` used to consume line 1 before the insert rule could
+    # look at it, so `done` stayed 0 and the END block appended the stamp at the
+    # BOTTOM of the file. --check still passed (stamp_of takes the first match
+    # anywhere), so the stamp silently migrated to the end on every re-stamp
+    # and the documented "top of the file" placement quietly stopped holding.
     awk -v sha="$sha" '
         /^# sync-sha: / { next }
-        NR == 1 && /^#!/ { print; print "# sync-sha: " sha; done = 1; next }
-        NR == 1 && !done { print "# sync-sha: " sha; done = 1 }
+        !done && /^#!/ { print; print "# sync-sha: " sha; done = 1; next }
+        !done { print "# sync-sha: " sha; done = 1 }
         { print }
         END { if (!done) print "# sync-sha: " sha }
     ' "$f" >"$tmp"
