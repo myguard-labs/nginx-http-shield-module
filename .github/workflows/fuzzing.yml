@@ -76,6 +76,33 @@ jobs:
           [ $rc -eq 0 ] || { echo "❌ fuzz_scan crash (exit $rc)"; exit 1; }
           echo "✓ fuzz_scan: no crashes in 120s"
 
+      # Separate step so a red gate names WHICH surface broke. fuzz_xff runs at
+      # ~440k exec/s against a parse with no allocation, so 60s here buys far
+      # more coverage of its (much smaller) input space than 120s does for the
+      # scan core.
+      - name: Run fuzz_xff 60s
+        run: |
+          set -euo pipefail
+          cd ci/fuzz
+          echo "=== regression replay (-runs=0 over the seed corpus) ==="
+          set +e
+          ./fuzz_xff -runs=0 corpus/fuzz_xff
+          rrc=$?
+          set -e
+          [ $rrc -eq 0 ] || { echo "❌ xff replay crash (exit $rrc)"; exit 1; }
+          echo "✓ xff replay: no crashes"
+          echo "=== fuzz_xff (60s) ==="
+          set +e
+          ./fuzz_xff \
+            -max_total_time=60 \
+            -print_final_stats=1 \
+            -artifact_prefix="crash-fuzz_xff-" \
+            corpus/fuzz_xff
+          rc=$?
+          set -e
+          [ $rc -eq 0 ] || { echo "❌ fuzz_xff crash (exit $rc)"; exit 1; }
+          echo "✓ fuzz_xff: no crashes in 60s"
+
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5

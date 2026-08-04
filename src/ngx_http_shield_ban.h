@@ -225,4 +225,27 @@ ngx_int_t ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
     ngx_uint_t count, time_t window, time_t ban_time);
 
 
+/*
+ * Select the RIGHTMOST comma-separated element of one X-Forwarded-For header
+ * LINE and trim surrounding spaces/tabs, writing the result into *out as a
+ * pointer into `value` (no copy, no allocation).
+ *
+ * Split out of ngx_http_shield_ban_addr() so this parse can be driven directly
+ * by a fuzz target: it is the only part of ban keying that consumes
+ * attacker-supplied bytes, and it took an ngx_http_request_t purely by
+ * accident of where it was written. Walking the ->next header chain and
+ * converting the token to an address stay on the request side, where a pool
+ * and r->connection exist.
+ *
+ * Rightmost, not leftmost: XFF is append-only, so the leftmost entry is
+ * whatever the client claimed. See ngx_http_shield_ban_addr() for the full
+ * trust argument.
+ *
+ * `value` may be any byte string including empty; `len` 0 yields an empty
+ * token. The result always satisfies out->data >= value and
+ * out->data + out->len <= value + len.
+ */
+void ngx_http_shield_xff_last_token(u_char *value, size_t len, ngx_str_t *out);
+
+
 #endif /* NGX_HTTP_SHIELD_BAN_H_INCLUDED_ */

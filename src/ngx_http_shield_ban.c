@@ -12,6 +12,43 @@
 #include "ngx_http_shield_ban.h"
 
 
+void
+ngx_http_shield_xff_last_token(u_char *value, size_t len, ngx_str_t *out)
+{
+    u_char  *p, *start, *end;
+
+    start = value;
+    end = value + len;
+
+    /* The LAST comma-separated element: a proxy appending to an existing line
+     * puts what it saw at the end. Scanning backwards means a line with no
+     * comma at all leaves `start` at the beginning, which is the whole value
+     * and the correct single-element answer. */
+    for (p = end; p > start; p--) {
+        if (*(p - 1) == ',') {
+            start = p;
+            break;
+        }
+    }
+
+    /* "a.b.c.d, e.f.g.h" leaves a leading space on every element but the
+     * first. Both trims are bounded by `end`/`start`, so an all-whitespace or
+     * empty token collapses to length 0 rather than walking off either side. */
+    while (start < end && (*start == ' ' || *start == '\t')) {
+        start++;
+    }
+
+    out->data = start;
+    out->len = (size_t) (end - start);
+
+    while (out->len > 0
+           && (start[out->len - 1] == ' ' || start[out->len - 1] == '\t'))
+    {
+        out->len--;
+    }
+}
+
+
 time_t
 ngx_http_shield_time_add_clamp(time_t now, time_t delta)
 {

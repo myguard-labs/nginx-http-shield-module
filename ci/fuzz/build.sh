@@ -24,7 +24,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BIN_DIR="$REPO_ROOT/ci/fuzz"
 
 if [ "${1:-}" = "clean" ]; then
-    rm -f "$BIN_DIR/fuzz_scan"
+    rm -f "$BIN_DIR/fuzz_scan" "$BIN_DIR/fuzz_xff"
     echo "fuzz binaries removed"
     exit 0
 fi
@@ -94,8 +94,28 @@ echo "==> Building fuzz_scan ..."
     "$NGX_SRC/src/os/unix/ngx_alloc.c"
 echo "    OK: $BIN_DIR/fuzz_scan"
 
+# --- Build fuzz_xff (X-Forwarded-For token parse). -------------------------
+# Links src/ngx_http_shield_ban.c for ngx_http_shield_xff_last_token(). That TU
+# depends only on <ngx_core.h> (rbtree/slab/queue/time), which is why the ban
+# state engine and this parse link outside nginx at all. ngx_string.c and the
+# allocators come along for the ngx_* symbols ban.c references.
+echo
+echo "==> Building fuzz_xff ..."
+# shellcheck disable=SC2086
+"$CC" $COMMON_CFLAGS $NGX_INCS \
+    -I "$REPO_ROOT/src" \
+    -o "$BIN_DIR/fuzz_xff" \
+    "$REPO_ROOT/ci/fuzz/fuzz_xff.c" \
+    "$REPO_ROOT/src/ngx_http_shield_ban.c" \
+    "$NGX_SRC/src/core/ngx_string.c" \
+    "$NGX_SRC/src/core/ngx_rbtree.c" \
+    "$NGX_SRC/src/core/ngx_palloc.c" \
+    "$NGX_SRC/src/os/unix/ngx_alloc.c"
+echo "    OK: $BIN_DIR/fuzz_xff"
+
 echo
 echo "Build complete. Binaries in $BIN_DIR/"
 echo
 echo "Quick smoke-run (15 s):"
 echo "  $BIN_DIR/fuzz_scan -max_total_time=15 $REPO_ROOT/ci/fuzz/corpus/fuzz_scan"
+echo "  $BIN_DIR/fuzz_xff -max_total_time=15 $REPO_ROOT/ci/fuzz/corpus/fuzz_xff"
