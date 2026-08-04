@@ -42,12 +42,18 @@ cd "$(git rev-parse --show-toplevel)"
 MODE=stamp
 case "${1:-}" in
     --check) MODE=check ;;
-    --list)  MODE=list ;;
+    --list) MODE=list ;;
     # Anchor to the end of the header block, not a line number: any edit to the
     # comments above would otherwise silently truncate this output.
-    -h|--help) sed -n '2,/^set -/{/^set -/!p;}' "$0"; exit 0 ;;
+    -h | --help)
+        sed -n '2,/^set -/{/^set -/!p;}' "$0"
+        exit 0
+        ;;
     "") ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
+    *)
+        echo "unknown argument: $1" >&2
+        exit 2
+        ;;
 esac
 
 # NUL-delimited: paths with spaces must not split. -print0/-d '' throughout.
@@ -62,8 +68,8 @@ esac
 # substitution would strip the NUL bytes that keep the paths apart.
 targets() {
     find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) -print0 &&
-    find .github/scripts   -maxdepth 1 -name '*.sh' -print0 &&
-    find .github/actions    \( -name 'action.yml' -o -name 'action.yaml' \) -print0
+        find .github/scripts -maxdepth 1 -name '*.sh' -print0 &&
+        find .github/actions \( -name 'action.yml' -o -name 'action.yaml' \) -print0
 }
 
 # The digest of a file with its own stamp line stripped -- see THE
@@ -112,11 +118,11 @@ insert_stamp() {
         NR == 1 && !done { print "# sync-sha: " sha; done = 1 }
         { print }
         END { if (!done) print "# sync-sha: " sha }
-    ' "$f" > "$tmp"
+    ' "$f" >"$tmp"
     # Write back through the original file rather than mv'ing over it: the mode,
     # owner and inode are kept with no chmod --reference (GNU-only) and no
     # cross-filesystem mv. .github/scripts/*.sh must stay executable.
-    cat "$tmp" > "$f"
+    cat "$tmp" >"$f"
 }
 
 # A process substitution discards the exit status of what runs inside it. With
@@ -127,7 +133,7 @@ insert_stamp() {
 # than it should. Materialising the list first makes that failure catchable.
 raw_list="$(mktemp)"
 trap 'rm -f "$raw_list"' EXIT
-if ! targets > "$raw_list"; then
+if ! targets >"$raw_list"; then
     echo "sync-stamp: target discovery failed -- refusing to report a partial result" >&2
     exit 2
 fi
@@ -151,7 +157,8 @@ for f in "${targets_list[@]}"; do
                 echo "  a file must carry exactly one # sync-sha: line" >&2
                 rc=1
             elif [ -z "$have" ]; then
-                echo "MISSING stamp: $f" >&2; rc=1
+                echo "MISSING stamp: $f" >&2
+                rc=1
             elif [ "$have" != "$want" ]; then
                 echo "STALE stamp:   $f" >&2
                 echo "  recorded: $have" >&2
