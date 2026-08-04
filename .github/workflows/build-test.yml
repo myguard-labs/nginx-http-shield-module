@@ -516,23 +516,7 @@ jobs:
       # object under ci/t/, and the scan-core harness's object under
       # ci/tests/unit/.
       - name: Collect and gate module coverage
-        run: |
-          build=.build/nginx-${NGINX_VERSION}
-          lcov --capture --directory "$build/objs/addon/src" --directory ci/t \
-            --directory ci/tests/unit \
-            --output-file cov.info --rc geninfo_unexecuted_blocks=1
-          lcov --extract cov.info '*ngx_http_shield*' --output-file cov-mod.info
-          lcov --list cov-mod.info
-          # Fail the job if module line coverage falls below the floor. The
-          # remaining uncovered lines are config-time NGX_CONF_ERROR arms and
-          # OOM/alloc-failure returns that cannot be driven without malloc fault
-          # injection; the dot-segment arms unreachable behind nginx's own URI
-          # normalization carry LCOV_EXCL markers instead.
-          rate=$(lcov --summary cov-mod.info 2>&1 \
-                 | sed -n 's/.*lines\.*: \([0-9.]*\)%.*/\1/p')
-          echo "module line coverage: ${rate}%"
-          awk -v r="$rate" 'BEGIN { exit (r+0 >= 92) ? 0 : 1 }' \
-            || { echo "coverage ${rate}% below floor 92%"; exit 1; }
+        run: bash ci/tools/coverage.sh
 
   runtime-tests:
     name: Runtime (live server)
