@@ -58,7 +58,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     never re-sent. See audit s43 F1.
     """
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -75,8 +75,8 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 # here falls back to [21], which is exactly right. Add a row only when a category
 # earns a second AbuseIPDB id.
 CAT_MAP: dict[str, list[int]] = {
-    "sqli": [21, 16],       # 16 = SQL Injection
-    "range_dos": [21, 4],   # 4 = DDoS Attack (Apache-Killer Range)
+    "sqli": [21, 16],  # 16 = SQL Injection
+    "range_dos": [21, 4],  # 4 = DDoS Attack (Apache-Killer Range)
 }
 DEFAULT_CATS = [21]
 
@@ -93,7 +93,7 @@ ROTATION_EOF_GRACE = 2
 _stop = False
 
 
-def _handle_stop(signum, frame):  # noqa: ARG001
+def _handle_stop(signum, frame):
     global _stop
     _stop = True
 
@@ -140,13 +140,13 @@ def sanitize_req(req: str) -> str:
     parts = req.split(" ", 2)
     method = parts[0] if parts else ""
     target = parts[1] if len(parts) > 1 else ""
-    path = target.split("?", 1)[0]          # drop the query string (PII)
+    path = target.split("?", 1)[0]  # drop the query string (PII)
 
     # Absolute-form (GET http://host/path): drop the scheme+authority, which
     # would leak an internal hostname, and keep only the path.
     scheme = path.find("://")
     if scheme != -1:
-        rest = path[scheme + 3:]
+        rest = path[scheme + 3 :]
         slash = rest.find("/")
         path = rest[slash:] if slash != -1 else "/"
 
@@ -163,7 +163,7 @@ def sanitize_req(req: str) -> str:
         path = ""
 
     method = "".join(ch for ch in method if ch.isalnum())[:16]
-    path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7f)[:128]
+    path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7F)[:128]
     out = (method + " " + path).strip()
     return out
 
@@ -182,7 +182,7 @@ def _parse_retry_after(value: str | None, now: float) -> float | None:
 
     RFC 9110 allows both forms: delta-seconds ("120") and an HTTP-date
     ("Wed, 21 Oct 2015 07:28:00 GMT"). Returns None when the header is
-    absent or unparseable, which leaves the caller on exponential backoff.
+    absent or unparsable, which leaves the caller on exponential backoff.
 
     The result is NOT clamped here -- Reporter._note_failure applies
     RETRY_AFTER_MAX, so every path into the cooldown shares one bound.
@@ -217,7 +217,9 @@ class Suppressor:
     dedup window). Loaded on construction.
     """
 
-    def __init__(self, window_s: int, daily_cap: int, state_path: str | None = None) -> None:
+    def __init__(
+        self, window_s: int, daily_cap: int, state_path: str | None = None
+    ) -> None:
         self.window_s = window_s
         self.daily_cap = daily_cap
         self.state_path = state_path
@@ -244,8 +246,9 @@ class Suppressor:
         tmp = self.state_path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump({"day": self._day, "count": self._count,
-                           "last": self._last}, fh)
+                json.dump(
+                    {"day": self._day, "count": self._count, "last": self._last}, fh
+                )
             os.replace(tmp, self.state_path)
         except OSError:
             pass
@@ -324,17 +327,17 @@ class Reporter:
             # the float multiply. BACKOFF_MAX already caps the delay, so any
             # exponent past the saturation point is wasted work.
             exp = min(self._fail_streak - 1, 32)
-            delay = min(self.BACKOFF_MAX,
-                        self.BACKOFF_BASE * (2 ** exp))
+            delay = min(self.BACKOFF_MAX, self.BACKOFF_BASE * (2**exp))
         self.cooldown_until = now + delay
 
     # report() outcomes.
-    OK = "ok"          # accepted; record + advance offset
-    RETRY = "retry"    # transient (429/5xx/network); keep offset, retry after cooldown
-    DROP = "drop"      # permanent (4xx != 429); log + advance, never retryable
+    OK = "ok"  # accepted; record + advance offset
+    RETRY = "retry"  # transient (429/5xx/network); keep offset, retry after cooldown
+    DROP = "drop"  # permanent (4xx != 429); log + advance, never retryable
 
-    def report(self, ip: str, cats: list[int], comment: str, ts: str,
-               now: float) -> tuple[str, str]:
+    def report(
+        self, ip: str, cats: list[int], comment: str, ts: str, now: float
+    ) -> tuple[str, str]:
         """POST one report. Returns (outcome, detail) where outcome is one of
         OK / RETRY / DROP.
 
@@ -373,7 +376,9 @@ class Reporter:
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
             if e.code == 429:
-                self._note_failure(now, _parse_retry_after(e.headers.get("Retry-After"), now))
+                self._note_failure(
+                    now, _parse_retry_after(e.headers.get("Retry-After"), now)
+                )
                 return self.RETRY, f"HTTP 429: {body}"
             if 500 <= e.code < 600:
                 # Server-side error: transient -> retry with backoff.
@@ -412,7 +417,9 @@ def save_offset(state_path: str, log_path: str, offset: int, inode: int) -> None
     os.replace(tmp, state_path)
 
 
-def process_line(line: str, sup: Suppressor, reporter: Reporter, now: float, log) -> bool:
+def process_line(
+    line: str, sup: Suppressor, reporter: Reporter, now: float, log
+) -> bool:
     """Process one log line. Return True if the line is done with (advance the
     offset past it), False if it must be retried later (a send failed / API in
     cooldown) so the caller keeps the offset on this line."""
@@ -423,15 +430,15 @@ def process_line(line: str, sup: Suppressor, reporter: Reporter, now: float, log
         entry = json.loads(line)
     except ValueError:
         log(f"skip: malformed JSON: {line[:120]!r}")
-        return True   # never parseable; do not retry
+        return True  # never parseable; do not retry
 
     ip = str(entry.get("ip", ""))
     if not is_reportable_ip(ip):
         return True
 
-    ok, why = sup.allow(ip, now)
+    ok, _why = sup.allow(ip, now)
     if not ok:
-        return True   # deduped / capped -- intentionally dropped, not retried
+        return True  # deduped / capped -- intentionally dropped, not retried
 
     cats = categories_for(str(entry.get("cat", "")))
     comment = build_comment(entry)
@@ -463,19 +470,24 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
     fh = None
     cur_inode = -1
     last_save = 0.0
-    rotation_eofs = 0     # consecutive stable-EOF polls after rotation detected
+    rotation_eofs = 0  # consecutive stable-EOF polls after rotation detected
 
     while not _stop:
         # (Re)open if not open, or if the file was rotated/truncated.
         if fh is None:
             try:
-                fh = open(log_path, "r", encoding="utf-8", errors="replace")
+                # fh deliberately outlives this try block: it is read across
+                # many `follow()` loop iterations (tailing a live log) and
+                # closed explicitly on rotation/truncation (see fh.close()
+                # below), never at the end of a single scope a `with` could
+                # describe.
+                fh = open(log_path, "r", encoding="utf-8", errors="replace")  # noqa: SIM115
                 stat = os.fstat(fh.fileno())
                 cur_inode = stat.st_ino
                 if cur_inode == saved_inode and offset <= stat.st_size:
-                    fh.seek(offset)          # resume where we left off
+                    fh.seek(offset)  # resume where we left off
                 else:
-                    fh.seek(0)               # new/rotated file: start at top
+                    fh.seek(0)  # new/rotated file: start at top
                     offset = 0
                 saved_inode = cur_inode
                 log(f"opened {log_path} inode={cur_inode} at offset={offset}")
@@ -587,27 +599,47 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
 
 
 def main(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("logfile", help="shield_log JSON file to follow")
-    p.add_argument("--state", default="/var/lib/shield-reporter/offset.json",
-                   help="offset state file (default: %(default)s)")
-    p.add_argument("--dedup-window", type=int, default=900,
-                   help="seconds to suppress repeat reports per IP (default 900)")
-    p.add_argument("--daily-cap", type=int, default=1000,
-                   help="max reports per UTC day (default 1000, the free tier)")
-    p.add_argument("--poll", type=float, default=1.0,
-                   help="seconds to sleep at EOF (default 1.0)")
-    p.add_argument("--timeout", type=float, default=10.0,
-                   help="HTTP timeout seconds (default 10)")
-    p.add_argument("--dry-run", action="store_true",
-                   help="do not call AbuseIPDB; log the payload that would be sent")
+    p.add_argument(
+        "--state",
+        default="/var/lib/shield-reporter/offset.json",
+        help="offset state file (default: %(default)s)",
+    )
+    p.add_argument(
+        "--dedup-window",
+        type=int,
+        default=900,
+        help="seconds to suppress repeat reports per IP (default 900)",
+    )
+    p.add_argument(
+        "--daily-cap",
+        type=int,
+        default=1000,
+        help="max reports per UTC day (default 1000, the free tier)",
+    )
+    p.add_argument(
+        "--poll", type=float, default=1.0, help="seconds to sleep at EOF (default 1.0)"
+    )
+    p.add_argument(
+        "--timeout", type=float, default=10.0, help="HTTP timeout seconds (default 10)"
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="do not call AbuseIPDB; log the payload that would be sent",
+    )
     args = p.parse_args(argv)
 
     api_key = os.environ.get("ABUSEIPDB_API_KEY", "")
     if not api_key and not args.dry_run:
-        print("ABUSEIPDB_API_KEY not set in environment "
-              "(populate from /etc/shield-abuseipdb.env)", file=sys.stderr)
+        print(
+            "ABUSEIPDB_API_KEY not set in environment "
+            "(populate from /etc/shield-abuseipdb.env)",
+            file=sys.stderr,
+        )
         return 2
 
     def log(msg: str) -> None:
@@ -626,9 +658,11 @@ def main(argv: list[str]) -> int:
     reporter = Reporter(api_key, args.timeout, args.dry_run)
     sup = Suppressor(args.dedup_window, args.daily_cap, sup_state)
 
-    log(f"shield reporter starting: {args.logfile} "
+    log(
+        f"shield reporter starting: {args.logfile} "
         f"(dedup={args.dedup_window}s cap={args.daily_cap}/day "
-        f"dry_run={args.dry_run})")
+        f"dry_run={args.dry_run})"
+    )
     follow(args, reporter, sup, log)
     return 0
 
