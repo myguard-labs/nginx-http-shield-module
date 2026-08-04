@@ -231,6 +231,11 @@ jobs:
             exit 0
           fi
           # Bounded positive integer: 60 s .. 8 h. Anything else fails the job.
+          #
+          # The glob is whole-string, so an embedded newline is already caught
+          # here as a non-digit -- $GITHUB_ENV is parsed line by line, and a
+          # value like "3600\nPATH=/tmp/evil" would otherwise write a second,
+          # attacker-chosen variable into every later step of this job.
           case "$FUZZ_SECONDS_INPUT" in
             "")
               echo "FUZZ_SECS=3600" >> "$GITHUB_ENV"
@@ -238,6 +243,19 @@ jobs:
               ;;
             *[!0-9]*)
               echo "ERROR: fuzz_seconds must be a positive integer" >&2
+              exit 1
+              ;;
+          esac
+          # The LENGTH BOUND is load-bearing, not cosmetic, and must come
+          # BEFORE the range check. `[ "$v" -lt 60 ]` does not return false on
+          # a value too large for the shell's integer type -- it ERRORS. Inside
+          # `||` that failure is consumed, so an all-digit 26-digit input made
+          # both comparisons fail rather than compare and reached $GITHUB_ENV
+          # unbounded. Five digits covers the 28800 ceiling and keeps every
+          # accepted value inside the range the next check can evaluate.
+          case "$FUZZ_SECONDS_INPUT" in
+            ??????*)
+              echo "ERROR: fuzz_seconds must be at most 5 digits" >&2
               exit 1
               ;;
           esac
