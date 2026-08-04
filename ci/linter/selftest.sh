@@ -154,7 +154,12 @@ case_ 1 "lint-ci-runners forwards a failing check-workflow-runners.sh" \
             > "$tmp/.github/workflows/p.yml"
         cp "$root/ci/linter/lib.sh" "$tmp/ci/linter/lib.sh"
         cp "$root/ci/linter/lint-ci-runners.sh" "$tmp/ci/linter/lint-ci-runners.sh"
-        cd "$tmp" && git init -q && git add -A && git commit -q -m x --no-verify
+        # -c overrides keep the fixture self-contained: a CI runner has no
+        # global user.identity (git exits 128), and a dev box may have
+        # commit.gpgsign=true with no key available here.
+        cd "$tmp" && git init -q && git add -A &&
+            git -c user.name=lint -c user.email=lint@invalid -c commit.gpgsign=false \
+                commit -q -m x --no-verify
         LINT_MODE=all ci/linter/lint-ci-runners.sh
     ' _ "$ROOT"
 
