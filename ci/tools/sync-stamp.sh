@@ -82,20 +82,33 @@ esac
 # canonical, and tolerating a missing path must not weaken it.
 # Only "the path is simply not there" is tolerated.
 #
-# Three states, and only the last one is forgiven:
-#   -d          a directory (or a symlink to one)  -> scan it
-#   -L, not -d  a symlink that does not resolve to a directory, including a
-#               dangling one                       -> error
-#   -e, not -d  present but not a directory        -> error
-#   none        genuinely absent                   -> contribute nothing
+# Four states, and only the last one is forgiven:
+#   -L          any symlink, resolving or dangling  -> error
+#   -d          a real directory                    -> scan it
+#   -e, not -d  present but not a directory         -> error
+#   none        genuinely absent                    -> contribute nothing
 #
-# The -L arm is not theoretical tidiness. Both -d and -e follow symlinks, so a
-# dangling .github/scripts symlink fails both and would otherwise be read as
-# "absent" -- the gate would skip a directory somebody meant to be there.
-# `find` is no help either: it exits 0 on a dangling symlink at the top level.
+# The -L arm is not theoretical tidiness, and it is checked FIRST. `find "$d"`
+# does not descend through a symlinked starting point, so a .github/scripts
+# symlink pointing at a real directory passes -d and then matches zero files --
+# --check reports success while gating nothing. A dangling symlink is just as
+# bad in the other direction: -d and -e both follow, so it would read as
+# "absent" and skip a directory somebody meant to be there, and `find` exits 0
+# on it anyway. Rejecting every symlink covers both without an -H escape hatch
+# that would then need its own containment check against the repo root.
 optional_find() {
     local d="$1"
     shift
+    # Symlinks are rejected BEFORE -d, dangling or not. `find "$d"` does not
+    # descend through a symlinked starting point, so a `.github/scripts`
+    # symlink pointing at a real directory passes -d and then yields NO files:
+    # --check would report success while covering nothing. That is the exact
+    # silent-shrink this gate exists to prevent, so a symlink is an error
+    # rather than something to paper over with -H.
+    if [ -L "$d" ]; then
+        echo "sync-stamp: $d is a symlink; expected a real directory" >&2
+        return 1
+    fi
     if [ -d "$d" ]; then
         find "$d" "$@" -print0
         return
@@ -103,7 +116,7 @@ optional_find() {
     # Present but not a directory: `find` over a regular file SUCCEEDS and
     # matches nothing, so an -e test alone would let a stray `.github/scripts`
     # file read as "no scripts here" and silently shrink the gate.
-    if [ -e "$d" ] || [ -L "$d" ]; then
+    if [ -e "$d" ]; then
         echo "sync-stamp: $d exists but is not a directory" >&2
         return 1
     fi
