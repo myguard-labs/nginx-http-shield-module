@@ -1,0 +1,12 @@
+---
+name: second-entry
+# The other half: a called member with its own pull_request trigger, so a PR
+# runs it once directly and once through ci.yml.
+on:
+  pull_request:
+  workflow_call:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo second

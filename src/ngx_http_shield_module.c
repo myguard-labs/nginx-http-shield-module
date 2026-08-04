@@ -1683,7 +1683,6 @@ ngx_http_shield_ban_peer_trusted(ngx_http_request_t *r, ngx_array_t *trusted)
 static ngx_int_t
 ngx_http_shield_ban_addr(ngx_http_request_t *r, u_char *addr, u_char *len)
 {
-    u_char                      *p, *start;
     ngx_addr_t                   xff;
     ngx_table_elt_t             *h;
     ngx_http_shield_loc_conf_t  *slcf;
@@ -1724,39 +1723,18 @@ ngx_http_shield_ban_addr(ngx_http_request_t *r, u_char *addr, u_char *len)
         h = h->next;
     }
 
-    /* Then the LAST comma-separated element within that line -- a proxy that
-     * appends to an existing line puts what it saw at the end. */
-    start = h->value.data;
-
-    for (p = h->value.data + h->value.len; p > start; p--) {
-        if (*(p - 1) == ',') {
-            start = p;
-            break;
-        }
-    }
-
-    /* Trim surrounding whitespace ("a.b.c.d, e.f.g.h" has a leading space). */
-    while (start < h->value.data + h->value.len
-           && (*start == ' ' || *start == '\t'))
-    {
-        start++;
-    }
-
-    xff.name.data = start;
-    xff.name.len = h->value.data + h->value.len - start;
-
-    while (xff.name.len > 0
-           && (start[xff.name.len - 1] == ' '
-               || start[xff.name.len - 1] == '\t'))
-    {
-        xff.name.len--;
-    }
+    /* Then the LAST comma-separated element within that line, trimmed. The
+     * byte-level parse lives in ngx_http_shield_ban.c so ci/fuzz/fuzz_xff.c can
+     * drive it directly on attacker-supplied bytes; everything below needs a
+     * pool and stays here. */
+    ngx_http_shield_xff_last_token(h->value.data, h->value.len, &xff.name);
 
     /* ngx_parse_addr_port handles both a bare address and the [v6]:port and
      * v4:port forms RFC 7239-era proxies emit. A value that does not parse is
      * not guessed at -- fall back to the peer. */
     if (xff.name.len == 0
-        || ngx_parse_addr_port(r->pool, &xff, start, xff.name.len) != NGX_OK)
+        || ngx_parse_addr_port(r->pool, &xff, xff.name.data, xff.name.len)
+           != NGX_OK)
     {
         return ngx_http_shield_ban_sockaddr_bytes(r->connection->sockaddr,
                                                   addr, len);

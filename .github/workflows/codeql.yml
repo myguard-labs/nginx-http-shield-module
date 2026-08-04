@@ -4,8 +4,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
-  push:
-    branches: [main]
   schedule:
     # Monthly, day 4 @ 04:47 UTC (staggered per repo like ci-deep).
     - cron: "47 4 4 * *"

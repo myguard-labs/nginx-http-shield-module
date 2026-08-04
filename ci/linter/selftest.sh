@@ -116,6 +116,16 @@ policy_() { # policy_ <expected-exit> <fixture> <subcommand>
 # fixture could be the fixture shape rather than the bypass.
 policy_ 0 clean ports
 policy_ 0 clean docs
+# `cadence` derives membership from the entry point's job list, so it needs a
+# fixture whose ci.yml actually CALLS something -- the `clean` tree has no
+# members and correctly refuses to run (exit 2) rather than reporting clean.
+policy_ 0 cadence-clean cadence
+
+# A workflow_call member that ALSO fires on `push: main`, and one that declares
+# a second `pull_request` entry point. Both are green in real CI, which is why
+# only a structural check finds them. Six of shield's seven members carried the
+# first shape until 2026-08-04.
+policy_ 1 member-reruns-on-push cadence
 
 # A `.yaml` workflow was invisible to every check: undocumented gate.
 policy_ 1 bypass-yaml-extension docs

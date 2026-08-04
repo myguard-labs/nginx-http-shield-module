@@ -1,0 +1,12 @@
+---
+name: scan
+# Not a member of the PR entry point, so its own triggers are its own business.
+on:
+  schedule:
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo scan

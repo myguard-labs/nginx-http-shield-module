@@ -1,9 +1,17 @@
 name: Fuzzing
 
-# Fast fuzz regression gate on every PR/push — 120s on the scan core
-# (normalize + substring match over the real signature tables, with nginx's
-# real ngx_unescape_uri() decoder linked in). Long fuzz discovery (hours) lives
-# in ci-deep.yml (monthly cron + workflow_dispatch).
+# Fast fuzz regression gate on every PR — 120s on the scan core (normalize +
+# substring match over the real signature tables, with nginx's real
+# ngx_unescape_uri() decoder linked in) plus 60s on the X-Forwarded-For token
+# parse that selects the ban key. Long fuzz discovery (hours) lives in
+# ci-deep.yml (monthly cron + workflow_dispatch).
+#
+# PR member, called from ci.yml (the single `pull_request:` entry point) --
+# no `push:` trigger here. The repo gates on the PR only: the merge commit is
+# identical to the tested PR head, so a post-merge re-run buys nothing and
+# `workflow_call` does NOT suppress a standalone `push` trigger (the two even
+# use different concurrency keys, so cancellation does not save it either).
+# Same reasoning as asan.yml's header.
 #
 # Action pins (keep in sync with build-test.yml):
 # actions/checkout@v5        -> 93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -13,8 +21,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch: {}
   workflow_call: {}
 
@@ -27,7 +33,7 @@ permissions:
 
 jobs:
   fuzz-regression:
-    name: Fuzz regression (120s)
+    name: Fuzz regression (120s scan + 60s xff)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -75,6 +81,33 @@ jobs:
           set -e
           [ $rc -eq 0 ] || { echo "❌ fuzz_scan crash (exit $rc)"; exit 1; }
           echo "✓ fuzz_scan: no crashes in 120s"
+
+      # Separate step so a red gate names WHICH surface broke. fuzz_xff runs at
+      # ~440k exec/s against a parse with no allocation, so 60s here buys far
+      # more coverage of its (much smaller) input space than 120s does for the
+      # scan core.
+      - name: Run fuzz_xff 60s
+        run: |
+          set -euo pipefail
+          cd ci/fuzz
+          echo "=== regression replay (-runs=0 over the seed corpus) ==="
+          set +e
+          ./fuzz_xff -runs=0 corpus/fuzz_xff
+          rrc=$?
+          set -e
+          [ $rrc -eq 0 ] || { echo "❌ xff replay crash (exit $rrc)"; exit 1; }
+          echo "✓ xff replay: no crashes"
+          echo "=== fuzz_xff (60s) ==="
+          set +e
+          ./fuzz_xff \
+            -max_total_time=60 \
+            -print_final_stats=1 \
+            -artifact_prefix="crash-fuzz_xff-" \
+            corpus/fuzz_xff
+          rc=$?
+          set -e
+          [ $rc -eq 0 ] || { echo "❌ fuzz_xff crash (exit $rc)"; exit 1; }
+          echo "✓ fuzz_xff: no crashes in 60s"
 
       - name: Upload crash artifacts
         if: failure()

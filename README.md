@@ -549,13 +549,42 @@ export TEST_NGINX_PORT=$((1984 + RANDOM % 20000))   # avoid the fixed-default cl
 prove ci/t/
 ```
 
-Fuzz the scan core locally:
+Fuzz locally:
 
 ```sh
 ci/tools/ci-build.sh nginx 1.31.3          # populate .build/ (fuzz needs headers)
 CC=clang bash ci/fuzz/build.sh
 ci/fuzz/fuzz_scan -max_total_time=60 -dict=ci/fuzz/fuzz.dict ci/fuzz/corpus/fuzz_scan
+ci/fuzz/fuzz_xff -max_total_time=60 ci/fuzz/corpus/fuzz_xff
 ```
+
+### What is fuzzed, and what is not
+
+Two targets, one per seam that takes attacker-controlled bytes and links
+outside nginx:
+
+| Target | Surface | Oracle |
+|---|---|---|
+| `fuzz_scan` | normalize + Aho-Corasick scan of any inspected buffer (URI, query, User-Agent, Referer, Content-Type, body), over the real signature tables and nginx's real `ngx_unescape_uri()` | naive per-signature `memmem` reference, differential against the shipped engine |
+| `fuzz_xff` | the `X-Forwarded-For` rightmost-token parse that selects the ban key | forward-walking reference, differential on both offset and length, plus a bounds assertion |
+
+Deliberately not fuzzed, with reasons:
+
+- **`ngx_http_shield_collect_body()`** assembles the body from an
+  `ngx_chain_t` and reads file-backed buffers through `ngx_read_file()`. A
+  target would have to fake a request, a pool and a temp file, so it would end
+  up fuzzing the fake. Its truncation and short-read arithmetic is covered by
+  `ci/t/04-body.t` instead, and the bytes it produces reach `fuzz_scan`'s
+  surface anyway.
+- **The Content-Type suffix match** (`application/…+json` and friends) is a
+  `ngx_strncasecmp` against a fixed suffix after a `;` scan. It reads
+  attacker bytes, but the arithmetic is small enough to review in full and it
+  has no allocation; a target here would mostly re-test `ngx_strncasecmp`. If
+  it grows a second parameter or a parameter parser, it earns one.
+- **Directive parsing** (`shield_ban`, `shield_skip`, `shield_status`) reads
+  operator-supplied config, not attacker input, and fails closed at load. It
+  is covered by the config-error cases in `ci/t/09-conf-errors.t` and
+  `ci/t/10-ban.t`.
 
 Soak under Valgrind locally:
 
@@ -576,12 +605,12 @@ are no lanes here to document; that's a skeleton-only concept.
 
 | Workflow | Trigger | Gates |
 |---|---|---|
-| `build-test.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
-| `lint.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | `ci/linter/run-all.sh` — shellcheck/shfmt, cppcheck-adjacent C style, Python (ruff), Perl (perlcritic), YAML (yamllint/actionlint), spelling (codespell) and the docs-drift/CI-policy checks below, plus `ci/linter/selftest.sh`'s negative controls on the gate itself |
-| `security-scanners.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), semgrep |
-| `fuzzing.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | 120s libFuzzer run of `fuzz_scan` — real normalize + Aho-Corasick core, differentially checked against a naive reference matcher |
-| `valgrind.yml` | `push` to `main` + `workflow_dispatch` (PR via `ci.yml`) | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |
-| `codeql.yml` | `push` to `main` + monthly + `workflow_dispatch` (PR via `ci.yml`) | CodeQL `security-extended` C/C++ analysis |
+| `build-test.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
+| `lint.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | `ci/linter/run-all.sh` — shellcheck/shfmt, cppcheck-adjacent C style, Python (ruff), Perl (perlcritic), YAML (yamllint/actionlint), spelling (codespell) and the docs-drift/CI-policy checks below, plus `ci/linter/selftest.sh`'s negative controls on the gate itself |
+| `security-scanners.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), semgrep |
+| `fuzzing.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 120s libFuzzer run of `fuzz_scan` (real normalize + Aho-Corasick core, differentially checked against a naive reference matcher) plus a 60s run of `fuzz_xff` over the ban-key token parse; each replays its committed corpus first |
+| `valgrind.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |
+| `codeql.yml` | monthly + `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | CodeQL `security-extended` C/C++ analysis |
 | `asan.yml` | `workflow_call` only (PR via `ci.yml`) | 60s ASan+UBSan request-storm soak against the static build — distinct from `build-test.yml`'s single-pass Test::Nginx-under-sanitizer job |
 | `ci-deep.yml` | monthly + `workflow_dispatch` | 4h fuzz, 10 min Memcheck **and** Helgrind soaks, nginx mainline+stable+angie build matrix |
 | `bump.yml` | weekly + `workflow_dispatch` | checks nginx.org/angie.software for newer pins, moves Action sha pins and linter versions; opens a PR via `BUMP_PR_TOKEN` rather than pushing to `main` directly (a required-pull-request ruleset blocks direct pushes). Unlike the skeleton, this repo has no `ci/vendor/nginx-tests` submodule to update. **`BUMP_PR_TOKEN` is not yet provisioned** for this repo, so the scheduled run fails fast and loud at the token-check step by design — not a bug |

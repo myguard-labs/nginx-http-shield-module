@@ -1,0 +1,9 @@
+---
+name: ci
+on:
+  pull_request:
+jobs:
+  gate:
+    uses: ./.github/workflows/gate.yml
+  second:
+    uses: ./.github/workflows/second-entry.yml
