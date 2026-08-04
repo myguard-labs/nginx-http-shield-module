@@ -108,10 +108,15 @@ ngx_shield_probe_zone_render(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
 
 
 /*
- * Arm or clear slab fault injection at `nth` (negative disarms).
+ * Arm or clear fault injection for `fault` at `nth` (negative disarms).
  *
- * The harness has already matched the query argument, rejected malformed and
- * over-long values, and applied the sign; this only has to store the result.
+ * The harness has already matched the query argument, identified WHICH fault
+ * site it names, rejected malformed and over-long values, and applied the
+ * sign; this only has to store the result for a site shield actually
+ * implements. Shield has exactly one fault site (slab allocation), so every
+ * other value is declined -- the same answer as "no fault site at all" -- so
+ * a query naming an unimplemented site is refused rather than reported
+ * applied. See ngx_test_probe_hooks_t.fault_set in ngx_test_probe.h.
  *
  * The counters live in SHARED memory, not in a process global, because the
  * worker that arms the fault need not be the worker that trips it -- a global
@@ -124,9 +129,14 @@ ngx_shield_probe_zone_render(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
  * from whatever traffic the zone saw before it.
  */
 static ngx_int_t
-ngx_shield_probe_fault_set(ngx_shm_zone_t *zone, ngx_int_t nth)
+ngx_shield_probe_fault_set(ngx_shm_zone_t *zone, ngx_test_probe_fault_e fault,
+    ngx_int_t nth)
 {
     ngx_http_shield_ban_ctx_t  *ctx;
+
+    if (fault != NGX_TEST_PROBE_FAULT_SLAB) {
+        return NGX_DECLINED;
+    }
 
     if (zone == NULL) {
         return NGX_DECLINED;
