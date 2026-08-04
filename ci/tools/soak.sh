@@ -120,9 +120,39 @@ saw_block="$WORK/logs/saw_block"
 saw_pass="$WORK/logs/saw_pass"
 saw_dead="$WORK/logs/saw_dead"
 
+# Filler long enough to push the scan's scratch buffers over ngx_pool_t's
+# small-allocation threshold. LOAD-BEARING FOR SANITIZER COVERAGE, not padding.
+#
+# ngx_http_shield_scan_r() takes both scratch buffers from ngx_pnalloc(r->pool,
+# len). For len <= pool->max (NGX_MAX_ALLOC_FROM_POOL, one page - 1, so ~4095)
+# that is a bump-pointer slice of a pool block ASan sees as ONE allocation:
+# an over-read past scratch[len] lands in the neighbouring sub-allocation or in
+# block slack, with no redzone between them, and ASan reports NOTHING. Only
+# len > pool->max takes ngx_palloc_large() -> ngx_alloc() -> malloc(), which
+# ASan brackets with redzones.
+#
+# Measured 2026-08-04, both directions, by planting a one-byte over-read
+# (`raw_lc[len]`) in ngx_http_shield_scan_input():
+#   - with only the sub-4KB payloads below, a 20s soak reported "soak clean";
+#   - with an 8000-byte payload, the same build aborted with
+#     "heap-buffer-overflow ... READ of size 1" naming scan.c's line.
+# The fault was identical in both runs; the only variable was allocation size.
+# So without these entries this job's green is blind to the whole scratch-
+# overrun class it exists to cover. ci/fuzz/fuzz_scan.c avoids the same trap by
+# malloc'ing its scratch (see its "A pool allocation would round up and hide a
+# one-byte overrun" note) -- this is the runtime counterpart of that decision.
+#
+# Keep every LARGE_* value comfortably over 4096 if the page size changes.
+LARGE_FILL="$(head -c 6000 /dev/zero | tr '\0' 'a')"
+
 # URL-encoded attack payloads across many categories (spaces -> %20; the
 # harness/curl would otherwise mangle the request line). Each is something the
 # module MUST block in block mode.
+#
+# The last entry is oversized on purpose (see LARGE_FILL): it carries a real
+# signature so it still exercises the BLOCK path, but at a length that forces
+# the large-block allocator and so makes the scan's scratch writes visible to
+# the sanitizer.
 ATTACKS=(
     "/?id=1%20union%20select%20user,pass%20from%20users"
     "/..%2f..%2f..%2fetc%2fpasswd"
@@ -136,6 +166,7 @@ ATTACKS=(
     "/.env"
     "/.git/config"
     "/%7B%7B7*7%7D%7D"
+    "/?q=$LARGE_FILL%20union%20select%20user,pass%20from%20users"
 )
 # Bodies (POST) that must be blocked; empty_gif returns 405 when passed.
 # shellcheck disable=SC2016  # $where is a literal NoSQL operator, not a variable
@@ -143,13 +174,19 @@ BODY_ATTACKS=(
     "id=1' or 1=1--"
     '<!ENTITY xxe SYSTEM "file:///etc/passwd">'
     '{"$where":"1==1"}'
+    "pad=$LARGE_FILL&id=1' or 1=1--"
 )
+# The oversized benign entry matters as much as the oversized attack one: the
+# clean path runs the same normalize + scan over the same scratch buffers, and
+# a scratch overrun that only shows on a no-hit input would otherwise be
+# unreachable at a sanitizer-visible allocation size.
 BENIGN=(
     "/ok"
     "/index.html"
     "/api/v1/users?page=2&sort=name"
     "/assets/app.min.js?v=1.4.2"
     "/search?q=nginx+performance+tuning"
+    "/search?q=$LARGE_FILL"
 )
 
 # A curl that never reached nginx yields 000. That is not a pass and not a
