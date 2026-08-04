@@ -127,9 +127,11 @@ policy_ 1 verify-after-bind ports
 # asserts the WIRING -- that the wrapper actually calls through and forwards a
 # non-zero exit -- not the trust-boundary logic itself, which is
 # check-workflow-runners.sh's own concern and not re-tested here.
+# shellcheck disable=SC2016
 case_ 1 "lint-ci-runners forwards a failing check-workflow-runners.sh" \
     bash -c '
         set -e
+        root="$1"
         tmp="$(mktemp -d)"
         trap "rm -rf \"$tmp\"" EXIT
         mkdir -p "$tmp/ci/tools"
@@ -138,11 +140,11 @@ case_ 1 "lint-ci-runners forwards a failing check-workflow-runners.sh" \
         mkdir -p "$tmp/.github/workflows" "$tmp/ci/linter"
         printf "name: p\non: {pull_request: {}}\njobs: {p: {runs-on: ubuntu-latest, steps: [{run: echo hi}]}}\n" \
             > "$tmp/.github/workflows/p.yml"
-        cp "'"$ROOT"'/ci/linter/lib.sh" "$tmp/ci/linter/lib.sh"
-        cp "'"$ROOT"'/ci/linter/lint-ci-runners.sh" "$tmp/ci/linter/lint-ci-runners.sh"
+        cp "$root/ci/linter/lib.sh" "$tmp/ci/linter/lib.sh"
+        cp "$root/ci/linter/lint-ci-runners.sh" "$tmp/ci/linter/lint-ci-runners.sh"
         cd "$tmp" && git init -q && git add -A && git commit -q -m x --no-verify
         LINT_MODE=all ci/linter/lint-ci-runners.sh
-    '
+    ' _ "$ROOT"
 
 # run-all.sh dispatches by glob, so a checker that is not executable, or is
 # named outside the lint-*.sh pattern, is silently not run.
