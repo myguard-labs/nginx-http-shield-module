@@ -558,6 +558,23 @@ ci/fuzz/fuzz_scan -max_total_time=60 -dict=ci/fuzz/fuzz.dict ci/fuzz/corpus/fuzz
 ci/fuzz/fuzz_xff -max_total_time=60 ci/fuzz/corpus/fuzz_xff
 ```
 
+`ci/fuzz/fuzz.dict` is GENERATED from the `NGX_HTTP_SHIELD_SIG(...)` literals
+in `src/ngx_http_shield_patterns.h`. A dictionary lets the mutator synthesize a
+multi-byte signature instead of walking to it a byte at a time. It does not
+raise edge coverage — the scan engine is a trie walk, so the same edges run
+whichever literal arrives — it raises how many *distinct signatures* reach the
+differential oracle (measured 23 → 35 of 645 at a 60s budget). A dict that lags
+the tables narrows that reach silently, with every job still green. Add a
+signature, then regenerate:
+
+```sh
+ci/tools/gen-fuzz-dict.py          # rewrite ci/fuzz/fuzz.dict
+ci/tools/gen-fuzz-dict.py --check  # what ci/linter/lint-fuzz-dict.sh runs
+```
+
+Do not hand-edit the file; the linter fails on any difference. A token that is
+not a table signature belongs in `EXTRA_TOKENS` in the generator.
+
 ### What is fuzzed, and what is not
 
 Two targets, one per seam that takes attacker-controlled bytes and links
