@@ -191,6 +191,48 @@ printf 'on: [pull_request\njobs: {\n' >"$badroot/.github/workflows/broken.yml"
 case_ 2 "policy ports: unparsable YAML is exit 2, not clean" \
     env "WORKFLOW_POLICY_ROOT=$badroot" python3 ci/linter/workflow_policy.py ports
 
+# gen-fuzz-dict.py resolves C escapes by hand, and a wrong answer there is
+# invisible: the dictionary still parses, still loads, and simply contains
+# entries matching nothing the scanner will ever compare against. These pin the
+# byte-level cases against what the C compiler actually emits.
+#
+# The \xff case is the regression. The generator carried the value as str and
+# encoded UTF-8 at the end, which turned the single byte ff into c3 bf. No
+# shipped signature uses a high \xNN escape, so the bug was latent -- and the
+# overlong-UTF-8 category is exactly where the first one would be written.
+case_ 0 "gen-fuzz-dict: \\xff is one byte, not UTF-8 U+00FF" \
+    python3 -c '
+import importlib.util
+s = importlib.util.spec_from_file_location("g", "ci/tools/gen-fuzz-dict.py")
+g = importlib.util.module_from_spec(s); s.loader.exec_module(g)
+assert g.unescape_c(r"\xff") == b"\xff", g.unescape_c(r"\xff")
+assert g.dict_quote(b"\xff") == "\\xff"
+'
+
+# The other direction: source-level UTF-8 must stay multi-byte. "。" is three
+# bytes to the compiler, and emitting one \xNN per code point would put a
+# string in the dictionary that matches nothing.
+case_ 0 "gen-fuzz-dict: source UTF-8 stays multi-byte" \
+    python3 -c '
+import importlib.util
+s = importlib.util.spec_from_file_location("g", "ci/tools/gen-fuzz-dict.py")
+g = importlib.util.module_from_spec(s); s.loader.exec_module(g)
+assert g.unescape_c("169。254") == "169。254".encode("utf-8")
+'
+
+# An \x escape wider than a byte is a typo in the table, not something to
+# silently truncate or encode.
+case_ 1 "gen-fuzz-dict: over-wide \\x escape is rejected" \
+    python3 -c '
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("g", "ci/tools/gen-fuzz-dict.py")
+g = importlib.util.module_from_spec(s); s.loader.exec_module(g)
+try:
+    g.unescape_c(r"\x1ff")
+except ValueError:
+    sys.exit(1)
+'
+
 if [ "$rc" -eq 0 ]; then
     echo "== lint gate selftest: all controls held =="
 else

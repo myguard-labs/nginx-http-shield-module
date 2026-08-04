@@ -76,9 +76,9 @@ DICT = "ci/fuzz/fuzz.dict"
 # the mutator into the DECODER rather than into a signature -- the code path
 # that the signature literals, being post-decode, can never exercise.
 EXTRA_TOKENS = [
-    "%",
-    "+",
-    "%25",  # encoded '%': the double-decode / re-entry case
+    b"%",
+    b"+",
+    b"%25",  # encoded '%': the double-decode / re-entry case
 ]
 
 # NGX_HTTP_SHIELD_SIG("...") -- capture the C string literal body, allowing
@@ -90,18 +90,18 @@ SIG_RE = re.compile(r'NGX_HTTP_SHIELD_SIG\(\s*"((?:[^"\\]|\\.)*)"\s*\)')
 # have, and would mangle any high byte written as \xNN by re-interpreting it as
 # a code point.
 C_ESCAPES = {
-    "n": "\n",
-    "r": "\r",
-    "t": "\t",
-    "v": "\v",
-    "f": "\f",
-    "b": "\b",
-    "a": "\a",
-    "0": "\0",
-    "\\": "\\",
-    '"': '"',
-    "'": "'",
-    "?": "?",
+    "n": 0x0A,
+    "r": 0x0D,
+    "t": 0x09,
+    "v": 0x0B,
+    "f": 0x0C,
+    "b": 0x08,
+    "a": 0x07,
+    "0": 0x00,
+    "\\": 0x5C,
+    '"': 0x22,
+    "'": 0x27,
+    "?": 0x3F,
 }
 
 
@@ -115,13 +115,27 @@ def repo_root():
 
 
 def unescape_c(lit):
-    """Turn a C string-literal body into the bytes the compiler would emit."""
-    out = []
+    """Turn a C string-literal body into the bytes the compiler would emit.
+
+    Returns BYTES, and the distinction matters in both directions:
+
+      - Ordinary source text is UTF-8 in this header, and the compiler stores
+        those bytes verbatim, so "。" becomes the three bytes e3 80 82.
+      - A \\xNN escape names ONE byte. "\\xff" is the single byte ff, not
+        U+00FF.
+
+    Carrying the value as str and encoding at the end gets the second case
+    wrong -- chr(0xff).encode("utf-8") is c3 bf, a two-byte string that matches
+    nothing the scanner will ever see. No signature uses a high \\xNN today,
+    but the overlong-UTF-8 category is exactly where one would be written, so
+    the pipeline stays byte-oriented from here on.
+    """
+    out = bytearray()
     i = 0
     while i < len(lit):
         c = lit[i]
         if c != "\\":
-            out.append(c)
+            out += c.encode("utf-8")
             i += 1
             continue
         i += 1
@@ -134,7 +148,12 @@ def unescape_c(lit):
                 j += 1
             if j == i + 1:
                 raise ValueError(f"\\x with no digits in literal: {lit!r}")
-            out.append(chr(int(lit[i + 1 : j], 16)))
+            value = int(lit[i + 1 : j], 16)
+            # C gives \xNN unbounded digits and makes it UB past a byte; a
+            # signature that tripped that is a typo, not something to encode.
+            if value > 0xFF:
+                raise ValueError(f"\\x escape exceeds one byte in: {lit!r}")
+            out.append(value)
             i = j
             continue
         if e in C_ESCAPES:
@@ -142,26 +161,23 @@ def unescape_c(lit):
             i += 1
             continue
         raise ValueError(f"unhandled C escape \\{e} in literal: {lit!r}")
-    return "".join(out)
+    return bytes(out)
 
 
-def dict_quote(s):
-    """Encode a signature as a libFuzzer dictionary entry body.
+def dict_quote(raw):
+    """Encode signature BYTES as a libFuzzer dictionary entry body.
 
     libFuzzer's parser (FuzzerDictionary / ParseOneDictionaryEntry) accepts
     printable bytes, \\" and \\\\ escapes, and \\xNN. Anything outside
     printable ASCII goes out as \\xNN so the file stays diffable text.
 
-    Encoding to UTF-8 first is what makes the non-ASCII signatures correct.
-    ngx_http_shield_ssrf_meta carries "169。254。169。254" and the halfwidth
-    "169｡254｡169｡254" -- IP separators some clients normalize to '.', which is
-    the evasion those entries exist to catch. The header is a UTF-8 file, so
-    the compiler stores each of those separators as THREE bytes, and the
-    scanner compares bytes. Emitting one \\xNN per code point would put a
-    string in the dictionary that matches nothing.
+    Takes bytes because unescape_c already resolved the encoding question --
+    see its docstring. ngx_http_shield_ssrf_meta's "169。254。169。254" arrives
+    here as its nine UTF-8 bytes and goes out as nine \\xNN escapes, which is
+    what the scanner compares against.
     """
     out = []
-    for b in s.encode("utf-8"):
+    for b in raw:
         ch = chr(b)
         if ch == "\\":
             out.append("\\\\")
