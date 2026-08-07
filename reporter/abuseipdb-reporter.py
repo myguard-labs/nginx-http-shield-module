@@ -164,8 +164,7 @@ def sanitize_req(req: str) -> str:
 
     method = "".join(ch for ch in method if ch.isalnum())[:16]
     path = "".join(ch for ch in path if 0x20 <= ord(ch) < 0x7F)[:128]
-    out = (method + " " + path).strip()
-    return out
+    return (method + " " + path).strip()
 
 
 def build_comment(entry: dict) -> str:

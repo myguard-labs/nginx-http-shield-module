@@ -12,6 +12,29 @@
 # matches '^\.githooks/' even though this file has no .sh extension, so a bug
 # here cannot silently disable the check it exists to run.
 #
+# TWO GATES, ONE ENTRY POINT, AND THE REASON THIS FILE CALLS BOTH.
+#
+# `core.hooksPath` REPLACES .git/hooks/ -- git does not consult both. So the
+# hook that `pre-commit install` writes into .git/hooks/pre-commit becomes
+# unreachable the moment core.hooksPath is set, and .pre-commit-config.yaml
+# stops running on commit while still looking installed from every angle a
+# human checks. Measured in this repo 2026-08-08: a file with trailing
+# whitespace and no closing newline committed clean, past a config whose hooks
+# exist precisely for those two things -- and past detect-private-key,
+# gitleaks, flawfinder, semgrep, cppcheck and ruff with it.
+#
+# Neither list is a superset of the other (ci/linter/ owns the workflow-policy
+# and docs-drift checks; .pre-commit-config.yaml owns secret detection and the
+# C SAST gates), so this hook runs BOTH and fails on either.
+#
+# Exit 2 (a tool is not installed) blocks the commit on purpose: a gate that
+# skips itself when its tool is missing reports green while checking nothing.
+#
+# VERIFY BEFORE TRUSTING (this gate was green and inert until 2026-08-08):
+#     printf 'probe   \n\nno newline at eof' > _p.txt
+#     git add _p.txt && git commit -m probe -- _p.txt   # expect BLOCKED
+#     git reset -q HEAD _p.txt; rm -f _p.txt
+#
 # Bypass a single commit with `git commit --no-verify`.
 
 set -uo pipefail
@@ -19,4 +42,31 @@ set -uo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT" || exit 1
 
-exec ci/linter/run-all.sh --staged
+ci/linter/run-all.sh --staged
+rc=$?
+if [ "$rc" -eq 2 ]; then
+    echo "pre-commit: missing linters -- run ci/linter/install-linters.sh" >&2
+    exit 2
+elif [ "$rc" -ne 0 ]; then
+    echo "pre-commit: lint failed -- fix, or commit with --no-verify" >&2
+    exit "$rc"
+fi
+
+if [ -f "$ROOT/.pre-commit-config.yaml" ]; then
+    if ! command -v pre-commit >/dev/null 2>&1; then
+        echo "pre-commit: .pre-commit-config.yaml present but pre-commit is not" \
+             "installed -- pipx install pre-commit" >&2
+        exit 2
+    fi
+    # No `pre-commit install` needed and none is wanted: that command writes to
+    # .git/hooks/, which core.hooksPath has already taken out of the picture.
+    pre-commit run --hook-stage pre-commit
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "pre-commit: .pre-commit-config.yaml hooks failed -- fix, or commit" \
+             "with --no-verify. Fixer hooks may have rewritten files; re-stage." >&2
+        exit "$rc"
+    fi
+fi
+
+exit 0
