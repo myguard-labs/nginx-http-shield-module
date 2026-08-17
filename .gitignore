@@ -55,3 +55,6 @@ cov-mod.info
 # prober binary (ci/t/prober/build.sh output)
 ci/t/prober/prober
 ci/t/prober/json_test
+
+# GCC/Clang numeric compiler dumps adjacent to C sources
+*.c.[0-9]*.dump
