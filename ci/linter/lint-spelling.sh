@@ -39,7 +39,7 @@
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
-mapfile -t FILES < <(lint_files '.' "$@")
+mapfile -t FILES < <(lint_files '.' "$@" | drop_generated_vendor_rules)
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-spelling: no files to check"
     exit 0
