@@ -5,7 +5,7 @@
 # Source of truth: src/ngx_http_shield_patterns.h (NGX_HTTP_SHIELD_SIG).
 # Drift is a hard failure in ci/linter/lint-fuzz-dict.sh.
 #
-# 650 signature literals -> 652 unique entries (incl. 3 decoder tokens).
+# 652 signature literals -> 654 unique entries (incl. 3 decoder tokens).
 
 "\x0d\x0acontent-length"
 "\x0d\x0alocation:"
@@ -338,8 +338,10 @@
 "/var/lib/docker/containers/"
 "/var/log/auth.log"
 "/var/log/secure"
+"/var/run/secrets/kubernetes.io/serviceaccount/"
 "/vpn/../vpns/"
 "/vpns/portal/scripts"
+"/web-inf/web.xml"
 "/webtools/control/"
 "/webtools/control/programexport"
 "/webtools/control/xmlrpc"

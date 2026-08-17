@@ -743,6 +743,11 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sensitive_file[] = {
     NGX_HTTP_SHIELD_SIG("/etc/ssh/sshd_config"),
     NGX_HTTP_SHIELD_SIG("/etc/nginx/nginx.conf"),
     NGX_HTTP_SHIELD_SIG("/etc/letsencrypt/"),
+    /* Servlet containers must never serve WEB-INF resources directly; web.xml
+     * contains deployment configuration and security constraints. */
+    NGX_HTTP_SHIELD_SIG("/web-inf/web.xml"),
+    /* Kubernetes mounts the pod's API credential material here. */
+    NGX_HTTP_SHIELD_SIG("/var/run/secrets/kubernetes.io/serviceaccount/"),
     NGX_HTTP_SHIELD_SIG("/var/log/auth.log"),
     NGX_HTTP_SHIELD_SIG("/var/log/secure"),
     NGX_HTTP_SHIELD_SIG("/var/lib/docker/containers/"),

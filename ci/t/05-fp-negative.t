@@ -462,7 +462,7 @@ GET /t?transport=remoting=true
     location /t { shield block; shield_body on; empty_gif; }
 --- request eval
 "POST /t
-{\"post\":\"Never commit /id_rsa or /.netrc; a leaked /composer.json.bak once exposed prod creds.\"}"
+{\"post\":\"Never expose /WEB-INF/web.xml or /var/run/secrets/kubernetes.io/serviceaccount/token; never commit /id_rsa or /.netrc.\"}"
 --- more_headers
 Content-Type: application/json
 --- error_code: 405

@@ -30,7 +30,7 @@ Run a real WAF on top where you need one.
 
 ## What it blocks
 
-30 categories (638 signatures), all matched case-insensitively after
+30 categories (640 signatures), all matched case-insensitively after
 percent-decoding:
 
 | Category | Examples |
@@ -59,7 +59,7 @@ percent-decoding:
 | `range_dos` | a `Range:` header with more than 10 ranges (CVE-2011-3192) |
 | `ctrl_char` | a C0 control byte in the decoded path (`%01`, `%1b`, …) — nginx itself rejects the *raw* form, so only the encoded one gets this far |
 | `dotfile` | a **structural** check: any path segment beginning with `.` — `/.git/`, `/.env`, `/.htaccess`, `/.ssh/`. The segment *shape* is wrong, so it needs no signature list and cannot be evaded by a name the list doesn't yet carry. Three segments are excluded: `.` and `..` (relative-path tokens; `..` is `traversal`'s job) and `.well-known` (the RFC 8615 public namespace — ACME HTTP-01 renewal, OIDC discovery, `security.txt`; blocking it would break certificate renewal). The exemption covers that one segment only: `/.well-known/.env` still hits `dotfile`, and the Citrix `/oauth/idp/.well-known/openid-configuration` exploit path still hits `exploit_path` |
-| `sensitive_file` | `/.env`, `/.git/`, package/cloud/CLI credential stores, Terraform state, AI-agent config dirs, and traversal **targets** — `/etc/passwd`, `/proc/self/maps`, `/etc/ssh/sshd_config`, `win.ini` |
+| `sensitive_file` | `/.env`, `/.git/`, package/cloud/CLI credential stores, Terraform state, AI-agent config dirs, Java `WEB-INF/web.xml`, Kubernetes service-account credentials, and traversal **targets** — `/etc/passwd`, `/proc/self/maps`, `/etc/ssh/sshd_config`, `win.ini` |
 | `webshell` | `c99.php`, `r57.php`, `wso.php`, `weevely`, `behinder`, `shell.php?cmd=` |
 | `ssrf_meta` | cloud metadata hosts/paths, IMDSv2 tokens/credentials, Unicode-dot/IP-number evasions, wildcard-DNS forms, and loopback Docker/etcd/Lambda control endpoints |
 | `nosql` | MongoDB operator injection `[$ne]`, `[$where]`, `{"$where":`, `$func:` |

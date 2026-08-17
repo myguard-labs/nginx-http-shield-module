@@ -484,6 +484,20 @@ GET /t/.cursor/mcp.json
 GET /t/.terraform/terraform.tfstate
 --- error_code: 403
 
+=== TEST 63b: protected Java deployment descriptor is sensitive_file
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/WEB-INF/web.xml
+--- error_code: 403
+
+=== TEST 63c: Kubernetes service-account credentials are sensitive_file
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/var/run/secrets/kubernetes.io/serviceaccount/token
+--- error_code: 403
+
 === TEST 64: expanded AI artifacts -- Continue config
 --- config
     location /t { shield block; empty_gif; }
