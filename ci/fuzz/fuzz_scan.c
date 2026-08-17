@@ -117,8 +117,8 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
     (void) level; (void) log; (void) err; (void) fmt;
 }
 
-/* Mirror of ngx_http_shield_memmem() in the module. Kept identical: a plain
- * forward substring search that never reads past haystack+hlen. */
+/* Independent naive reference-oracle substring search; never reads past
+ * haystack+hlen. */
 static u_char *
 shield_memmem(u_char *haystack, size_t hlen, const char *needle, size_t nlen)
 {
