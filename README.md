@@ -94,6 +94,27 @@ Then load it:
 load_module modules/ngx_http_shield_module.so;
 ```
 
+### Windows
+
+The module supports native 64-bit Windows builds with both MSVC and MinGW-w64.
+It uses nginx APIs only, so it needs no Windows compatibility shim or additional
+system libraries.
+
+- **MSVC:** build the module statically with
+  `--add-module=C:/path/to/nginx-http-shield-module`. nginx's MSVC build does
+  not produce dynamic addon modules, so do not add a `load_module` directive.
+- **MinGW-w64:** dynamic modules are supported. Configure with
+  `--add-dynamic-module=C:/path/to/nginx-http-shield-module`, build, and load
+  `objs/ngx_http_shield_module.so` from the main nginx configuration.
+
+nginx's native Windows build does not discover installed PCRE2 or zlib
+automatically. Pass their unpacked source directories through `--with-pcre`
+and `--with-zlib`; see
+[the Windows CI workflow](.github/workflows/windows-build.yml) for complete,
+SHA-256-verified MSVC and MinGW-w64 examples. The workflow also starts each
+built server and verifies that a benign request succeeds while an SQL-injection
+probe is blocked.
+
 Or use the helper for a throwaway build:
 
 ```sh
@@ -615,10 +636,10 @@ USE_VALGRIND=1 ci/tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
 A failure surfaces as a red run plus the uploaded artifact — no chat
 notifications wired.
 
-Only `ci.yml` has a `pull_request` trigger. The seven PR-time workflows below
-are `workflow_call` members it triggers directly — seven parallel jobs, no
-`needs:` chaining between them, so a PR is one run wide, not a lane map. There
-are no lanes here to document; that's a skeleton-only concept.
+`ci.yml` is the Linux `pull_request` entry point. Its seven `workflow_call`
+members run as parallel jobs with no `needs:` chaining. `windows-build.yml`
+has its own path-filtered `pull_request` trigger because its hosted Windows
+runners and native build artifacts do not share that Linux job contract.
 
 | Workflow | Trigger | Gates |
 |---|---|---|
@@ -629,6 +650,7 @@ are no lanes here to document; that's a skeleton-only concept.
 | `valgrind.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |
 | `codeql.yml` | monthly + `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | CodeQL `security-extended` C/C++ analysis |
 | `asan.yml` | `workflow_call` only (PR via `ci.yml`) | 60s ASan+UBSan request-storm soak against the static build — distinct from `build-test.yml`'s single-pass Test::Nginx-under-sanitizer job |
+| `windows-build.yml` | path-filtered PR + `workflow_dispatch` | native MSVC static and MinGW-w64 dynamic builds; module registration, directive positive/negative controls, and live benign/blocked request checks |
 | `ci-deep.yml` | monthly + `workflow_dispatch` | 4h fuzz, 10 min Memcheck **and** Helgrind soaks, nginx mainline+stable+angie build matrix |
 | `bump.yml` | weekly + `workflow_dispatch` | checks nginx.org/angie.software for newer pins, moves Action sha pins and linter versions; opens a PR via `BUMP_PR_TOKEN` rather than pushing to `main` directly (a required-pull-request ruleset blocks direct pushes). Unlike the skeleton, this repo has no `ci/vendor/nginx-tests` submodule to update. **`BUMP_PR_TOKEN` is not yet provisioned** for this repo, so the scheduled run fails fast and loud at the token-check step by design — not a bug |
 | `ci/tools/check-workflow-runners.sh` | pre-commit + local gate (no workflow, no badge) | enforces the runner trust boundary: fails the build if any `pull_request`-triggered workflow is set to run on a self-hosted runner, since that would hand a fork PR author code execution on the build host |
