@@ -150,6 +150,26 @@ policy_ 1 verify-after-bind ports
 # asserts the WIRING -- that the wrapper actually calls through and forwards a
 # non-zero exit -- not the trust-boundary logic itself, which is
 # check-workflow-runners.sh's own concern and not re-tested here.
+case_ 2 "pre-commit hook rejects staged config deletion" \
+    bash -c '
+        set -e
+        root="$1"
+        tmp="$(mktemp -d)"
+        trap "rm -rf \"$tmp\"" EXIT
+        mkdir -p "$tmp/.githooks" "$tmp/ci/linter"
+        cp "$root/.githooks/pre-commit" "$tmp/.githooks/pre-commit"
+        printf "#!/bin/sh\nexit 0\n" > "$tmp/ci/linter/run-all.sh"
+        chmod +x "$tmp/ci/linter/run-all.sh"
+        : > "$tmp/.pre-commit-config.yaml"
+        cd "$tmp"
+        git init -q
+        git add -A
+        git -c user.name=lint -c user.email=lint@invalid -c commit.gpgsign=false \
+            commit -q -m x --no-verify
+        git rm -q .pre-commit-config.yaml
+        .githooks/pre-commit
+    ' _ "$ROOT"
+
 case_ 1 "lint-ci-runners forwards a failing check-workflow-runners.sh" \
     bash -c '
         set -e
