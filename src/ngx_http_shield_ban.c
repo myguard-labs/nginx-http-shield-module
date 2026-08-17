@@ -14,6 +14,9 @@
  * must link outside nginx, the same property that put the ban engine here.
  */
 
+#include <ngx_config.h>
+#include <ngx_core.h>
+
 #include "ngx_http_shield_ban.h"
 
 
