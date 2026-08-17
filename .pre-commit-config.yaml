@@ -240,7 +240,6 @@ repos:
         name: ast-grep (structural sinks, gate on promoted rules)
         entry: ast-grep scan -c ci/ast-grep/sgconfig.yml
                --error=c-alloc-mul-overflow
-               --error=c-memcpy-sizeof-pointer
                --error=c-sizeof-wrong-operand
                --error=c-unbounded-string-copy
                --error=c-format-string

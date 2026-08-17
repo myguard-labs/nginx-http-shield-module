@@ -9,6 +9,8 @@
 #                          all                              -- every tracked file
 #                        and an explicit file list passed in "$@" by run-all.sh.
 #   need <tool> <hint>   hard-fail with an install hint when a linter is absent
+#   drop_generated_vendor_rules
+#                        remove generated upstream ast-grep YAML from a list
 #   say / warn / die     consistent output
 #
 # Missing tools are a HARD FAILURE, never a silent skip: a gate that quietly
@@ -51,4 +53,12 @@ lint_files() {
         grep -E "$match_re" |
         while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done ||
         true
+}
+
+# These files are a byte-for-byte generated upstream snapshot. Their spelling
+# and YAML style are not ours to fix, while rules/own remains first-party and
+# must keep both checks. Call this only from those two prose/style linters;
+# structural and provenance checks still need to see the generated snapshot.
+drop_generated_vendor_rules() {
+    grep -Ev '^ci/ast-grep/rules/vendor/' || true
 }

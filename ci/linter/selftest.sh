@@ -180,6 +180,18 @@ case_ 0 "lint-spelling is dispatched by run-all.sh" \
 case_ 0 "lint-ci-runners is dispatched by run-all.sh" \
     bash -c 'ci/linter/run-all.sh --list | grep -q lint-ci-runners.sh'
 
+# Generated upstream ast-grep rules are immutable snapshots: codespell and
+# yamllint findings there cannot be fixed locally. The exclusion is narrow:
+# first-party rules/own must remain visible to both checkers.
+case_ 0 "generated vendor rules are excluded from prose/style lint" \
+    bash -c '
+        . ci/linter/lib.sh
+        out=$(printf "%s\n" \
+            ci/ast-grep/rules/vendor/c/security/example.yml \
+            ci/ast-grep/rules/own/control.yml | drop_generated_vendor_rules)
+        test "$out" = ci/ast-grep/rules/own/control.yml
+    '
+
 # Unparsable YAML is "could not run" (2), never "clean" -- GitHub may still
 # read a file this parser rejects, so a verdict over the rest of the tree would
 # be unsupported. Fixture is generated: a committed broken-YAML file would trip
