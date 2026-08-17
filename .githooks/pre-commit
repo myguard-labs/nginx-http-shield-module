@@ -42,6 +42,11 @@ set -uo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT" || exit 1
 
+if [ ! -f "$ROOT/.pre-commit-config.yaml" ]; then
+    echo "pre-commit: required .pre-commit-config.yaml is missing" >&2
+    exit 2
+fi
+
 ci/linter/run-all.sh --staged
 rc=$?
 if [ "$rc" -eq 2 ]; then
@@ -52,21 +57,18 @@ elif [ "$rc" -ne 0 ]; then
     exit "$rc"
 fi
 
-if [ -f "$ROOT/.pre-commit-config.yaml" ]; then
-    if ! command -v pre-commit >/dev/null 2>&1; then
-        echo "pre-commit: .pre-commit-config.yaml present but pre-commit is not" \
-             "installed -- pipx install pre-commit" >&2
-        exit 2
-    fi
-    # No `pre-commit install` needed and none is wanted: that command writes to
-    # .git/hooks/, which core.hooksPath has already taken out of the picture.
-    pre-commit run --hook-stage pre-commit
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-        echo "pre-commit: .pre-commit-config.yaml hooks failed -- fix, or commit" \
-             "with --no-verify. Fixer hooks may have rewritten files; re-stage." >&2
-        exit "$rc"
-    fi
+if ! command -v pre-commit >/dev/null 2>&1; then
+    echo "pre-commit: pre-commit is not installed -- pipx install pre-commit" >&2
+    exit 2
+fi
+# No `pre-commit install` needed and none is wanted: that command writes to
+# .git/hooks/, which core.hooksPath has already taken out of the picture.
+pre-commit run --hook-stage pre-commit
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "pre-commit: .pre-commit-config.yaml hooks failed -- fix, or commit" \
+         "with --no-verify. Fixer hooks may have rewritten files; re-stage." >&2
+    exit "$rc"
 fi
 
 exit 0
