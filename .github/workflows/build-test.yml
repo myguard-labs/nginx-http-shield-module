@@ -386,7 +386,7 @@ jobs:
             version_key: NGINX_VERSION
             mode: asan
     steps:
-      # submodules: the prober engine lives in ci/t/harness (nginx-test-harness).
+      # submodules: the prober engine lives in ci/t/harness (nginx-module-testkit).
       # Without it ci/t/prober/run.sh bails, so this is not optional for this job.
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -432,7 +432,7 @@ jobs:
       - name: Build the prober
         env:
           MATRIX_MODE: ${{ matrix.mode }}
-        run: SAN=$([ "$MATRIX_MODE" = asan ] && echo 1 || echo 0) bash ci/t/harness/prober/build.sh
+        run: SAN=$([ "$MATRIX_MODE" = asan ] && echo 1 || echo 0) bash ci/t/harness/ci/prober/build.sh
 
       - name: Run prober rules
         env:
@@ -501,7 +501,7 @@ jobs:
       # branch in ban_record (via armed allocation failure) and per-peer ban
       # behaviour (via bound source addresses out of 127.0.0.0/8).
       - name: Build the prober
-        run: bash ci/t/harness/prober/build.sh
+        run: bash ci/t/harness/ci/prober/build.sh
 
       - name: Run prober rules (adds fault-injection coverage)
         env:
