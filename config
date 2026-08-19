@@ -16,7 +16,7 @@ ngx_module_deps="$ngx_addon_dir/src/ngx_http_shield_patterns.h \
                  $ngx_addon_dir/src/ngx_shield_probe_hooks.h"
 ngx_module_incs=""
 
-# The CI-only test probe comes from ci/t/harness (nginx-test-harness). It is
+# The CI-only test probe comes from ci/t/harness (nginx-module-testkit). It is
 # real code only when NGX_TEST_HARNESS is defined -- ci/tools/ci-build.sh sets both
 # TEST_HARNESS=1 (seen here) and -DNGX_TEST_HARNESS (the compile define), and
 # never for a packaged build. Gate its sources on the same switch so the

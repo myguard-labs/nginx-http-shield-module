@@ -4,7 +4,7 @@
  *
  * ngx_shield_probe_hooks.h -- register shield's probe hooks (CI only).
  *
- * The probe itself lives in ci/t/harness (nginx-test-harness); this
+ * The probe itself lives in ci/t/harness (nginx-module-testkit); this
  * declares the one call the HTTP module makes to hand it shield's zone
  * semantics. See ngx_shield_probe_hooks.c for what the two hooks do, and
  * ci/t/harness/README.md for the consumer contract.
