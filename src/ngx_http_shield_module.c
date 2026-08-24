@@ -1186,8 +1186,10 @@ ngx_http_shield_scannable_body(ngx_http_request_t *r)
     /* RFC 9110 makes Content-Type OPTIONAL; origin apps (PHP php://input,
      * JSON frameworks, Rails) still consume a body sent without it. An
      * absent header is not evidence the body is binary -- it is simply
-     * unlabeled -- so treat it as scannable rather than fail open. Cost is
-     * bounded by shield_max_body (default 8k). */
+     * unlabeled -- so treat it as scannable rather than fail open. The SCAN
+     * itself is bounded by shield_max_body (default 8k); the body is still
+     * fully read by ngx_http_read_client_request_body up to
+     * client_max_body_size before being truncated to that cap. */
     if (r->headers_in.content_type == NULL) {
         return 1;
     }
