@@ -313,3 +313,14 @@ Content-Disposition: form-data; name="q"
 --- more_headers
 Content-Type: application/octet-stream
 --- error_code: 405
+
+=== TEST 99: a body with NO Content-Type header is still scanned
+# RFC 9110 makes Content-Type optional; origin apps (PHP php://input, JSON
+# frameworks, Rails) still consume a body sent without it. Absent Content-Type
+# must be treated as scannable, matching the module's fail-closed stance.
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t
+1 union select password from users"
+--- error_code: 403
