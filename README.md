@@ -73,7 +73,9 @@ with the full ruleset; injection-shaped cookie values; and every other
 request-header value for Log4Shell and Shellshock. Opaque header values
 deliberately do not run short gadget/webshell tokens that would eventually
 collide with random credentials or multipart boundary entropy. When enabled,
-text-shaped request bodies are inspected too.
+text-shaped request bodies are inspected too — including a body sent with no
+`Content-Type` header at all, since RFC 9110 makes the header optional and
+origin apps still consume such bodies.
 
 What is **not** done: scanner-name blocking (User-Agent strings like `sqlmap`
 are trivially spoofed, so they are not matched — but payloads carried *inside*
