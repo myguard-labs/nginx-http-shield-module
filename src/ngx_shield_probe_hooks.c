@@ -6,7 +6,7 @@
  *
  * Everything generic -- flavor, pid, connections, fds, cycle-pool stats, the
  * zone's name/size/slab page accounting, and the whole fault_slab= query
- * parser -- now comes from ci/t/harness (nginx-test-harness). What remains
+ * parser -- now comes from ci/t/harness (nginx-module-testkit). What remains
  * here is only what a generic probe cannot know: the SEMANTICS of shield's
  * shared memory.
  *

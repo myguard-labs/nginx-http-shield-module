@@ -1993,10 +1993,10 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  * shield_probe <zone>;
  *
  * Installs a content handler in this location that renders worker + shm state
- * as JSON. The renderer itself lives in ci/t/harness (nginx-test-harness); this
- * module supplies only the HTTP surface and, via ngx_shield_probe_hooks.c, the
- * shield-specific zone semantics. Compiled out entirely unless
- * NGX_TEST_HARNESS is defined.
+ * as JSON. The renderer itself lives in ci/t/harness
+ * (nginx-module-testkit); this module supplies only the HTTP surface
+ * and, via ngx_shield_probe_hooks.c, the shield-specific zone semantics.
+ * Compiled out entirely unless NGX_TEST_HARNESS is defined.
  *
  * The zone is resolved with a size of 0, which is nginx's documented "attach to
  * an already-declared zone" form (the same call ngx_http_limit_req uses to bind
