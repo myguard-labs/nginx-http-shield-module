@@ -761,3 +761,17 @@ a=O:24:"MyApplicationDataObjectX":0:{}
 --- more_headers
 Content-Type: application/x-www-form-urlencoded
 --- error_code: 405
+
+=== TEST 82: a LAYOUTS asset one character off the shell name still passes
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/_layouts/15/spinstall.aspx
+--- error_code: 200
+
+=== TEST 83: an unrelated turk-prefixed asset is not the turkshell webshell
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/assets/turkish-locale.php
+--- error_code: 200

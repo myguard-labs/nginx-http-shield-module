@@ -570,3 +570,17 @@ GET /t?x=${base64:am5kaTpsZGFwOi8v}
 --- request
 GET /t?x=${marker:${lower:j}ndi}
 --- error_code: 403
+
+=== TEST 74: ToolShell spinstall0.aspx persistence webshell (CVE-2025-53770)
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/_layouts/15/spinstall0.aspx
+--- error_code: 403
+
+=== TEST 75: turkshell.php webshell probe
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/turkshell.php
+--- error_code: 403
