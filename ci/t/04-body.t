@@ -324,3 +324,39 @@ Content-Type: application/octet-stream
 "POST /t
 1 union select password from users"
 --- error_code: 403
+
+=== TEST 100: a chunked body (no Content-Length) carrying an attack is blocked
+# ngx_http_shield_collect_body() takes its content_length_n < 0 fallback path
+# (clamp to shield_max_body instead of to a known length) ONLY for chunked
+# bodies -- that branch is otherwise unreachable. This drives a genuinely
+# chunked request (Transfer-Encoding: chunked, hand-framed chunk sizes, no
+# Content-Length) through it with an attack payload, no Content-Type.
+--- config
+    location /t { shield block; empty_gif; }
+--- more_headers
+Transfer-Encoding: chunked
+--- request eval
+"POST /t\r
+24\r
+q=1 union select password from users\r
+0\r
+\r
+"
+--- error_code: 403
+
+=== TEST 101: a chunked benign body is passed through (negative control for TEST 100)
+# Same chunked framing and absent Content-Length as TEST 100, but a benign
+# payload -- must reach empty_gif (405), proving TEST 100 blocks on the
+# payload and not merely on the chunked transfer-coding itself.
+--- config
+    location /t { shield block; empty_gif; }
+--- more_headers
+Transfer-Encoding: chunked
+--- request eval
+"POST /t\r
+14\r
+name=john&city=paris\r
+0\r
+\r
+"
+--- error_code: 405
