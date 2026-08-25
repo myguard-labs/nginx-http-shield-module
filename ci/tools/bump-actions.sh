@@ -187,7 +187,7 @@ if [ "$DRY_RUN" = 0 ] && [ "$CHANGED" = 1 ]; then
         if [ -n "$comment_files" ]; then
             while IFS= read -r f; do
                 perl -pi -e "s{(# \Q$repo\E(?:/[A-Za-z0-9._-]+)?\@)v?\Q$key_major\E(\.[0-9A-Za-z._-]+)?( +-> +)[0-9a-f]{40}}{\${1}$t\${3}$s}g" "$f"
-            done <<< "$comment_files"
+            done <<<"$comment_files"
         fi
     done
 fi
