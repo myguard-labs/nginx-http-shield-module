@@ -1,4 +1,4 @@
-# sync-sha: cfdf71b97860d60f97dc53eb6bca2300483d4de428eb6cebfca5b919a118850f
+# sync-sha: e02e1112e6e2af8777d0edb2c3f77020ccfed462ec40c2426ab47a126990553a
 name: Bump versions
 
 # Weekly: check nginx.org/angie.software for newer releases than what's
@@ -20,15 +20,17 @@ name: Bump versions
 # BUMP_PR_TOKEN authenticates BOTH halves: gh (via GH_TOKEN) for the PR, and
 # git (via GIT_ASKPASS) for the branch push.
 #
-# ** BUMP_PR_TOKEN IS NOT YET PROVISIONED FOR THIS REPO. ** Neither
-# myguard-labs/nginx-http-shield-module nor the myguard-labs org has this
-# secret (the org only has DISCORD_BOT_TOKEN, DISCORD_CHANNEL_BUILDS and
-# GH_SUBMODULE_TOKEN). Until a human adds a classic PAT with repo scope as
-# BUMP_PR_TOKEN, the "Require BUMP_PR_TOKEN" step below fails fast and loud on
-# every scheduled run -- this is expected and intentional: it fails at step 1
-# with a named `::error::` rather than reproducing nginx-skeleton-module's
-# failure mode of dying mid-script inside bump-actions.sh's api.github.com
-# lookup (see runs 30791888680 and the 2026-07-27 skeleton run).
+# BUMP_PR_TOKEN is provisioned: the "Require BUMP_PR_TOKEN" guard below passes.
+# (It was absent when this workflow was written, and this comment claimed so
+# for far too long after the secret was added -- verified 2026-08-25 against
+# run 32690729318, whose step 2 succeeds and whose step 4 "Run bump script"
+# is the failure. A stale cause in a header sends every reader to the wrong
+# step, so re-check it here before believing it.)
+#
+# The guard stays because an UNSET secret must not look like an up-to-date
+# repo: without it the run would die mid-script inside bump-actions.sh's
+# api.github.com lookup, which is nginx-skeleton-module's failure mode (see
+# run 30791888680 and the 2026-07-27 skeleton run).
 #
 # Action pins (keep in sync with build-test.yml):
 # actions/checkout@v5 -> 93cb6efe18208431cddfb8368fd83d5badbf9bfd

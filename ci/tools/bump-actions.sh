@@ -176,10 +176,19 @@ if [ "$DRY_RUN" = 0 ] && [ "$CHANGED" = 1 ]; then
         # must equal key_major, or a repo pinned on two major lines (v3 in one
         # workflow, v4 in another) would have its v3 documentation overwritten
         # by the v4 resolution just because both share a repo name.
-        grep -rlE "# ${repo}(/[A-Za-z0-9._-]+)?@v?${key_major}(\.[0-9A-Za-z._-]+)? +-> +[0-9a-f]{40}" .github/ 2>/dev/null |
+        # Hoisted into a variable rather than piped straight into `while`: an
+        # action can legitimately have NO documentation comment (actions/cache
+        # is pinned but never spelled out in a header), so grep exits 1. As the
+        # last statement of this loop body that status became the body's status
+        # and `set -e` killed the script -- BEFORE the FATAL guard below could
+        # report, so the weekly bump died with no error text at all. `|| :`
+        # keeps a no-match benign; an empty result then simply skips the loop.
+        comment_files=$(grep -rlE "# ${repo}(/[A-Za-z0-9._-]+)?@v?${key_major}(\.[0-9A-Za-z._-]+)? +-> +[0-9a-f]{40}" .github/ 2>/dev/null || :)
+        if [ -n "$comment_files" ]; then
             while IFS= read -r f; do
                 perl -pi -e "s{(# \Q$repo\E(?:/[A-Za-z0-9._-]+)?\@)v?\Q$key_major\E(\.[0-9A-Za-z._-]+)?( +-> +)[0-9a-f]{40}}{\${1}$t\${3}$s}g" "$f"
-            done
+            done <<<"$comment_files"
+        fi
     done
 fi
 
