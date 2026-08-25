@@ -901,6 +901,16 @@ static const ngx_http_shield_sig_t  ngx_http_shield_webshell[] = {
     NGX_HTTP_SHIELD_SIG("wpyii2"),
     NGX_HTTP_SHIELD_SIG("smevk"),
     NGX_HTTP_SHIELD_SIG("xleet"),
+    /* SharePoint "ToolShell" (CVE-2025-53770) post-exploitation: the attacker
+     * drops this ASPX shell into the LAYOUTS directory and then fetches it at
+     * /_layouts/15/spinstall0.aspx. The name is attacker-invented -- no
+     * SharePoint install ships it -- so it is attack-only in both positions.
+     * The exploit PATH itself (/_layouts/15/toolpane.aspx) is already carried
+     * by exploit_path; this catches the persistence stage that outlives it. */
+    NGX_HTTP_SHIELD_SIG("spinstall0.aspx"),
+    /* Scanned for in the wild as /turkshell.php; a named public PHP shell in
+     * the same family as c99/r57/wso above. */
+    NGX_HTTP_SHIELD_SIG("turkshell.php"),
 };
 
 /* ---- 25. Cloud metadata SSRF ------------------------------------------- */
