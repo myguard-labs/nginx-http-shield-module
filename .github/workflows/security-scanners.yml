@@ -6,13 +6,13 @@ name: Security scanners
 # monthly ci-deep.yml scanners run.
 #
 # Action pin (keep in sync with build-test.yml):
-# actions/checkout@v5        -> 93cb6efe18208431cddfb8368fd83d5badbf9bfd
-# actions/upload-artifact@v5 -> 330a01c490aca151604b8cf639adc76d48f6c5d4
+# actions/checkout@v5.1.0        -> fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+# actions/upload-artifact@v5.0.0 -> 330a01c490aca151604b8cf639adc76d48f6c5d4
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Pinned so a scanner release cannot silently change the gate.
-  SEMGREP_VERSION: "1.169.0"
+  SEMGREP_VERSION: "1.175.0"
 
 on:
   workflow_dispatch: {}
@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout module
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
           submodules: true
