@@ -31,7 +31,7 @@ jobs:
       security-events: write # needed for github/codeql-action/upload-sarif (see comment above)
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
           submodules: true
@@ -46,7 +46,7 @@ jobs:
             build-essential curl libpcre2-dev zlib1g-dev
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: c-cpp
           queries: security-extended
@@ -72,6 +72,6 @@ jobs:
         run: NO_CACHE=1 bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" module
 
       - name: Analyze
-        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: /language:c-cpp
