@@ -1,4 +1,4 @@
-# sync-sha: 1a9f4e0bdff8e5996bf5ee1db3f84e2288a72eb8fcc537106e8483986ed7f32c
+# sync-sha: b070f06cf5dabe9d0d078e25713ed9669034190b46a243d1fa9da69f8bac248e
 name: Security scanners
 
 # Static/security scanners gate on every PR/push — flawfinder (gate on >=4),
@@ -12,7 +12,7 @@ name: Security scanners
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Pinned so a scanner release cannot silently change the gate.
-  SEMGREP_VERSION: "1.178.0"
+  SEMGREP_VERSION: "1.180.0"
 
 on:
   workflow_dispatch: {}
