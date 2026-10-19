@@ -1,4 +1,4 @@
-# sync-sha: e5c584f107675a925f0df2bea679e2de2cf59db70cf05149d23c6749107d22e5
+# sync-sha: 382414720bf22b01096f4dad8eca0e618682b35a8c4f681f5cc0c5b13a5ff964
 name: CI Deep
 
 # Exhaustive dynamic analysis — monthly cron + on-demand only, NEVER on PR.
@@ -38,7 +38,7 @@ name: CI Deep
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Pinned so a scanner release cannot silently change the gate.
-  SEMGREP_VERSION: "1.178.0"
+  SEMGREP_VERSION: "1.181.0"
 
 on:
   schedule:
