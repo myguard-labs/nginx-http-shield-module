@@ -1,4 +1,4 @@
-# sync-sha: 8eb1682d6356f7b07edfdc9b3cf2c7f671dcb187e2995f41f1f48b762d673663
+# sync-sha: 682d308ab0b5bfbd20f39da28965e6dd71750c2166f80ae25f47ca6a9551aee2
 name: CodeQL
 
 env:
@@ -46,7 +46,7 @@ jobs:
             build-essential curl libpcre2-dev zlib1g-dev
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: c-cpp
           queries: security-extended
@@ -72,6 +72,6 @@ jobs:
         run: NO_CACHE=1 bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" module
 
       - name: Analyze
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:c-cpp
