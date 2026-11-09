@@ -5,6 +5,7 @@
  * Direct-call renderer checks using nginx's real formatter. The request pool
  * allocator is replaced so allocation failure and size guards are deterministic.
  */
+#undef NDEBUG
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <assert.h>
