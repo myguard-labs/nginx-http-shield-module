@@ -197,8 +197,13 @@ case_ 1 "lint-ci-runners forwards a failing check-workflow-runners.sh" \
 # named outside the lint-*.sh pattern, is silently not run.
 case_ 0 "lint-spelling is dispatched by run-all.sh" \
     bash -c 'ci/linter/run-all.sh --list | grep -q lint-spelling.sh'
+case_ 0 "lint-ci-coverage is dispatched by run-all.sh" \
+    bash -c 'ci/linter/run-all.sh --list | grep -q lint-ci-coverage.sh'
 case_ 0 "lint-ci-runners is dispatched by run-all.sh" \
     bash -c 'ci/linter/run-all.sh --list | grep -q lint-ci-runners.sh'
+
+case_ 0 "CI policy coverage and runner controls" python3 ci/tests/test_ci_policy.py
+case_ 0 "flawfinder gate failure controls" bash ci/tests/test_flawfinder_gate.sh
 
 # Weekly action bumps must respect the exact-SHA selected-actions policy or a
 # syntactically valid Windows workflow is rejected before GitHub creates any

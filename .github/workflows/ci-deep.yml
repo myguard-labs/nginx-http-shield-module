@@ -1,4 +1,4 @@
-# sync-sha: 10d36558e976b8b32b48289233a5aa15355d94f4c63a0e00b8470b3ebe6ff594
+# sync-sha: 0f99d106a99ae25bc1ce95ae3fb8ad7059178e4d2e125b92bfa97330922817e7
 name: CI Deep
 
 # Exhaustive dynamic analysis — monthly cron + on-demand only, NEVER on PR.
@@ -454,15 +454,7 @@ jobs:
           CC=gcc ./configure --with-compat \
             --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null
       - name: flawfinder (gate on >=4)
-        run: |
-          set -euo pipefail
-          flawfinder --minlevel=1 "$GITHUB_WORKSPACE/src/" 2>&1 | tee flawfinder.log
-          if flawfinder --minlevel=4 --quiet "$GITHUB_WORKSPACE/src/" 2>/dev/null \
-               | grep -Eq 'Hits = [1-9]'; then
-            echo "flawfinder: high-severity (>=4) findings present" >&2
-            exit 1
-          fi
-          echo "flawfinder: clean at >=4"
+        run: bash ci/tools/flawfinder-gate.sh
       - name: clang-tidy (cert-*, security.*)
         run: |
           set -euo pipefail
