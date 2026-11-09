@@ -1,5 +1,30 @@
 # Native OpenMetrics status; exact empty exposition also guards stable zero series.
 use Test::Nginx::Socket 'no_plan';
+use JSON::PP qw(decode_json);
+use Test::More ();
+
+add_response_body_check(sub {
+    my ($block, $body, $req_idx, $repeated_req_idx, $dry_run) = @_;
+    my $expected = $block->json_zone;
+
+    return if !defined $expected;
+
+    SKIP: {
+        Test::More::skip(
+            $block->name . " - parsed JSON checks skipped due to $dry_run", 2
+        ) if $dry_run;
+
+        my $decoded = eval { decode_json($body) };
+        my $error = $@;
+
+        Test::More::ok(!$error, $block->name . ' - response parses as JSON');
+        Test::More::is(
+            defined $decoded ? $decoded->{zone} : undef,
+            $expected,
+            $block->name . ' - parsed zone preserves configured bytes'
+        );
+    }
+});
 
 repeat_each(1);
 no_long_string();
@@ -266,3 +291,16 @@ Proxy: attacker.example
 --- must_die
 --- error_log
 invalid number of arguments in "shield_ban_status_format" directive
+
+=== TEST 18: default JSON escapes a legal quote and backslash zone name
+--- http_config
+    shield_ban_zone 'json"\\name:1m';
+--- config
+    location /status { shield_ban_status 'json"\\name'; }
+--- request
+GET /status
+--- json_zone eval
+"json\"\\name"
+--- response_headers
+Content-Type: application/json
+--- error_code: 200

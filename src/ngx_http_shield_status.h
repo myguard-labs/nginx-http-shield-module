@@ -10,6 +10,120 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include "ngx_http_shield_patterns.h"
+#include "ngx_http_shield_ban.h"
+
+
+typedef struct {
+    u_char      len;
+    u_char      addr[16];
+    time_t      expires;
+    ngx_uint_t  hits;
+} ngx_http_shield_status_ban_t;
+
+
+typedef struct {
+    uint64_t                       cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    uint64_t                       blocked;
+    uint64_t                       bans;
+    ngx_uint_t                     nodes;
+    ngx_uint_t                     banned;
+    ngx_uint_t                     capacity;
+    ngx_http_shield_status_ban_t  *entries;
+} ngx_http_shield_status_snapshot_t;
+
+
+static ngx_int_t
+ngx_http_shield_status_size_add(size_t *size, size_t add)
+{
+    if (add > NGX_MAX_SIZE_T_VALUE - *size) {
+        return NGX_ERROR;
+    }
+
+    *size += add;
+    return NGX_OK;
+}
+
+
+/* Add modest retry slack without turning a small observed active set into a
+ * whole-zone request-pool allocation. Subtract before adding so both the zone
+ * cap and ngx_uint_t overflow are handled by the same bound. */
+static ngx_int_t
+ngx_http_shield_status_retry_capacity(ngx_uint_t observed,
+    ngx_uint_t physical, ngx_uint_t *capacity)
+{
+    ngx_uint_t  headroom, remaining;
+
+    if (observed == 0 || observed > physical) {
+        return NGX_ERROR;
+    }
+
+    headroom = observed / 4;
+    if (headroom == 0) {
+        headroom = 1;
+    } else if (headroom > 64) {
+        headroom = 64;
+    }
+
+    remaining = physical - observed;
+    if (headroom > remaining) {
+        headroom = remaining;
+    }
+
+    *capacity = observed + headroom;
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_shield_status_snapshot_alloc(ngx_pool_t *pool, ngx_uint_t capacity,
+    ngx_http_shield_status_snapshot_t *snapshot)
+{
+    size_t  size;
+
+    if (capacity == 0) {
+        snapshot->capacity = 0;
+        snapshot->entries = NULL;
+        return NGX_OK;
+    }
+
+    if (capacity > NGX_MAX_SIZE_T_VALUE
+                   / sizeof(ngx_http_shield_status_ban_t))
+    {
+        return NGX_ERROR;
+    }
+
+    size = capacity * sizeof(ngx_http_shield_status_ban_t);
+    snapshot->entries = ngx_palloc(pool, size);
+    if (snapshot->entries == NULL) {
+        return NGX_ERROR;
+    }
+
+    snapshot->capacity = capacity;
+    return NGX_OK;
+}
+
+
+/* Copy every field the renderer needs while the caller holds the slab mutex.
+ * The returned entry has request-pool ownership and no shared pointer. */
+static ngx_int_t
+ngx_http_shield_status_snapshot_ban(ngx_http_shield_status_ban_t *dst,
+    ngx_http_shield_ban_node_t *src, time_t now)
+{
+    if (src->banned_until <= now) {
+        return NGX_DECLINED;
+    }
+
+    if (src->len != 4 && src->len != 16) {
+        return NGX_ERROR;
+    }
+
+    dst->len = src->len;
+    ngx_memcpy(dst->addr, src->addr, src->len);
+    dst->hits = src->hits;
+    dst->expires = src->banned_until - now;
+
+    return NGX_OK;
+}
 
 /*
  * Name of a category by enum value, for the status report.
@@ -48,6 +162,135 @@ ngx_http_shield_cat_name(ngx_uint_t cat)
         return "unknown";   /* LCOV_EXCL_LINE -- unreachable while the enum, */
                             /* the table, and this switch stay in sync       */
     }
+}
+
+
+/* Render an owned snapshot as JSON. Size arithmetic is checked before the
+ * request-pool allocation, and one spare byte makes a formatter reaching
+ * `last` an explicit error rather than a silently truncated document. */
+static ngx_int_t
+ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
+    ngx_http_shield_status_snapshot_t *snapshot, ngx_str_t *body)
+{
+    size_t       entry_size, escape, len, size;
+    u_char      *buf, *p, *last;
+    ngx_uint_t   i;
+
+    if (snapshot->banned > snapshot->capacity
+        || (snapshot->banned != 0 && snapshot->entries == NULL))
+    {
+        return NGX_ERROR;
+    }
+
+    /* One spare byte is retained through rendering as the truncation oracle. */
+    size = 1;
+
+#define NGX_SHIELD_STATUS_ADD_LITERAL(s)                                    \
+    if (ngx_http_shield_status_size_add(&size, sizeof(s) - 1) != NGX_OK) {  \
+        return NGX_ERROR;                                                    \
+    }
+
+    NGX_SHIELD_STATUS_ADD_LITERAL("{\"zone\":\"");
+
+    /* Reject a synthetic impossible length before ngx_escape_json reads it. */
+    if (zone->len > NGX_MAX_SIZE_T_VALUE - size) {
+        return NGX_ERROR;
+    }
+    escape = ngx_escape_json(NULL, zone->data, zone->len);
+    if (ngx_http_shield_status_size_add(&size, zone->len) != NGX_OK
+        || ngx_http_shield_status_size_add(&size, escape) != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    NGX_SHIELD_STATUS_ADD_LITERAL("\",\"nodes\":");
+    if (ngx_http_shield_status_size_add(&size, NGX_INT_T_LEN) != NGX_OK) {
+        return NGX_ERROR;
+    }
+    NGX_SHIELD_STATUS_ADD_LITERAL(",\"blocked\":");
+    if (ngx_http_shield_status_size_add(&size, NGX_INT64_LEN) != NGX_OK) {
+        return NGX_ERROR;
+    }
+    NGX_SHIELD_STATUS_ADD_LITERAL(",\"bans\":");
+    if (ngx_http_shield_status_size_add(&size, NGX_INT64_LEN) != NGX_OK) {
+        return NGX_ERROR;
+    }
+    NGX_SHIELD_STATUS_ADD_LITERAL(",\"categories\":{");
+
+    for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+        len = ngx_strlen(ngx_http_shield_cat_name(i));
+        if (ngx_http_shield_status_size_add(&size,
+                1 + sizeof("\"\":") - 1 + NGX_INT64_LEN) != NGX_OK
+            || ngx_http_shield_status_size_add(&size, len) != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+    }
+
+    NGX_SHIELD_STATUS_ADD_LITERAL("},\"banned\":[");
+
+    entry_size = 1 + sizeof("{\"addr\":\"") - 1 + NGX_INET6_ADDRSTRLEN
+                 + sizeof("\",\"hits\":") - 1 + NGX_INT_T_LEN
+                 + sizeof(",\"expires\":") - 1 + NGX_TIME_T_LEN
+                 + sizeof("}") - 1;
+
+    if (snapshot->banned > (NGX_MAX_SIZE_T_VALUE - size) / entry_size) {
+        return NGX_ERROR;
+    }
+    size += snapshot->banned * entry_size;
+    NGX_SHIELD_STATUS_ADD_LITERAL("]}");
+
+#undef NGX_SHIELD_STATUS_ADD_LITERAL
+
+    buf = ngx_pnalloc(pool, size);
+    if (buf == NULL) {
+        return NGX_ERROR;
+    }
+
+    last = buf + size;
+    p = ngx_slprintf(buf, last, "{\"zone\":\"");
+    p = (u_char *) ngx_escape_json(p, zone->data, zone->len);
+    p = ngx_slprintf(p, last,
+                     "\",\"nodes\":%ui,\"blocked\":%uL,\"bans\":%uL,"
+                     "\"categories\":{",
+                     snapshot->nodes, snapshot->blocked, snapshot->bans);
+
+    for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+        p = ngx_slprintf(p, last, "%s\"%s\":%uL",
+                         i == 0 ? "" : ",",
+                         ngx_http_shield_cat_name(i),
+                         snapshot->cat_hits[i]);
+    }
+
+    p = ngx_slprintf(p, last, "},\"banned\":[");
+
+    for (i = 0; i < snapshot->banned; i++) {
+        if (snapshot->entries[i].len != 4
+            && snapshot->entries[i].len != 16)
+        {
+            return NGX_ERROR;
+        }
+
+        p = ngx_slprintf(p, last, "%s{\"addr\":\"", i == 0 ? "" : ",");
+        len = ngx_inet_ntop(snapshot->entries[i].len == 4 ? AF_INET : AF_INET6,
+                            snapshot->entries[i].addr, p, last - p);
+        if (len == 0) {
+            return NGX_ERROR;
+        }
+        p += len;
+        p = ngx_slprintf(p, last, "\",\"hits\":%ui,\"expires\":%T}",
+                         snapshot->entries[i].hits,
+                         snapshot->entries[i].expires);
+    }
+
+    p = ngx_slprintf(p, last, "]}");
+    if (p >= last) {
+        return NGX_ERROR;
+    }
+
+    body->data = buf;
+    body->len = p - buf;
+    return NGX_OK;
 }
 
 

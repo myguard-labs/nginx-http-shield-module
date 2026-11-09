@@ -1,0 +1,26 @@
+# Production status endpoint coverage through the wire parser. json_sort first
+# proves that the complete response is valid JSON; the body assertions then
+# pin the bound zone and stable category object without depending on key order.
+name    status snapshot is parsed JSON for the configured zone
+send    GET /status HTTP/1.1\r\n
+send    Host: prober\r\nConnection: close\r\n\r\n
+json_sort
+expect  status=200
+expect  header~Content-Type: application/json
+expect  body~"zone":"probezone"
+expect  body~"categories":{
+
+# Overlap request-pool snapshots after the preceding ban/fault rules have grown
+# the shared queue. The probe deltas ensure the fan leaves no cycle allocation,
+# descriptor, or shared-node drift of its own.
+name        concurrent status snapshots are allocation and node neutral
+send        GET /status HTTP/1.1\r\n
+send        Host: prober\r\nConnection: close\r\n\r\n
+json_sort
+concurrent  16
+expect      status=200
+expect      header~Content-Type: application/json
+expect      body~"zone":"probezone"
+delta       fds == 0
+delta       pool.cycle_used == 0
+delta       zone.nodes == 0
