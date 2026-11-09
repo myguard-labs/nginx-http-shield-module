@@ -102,6 +102,7 @@
  * allocator to reach for at all.
  */
 volatile ngx_cycle_t  *ngx_cycle;
+static ngx_http_shield_automata_t  shield_fuzz_automata;
 
 /*
  * Referenced by ngx_palloc.c's allocation-failure path. Output is DISCARDED:
@@ -293,7 +294,7 @@ shield_scan_ac_init(void)
      * silently turning the differential into "naive says hit, AC says no" on
      * every input. Abort loudly instead. */
     if (ngx_http_shield_ac_build(shield_fuzz_pool, &shield_fuzz_log,
-                                 &ngx_http_shield_ac_decoded,
+                                 &shield_fuzz_automata.decoded,
                                  NGX_HTTP_SHIELD_MATCH_DECODED)
         != NGX_OK)
     {
@@ -302,7 +303,7 @@ shield_scan_ac_init(void)
     }
 
     if (ngx_http_shield_ac_build(shield_fuzz_pool, &shield_fuzz_log,
-                                 &ngx_http_shield_ac_raw,
+                                 &shield_fuzz_automata.raw,
                                  NGX_HTTP_SHIELD_MATCH_RAW)
         != NGX_OK)
     {
@@ -339,7 +340,8 @@ shield_scan_ac(u_char *data, size_t len, uint64_t skip)
 
     ngx_memzero(&h, sizeof(h));
 
-    hit = (ngx_http_shield_scan_input(data, len, raw_lc, dec, "body", skip, &h)
+    hit = (ngx_http_shield_scan_input(&shield_fuzz_automata, data, len,
+                                      raw_lc, dec, "body", skip, &h)
            == NGX_OK);
 
     free(raw_lc);

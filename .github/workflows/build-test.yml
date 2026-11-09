@@ -295,6 +295,15 @@ jobs:
           TEST_NGINX_PORT: ${{ env.TEST_BASE_PORT }}
         run: prove -v ci/t/
 
+      - name: Rejected reload replacement lifetime
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          python3 ci/tools/test_reload_lifetime.py \
+            --nginx "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-asan/objs/nginx" \
+            --port "$((TEST_BASE_PORT + 32))"
+
   reporter-tests:
     name: Reporter unit tests
     runs-on: ubuntu-latest
