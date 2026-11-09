@@ -276,6 +276,67 @@ case_state_capacity(void)
     check(ngx_http_shield_ac_capacity_add(&cap, (size_t) -1) == NGX_ERROR,
           "state capacity rejects a wrapping length");
     check(cap == 1, "wrapping length leaves capacity unchanged");
+
+    cap = NGX_HTTP_SHIELD_AC_MAX_STATES + 1;
+    check(ngx_http_shield_ac_capacity_add(&cap, 0) == NGX_ERROR,
+          "state capacity rejects an already-invalid count");
+    check(cap == NGX_HTTP_SHIELD_AC_MAX_STATES + 1,
+          "invalid state count remains unchanged");
+}
+
+
+static void
+case_definition_capacity(void)
+{
+    ngx_http_shield_sig_t      sigs[] = {{ "x", 1 }};
+    ngx_http_shield_sig_t      terms[] = {{ "y", 1 }};
+    ngx_http_shield_catdef_t   category = {
+        NGX_HTTP_SHIELD_CAT_SQLI, "test", sigs, 1,
+        NGX_HTTP_SHIELD_MATCH_DECODED
+    };
+    ngx_http_shield_ruledef_t  rule = {
+        NGX_HTTP_SHIELD_CAT_SQLI, "test", terms, 1,
+        NGX_HTTP_SHIELD_MATCH_DECODED
+    };
+    size_t                     cap;
+
+    cap = 999;
+    check(ngx_http_shield_ac_capacity(&test_log, &cap, &category, 1,
+                                      &rule, 1, NGX_HTTP_SHIELD_MATCH_DECODED)
+              == NGX_OK && cap == 3,
+          "builder counts selected category and rule bytes plus the root");
+
+    category.match = NGX_HTTP_SHIELD_MATCH_RAW;
+    rule.match = NGX_HTTP_SHIELD_MATCH_RAW;
+    check(ngx_http_shield_ac_capacity(&test_log, &cap, &category, 1,
+                                      &rule, 1, NGX_HTTP_SHIELD_MATCH_DECODED)
+              == NGX_OK && cap == 1,
+          "builder skips definitions for the other buffer flavor");
+
+    category.match = NGX_HTTP_SHIELD_MATCH_DECODED;
+    sigs[0].len = NGX_HTTP_SHIELD_AC_MAX_STATES - 1;
+    check(ngx_http_shield_ac_capacity(&test_log, &cap, &category, 1,
+                                      &rule, 1, NGX_HTTP_SHIELD_MATCH_DECODED)
+              == NGX_OK && cap == NGX_HTTP_SHIELD_AC_MAX_STATES,
+          "builder accepts exactly the category state ceiling");
+    sigs[0].len++;
+    check(ngx_http_shield_ac_capacity(&test_log, &cap, &category, 1,
+                                      &rule, 1, NGX_HTTP_SHIELD_MATCH_DECODED)
+              == NGX_ERROR && cap == 1,
+          "builder rejects an oversized category before increment");
+
+    category.match = NGX_HTTP_SHIELD_MATCH_RAW;
+    rule.match = NGX_HTTP_SHIELD_MATCH_DECODED;
+    terms[0].len = NGX_HTTP_SHIELD_AC_MAX_STATES - 1;
+    check(ngx_http_shield_ac_capacity(&test_log, &cap, &category, 1,
+                                      &rule, 1, NGX_HTTP_SHIELD_MATCH_DECODED)
+              == NGX_OK && cap == NGX_HTTP_SHIELD_AC_MAX_STATES,
+          "builder accepts exactly the rule-term state ceiling");
+    terms[0].len++;
+    check(ngx_http_shield_ac_capacity(&test_log, &cap, &category, 1,
+                                      &rule, 1, NGX_HTTP_SHIELD_MATCH_DECODED)
+              == NGX_ERROR && cap == 1,
+          "builder rejects an oversized rule term before increment");
 }
 
 
@@ -615,6 +676,7 @@ main(void)
     case_clean_baseline();
     case_rule_term_count();
     case_state_capacity();
+    case_definition_capacity();
     case_category_hits();
     case_percent_decoding();
     case_skip_mask();
