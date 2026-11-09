@@ -1,4 +1,4 @@
-# sync-sha: 6a2e4f864806d24780c5298e8439d24e73e7b44b7f104fa4e35f0c0f3730fb66
+# sync-sha: 3c1df28aa05756b541aacbb3b4ea01d80c497de85b95cf44bc310ab9509e5aee
 name: Security scanners
 
 # Static/security scanners gate on every PR/push — flawfinder (gate on >=4),
@@ -72,15 +72,7 @@ jobs:
           CC=gcc ./configure --with-compat \
             --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null
       - name: flawfinder (gate on >=4)
-        run: |
-          set -euo pipefail
-          flawfinder --minlevel=1 "$GITHUB_WORKSPACE/src/" 2>&1 | tee flawfinder.log
-          if flawfinder --minlevel=4 --quiet "$GITHUB_WORKSPACE/src/" 2>/dev/null \
-               | grep -Eq 'Hits = [1-9]'; then
-            echo "flawfinder: high-severity (>=4) findings present" >&2
-            exit 1
-          fi
-          echo "flawfinder: clean at >=4"
+        run: bash ci/tools/flawfinder-gate.sh
       - name: clang-tidy (cert-*, security.*)
         run: |
           set -euo pipefail

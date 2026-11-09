@@ -389,7 +389,91 @@ def check_cadence() -> int:
     )
 
 
+# C01 coverage census: removing a named job or call must be deliberate.
+REQUIRED_JOBS = {
+    "ci.yml": {
+        "build-test",
+        "lint",
+        "fuzzing",
+        "valgrind",
+        "asan-soak",
+        "security-scanners",
+        "codeql",
+    },
+    "build-test.yml": {
+        "validation",
+        "build",
+        "test-nginx",
+        "asan",
+        "reporter-tests",
+        "ban-unit",
+        "prober",
+        "coverage",
+        "runtime-tests",
+    },
+    "asan.yml": {"asan-soak"},
+    "fuzzing.yml": {"fuzz-regression"},
+    "valgrind.yml": {"memcheck-lite"},
+    "lint.yml": {"lint"},
+    "security-scanners.yml": {"scanners"},
+    "codeql.yml": {"analyze"},
+    "windows-build.yml": {"msvc", "mingw"},
+    "ci-deep.yml": {"build-flavors", "fuzz", "memcheck", "helgrind", "scanners"},
+    "bump.yml": {"bump"},
+}
+REQUIRED_CALLS = {
+    "build-test": "build-test.yml",
+    "lint": "lint.yml",
+    "fuzzing": "fuzzing.yml",
+    "valgrind": "valgrind.yml",
+    "asan-soak": "asan.yml",
+    "security-scanners": "security-scanners.yml",
+    "codeql": "codeql.yml",
+}
+
+
+def check_coverage() -> int:
+    errors: list[str] = []
+    for name, expected in REQUIRED_JOBS.items():
+        path = WORKFLOWS / name
+        if not path.is_file():
+            errors.append(f"{name}: required workflow missing")
+            continue
+        present = {job for job, _ in jobs(load(path))}
+        for job in sorted(expected - present):
+            errors.append(f"{name}:{job}: required job missing")
+    required_events = {
+        "ci.yml": {"pull_request"},
+        "windows-build.yml": {"pull_request"},
+        "bump.yml": {"schedule"},
+        "ci-deep.yml": {"schedule"},
+        "codeql.yml": {"schedule", "workflow_call"},
+        **{
+            name: {"workflow_call"}
+            for name in REQUIRED_CALLS.values()
+            if name != "codeql.yml"
+        },
+    }
+    for name, expected in required_events.items():
+        path = WORKFLOWS / name
+        if path.is_file():
+            for event in sorted(expected - events(load(path))):
+                errors.append(f"{name}: required {event} trigger missing")
+    entry = WORKFLOWS / "ci.yml"
+    if entry.is_file():
+        entry_jobs = dict(jobs(load(entry)))
+        for job, target in REQUIRED_CALLS.items():
+            uses = entry_jobs.get(job, {}).get("uses", "")
+            if not isinstance(uses, str) or uses not in (
+                f"./.github/workflows/{target}",
+                f"$/.github/workflows/{target}",
+            ):
+                errors.append(f"ci.yml:{job}: required call to {target} missing")
+    return report("lint-ci-coverage", errors, "required jobs and calls present")
+
+
 COMMANDS = {
+    "coverage": check_coverage,
     "ports": check_ports,
     "docs": check_docs,
     "cadence": check_cadence,
