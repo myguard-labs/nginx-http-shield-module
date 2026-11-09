@@ -2389,34 +2389,98 @@ ngx_http_shield_ban_status(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/* Take one scalar/entry snapshot under the slab mutex. A count-only pass lets
+ * request-pool allocation happen after unlock. If the active ban set grows
+ * before the copy pass, NGX_AGAIN requests one bounded retry. */
+static ngx_int_t
+ngx_http_shield_status_snapshot(ngx_http_shield_ban_ctx_t *ctx,
+    ngx_flag_t copy_entries, ngx_http_shield_status_snapshot_t *snapshot)
+{
+    time_t       now;
+    ngx_int_t    copy_rc, rc;
+    ngx_uint_t   banned, nodes;
+    ngx_queue_t *q;
+
+    rc = NGX_OK;
+    banned = 0;
+    nodes = 0;
+
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+
+    now = ngx_time();
+    ngx_memcpy(snapshot->cat_hits, ctx->sh->cat_hits,
+               sizeof(snapshot->cat_hits));
+    snapshot->blocked = ctx->sh->blocked;
+    snapshot->bans = ctx->sh->bans;
+
+    {
+        ngx_http_shield_ban_node_t  *bn;
+        ngx_http_shield_status_ban_t scratch;
+
+        for (q = ngx_queue_head(&ctx->sh->queue);
+             q != ngx_queue_sentinel(&ctx->sh->queue);
+             q = ngx_queue_next(q))
+        {
+            nodes++;
+            bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
+
+            if (!copy_entries) {
+                if (bn->banned_until > now) {
+                    banned++;
+                }
+                continue;
+            }
+
+            copy_rc = ngx_http_shield_status_snapshot_ban(
+                          banned < snapshot->capacity
+                              ? &snapshot->entries[banned] : &scratch,
+                          bn, now);
+
+            if (copy_rc == NGX_DECLINED) {
+                continue;
+            }
+            if (copy_rc != NGX_OK) {
+                rc = NGX_ERROR;
+                break;
+            }
+
+            if (banned >= snapshot->capacity) {
+                rc = NGX_AGAIN;
+            }
+            banned++;
+        }
+    }
+
+    snapshot->nodes = nodes;
+    snapshot->banned = banned;
+
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+    return rc;
+}
+
+
 /*
  * Render the status document.
  *
- * Sizing: the ban list is O(nodes) and a zone can hold thousands, so the buffer
- * is measured from the live node count rather than fixed. The count is read
- * under the lock, the buffer allocated OUTSIDE it (ngx_pnalloc can block on the
- * pool, and allocating under the slab mutex would hold it far longer than the
- * walk itself), then the walk re-checks against `last` and stops early if the
- * zone grew between the two -- truncation of a monitoring document is
- * acceptable; overrunning the buffer is not.
+ * The shared queue is copied into a request-pool snapshot, so formatting never
+ * retains a slab pointer after unlock. Allocation stays outside the mutex. A
+ * growth race retries with a zone-size-derived upper bound; successful output
+ * therefore describes one complete lock-coherent instant rather than a
+ * truncated mix of the sizing and rendering passes.
  */
 static ngx_int_t
 ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
 {
-    size_t                       size;
-    u_char                      *buf, *p, *last;
-    time_t                       now;
+    u_char                      *buf, *p;
     ngx_int_t                    rc;
     ngx_buf_t                   *b;
-    ngx_uint_t                   i, nodes, first, banned;
-    ngx_str_t                    metrics;
+    ngx_uint_t                   capacity;
+    ngx_str_t                    body;
     ngx_chain_t                  out;
-    ngx_queue_t                 *q;
-    uint64_t                     cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
-    uint64_t                     blocked, bans;
-    ngx_http_shield_ban_node_t  *bn;
     ngx_http_shield_ban_ctx_t   *ctx;
     ngx_http_shield_loc_conf_t  *slcf;
+    ngx_http_shield_status_snapshot_t snapshot;
 
     if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
         return NGX_HTTP_NOT_ALLOWED;
@@ -2436,128 +2500,65 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
         return NGX_HTTP_SERVICE_UNAVAILABLE;
     }
 
-    now = ngx_time();
+    ngx_memzero(&snapshot, sizeof(snapshot));
 
-    /* Pass one under the lock: snapshot the counters and the node count only.
-     * Copying the counters out means the JSON rendering -- which is the
-     * expensive part -- happens with the mutex released. */
-    ngx_shmtx_lock(&ctx->shpool->mutex);
-
-    ngx_memcpy(cat_hits, ctx->sh->cat_hits, sizeof(cat_hits));
-    blocked = ctx->sh->blocked;
-    bans = ctx->sh->bans;
-
-    nodes = 0;
-    banned = 0;
-    for (q = ngx_queue_head(&ctx->sh->queue);
-         q != ngx_queue_sentinel(&ctx->sh->queue);
-         q = ngx_queue_next(q))
-    {
-        nodes++;
-        if (slcf->status_format == NGX_HTTP_SHIELD_STATUS_PROMETHEUS) {
-            bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
-            if (bn->banned_until > now) {
-                banned++;
-            }
-        }
+    rc = ngx_http_shield_status_snapshot(ctx, 0, &snapshot);
+    if (rc != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-
-    ngx_shmtx_unlock(&ctx->shpool->mutex);
 
     if (slcf->status_format == NGX_HTTP_SHIELD_STATUS_PROMETHEUS) {
         if (ngx_http_shield_status_prometheus(r->pool,
                                              &slcf->status_zone->shm.name,
-                                             cat_hits, blocked, bans, nodes,
-                                             banned, &metrics) != NGX_OK)
+                                             snapshot.cat_hits,
+                                             snapshot.blocked, snapshot.bans,
+                                             snapshot.nodes, snapshot.banned,
+                                             &body) != NGX_OK)
         {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        buf = metrics.data;
-        p = buf + metrics.len;
         ngx_str_set(&r->headers_out.content_type,
                     "application/openmetrics-text; version=1.0.0; "
                     "charset=utf-8");
-        goto send_response;
-    }
+    } else {
+        if (snapshot.banned != 0) {
+            if (ngx_http_shield_status_snapshot_alloc(r->pool,
+                    snapshot.banned, &snapshot) != NGX_OK)
+            {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
 
-    /* Per banned entry: a quoted IPv6 text address, hits, and an expiry, plus
-     * punctuation -- 96 bytes is comfortable for the widest form. Per category:
-     * the name plus a 20-digit count and punctuation. */
-    size = sizeof("{\"zone\":\"\",\"nodes\":,\"blocked\":,\"bans\":,"
-                  "\"categories\":{},\"banned\":[]}")
-           + slcf->status_zone->shm.name.len
-           + 3 * NGX_INT64_LEN
-           + (size_t) NGX_HTTP_SHIELD_CAT_N * (64 + NGX_INT64_LEN)
-           + (size_t) nodes * 96;
+            rc = ngx_http_shield_status_snapshot(ctx, 1, &snapshot);
 
-    buf = ngx_pnalloc(r->pool, size);
-    if (buf == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
+            if (rc == NGX_AGAIN) {
+                capacity = (ngx_uint_t) (slcf->status_zone->shm.size
+                                         / sizeof(ngx_http_shield_ban_node_t));
+                if (capacity <= snapshot.capacity
+                    || ngx_http_shield_status_snapshot_alloc(r->pool,
+                           capacity, &snapshot) != NGX_OK)
+                {
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
 
-    last = buf + size;
+                rc = ngx_http_shield_status_snapshot(ctx, 1, &snapshot);
+            }
 
-    p = ngx_slprintf(buf, last,
-                     "{\"zone\":\"%V\",\"nodes\":%ui,"
-                     "\"blocked\":%uL,\"bans\":%uL,\"categories\":{",
-                     &slcf->status_zone->shm.name, nodes, blocked, bans);
-
-    for (i = 0, first = 1; i < NGX_HTTP_SHIELD_CAT_N; i++) {
-
-        /* Iterate the ENUM, not ngx_http_shield_categories[]. The table holds
-         * only categories that have a signature array; the four structural
-         * checks (httpoxy, range_dos, ctrl_char, dotfile) have no table row but
-         * do have an enum value and a counter, so a table-driven loop would
-         * silently omit exactly the categories with no signatures to grep for.
-         *
-         * Report every category including zeroes: a monitoring system wants a
-         * stable key set, not one that appears only once an attack starts. */
-        p = ngx_slprintf(p, last, "%s\"%s\":%uL",
-                         first ? "" : ",",
-                         ngx_http_shield_cat_name(i),
-                         cat_hits[i]);
-        first = 0;
-    }
-
-    p = ngx_slprintf(p, last, "},\"banned\":[");
-
-    /* Pass two: the ban list. Retaken because the buffer allocation above must
-     * not happen under the mutex; the node count may have changed since, which
-     * is why the walk is bounded by `last` and by a re-count rather than by
-     * the `nodes` value the sizing used. */
-    ngx_shmtx_lock(&ctx->shpool->mutex);
-
-    for (q = ngx_queue_head(&ctx->sh->queue), first = 1;
-         q != ngx_queue_sentinel(&ctx->sh->queue);
-         q = ngx_queue_next(q))
-    {
-        bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
-
-        if (bn->banned_until <= now) {
-            continue;   /* counting, not banned: not part of the ban list */
+            if (rc != NGX_OK) {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
         }
 
-        /* Stop cleanly if the zone outgrew the buffer between the two locks.
-         * 96 is the per-entry reservation used in the sizing above. */
-        if ((size_t) (last - p) < 96) {
-            break;
+        if (ngx_http_shield_status_json(r->pool,
+                                       &slcf->status_zone->shm.name,
+                                       &snapshot, &body) != NGX_OK)
+        {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-
-        p = ngx_slprintf(p, last, "%s{\"addr\":\"", first ? "" : ",");
-        p += ngx_inet_ntop(bn->len == 4 ? AF_INET : AF_INET6, bn->addr,
-                           p, last - p);
-        p = ngx_slprintf(p, last, "\",\"hits\":%ui,\"expires\":%T}",
-                         bn->hits, bn->banned_until - now);
-        first = 0;
+        ngx_str_set(&r->headers_out.content_type, "application/json");
     }
 
-    ngx_shmtx_unlock(&ctx->shpool->mutex);
-
-    p = ngx_slprintf(p, last, "]}");
-
-    ngx_str_set(&r->headers_out.content_type, "application/json");
-
-send_response:
+    buf = body.data;
+    p = buf + body.len;
 
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = p - buf;

@@ -12,17 +12,22 @@
 
 static void *status_alloc(ngx_pool_t *pool, size_t size);
 static size_t status_strlen(const void *s);
+static size_t status_inet_ntop(int family, u_char *addr, u_char *text,
+    size_t len);
 
 #undef ngx_strlen
 #define ngx_strlen(s) status_strlen(s)
 #define ngx_pnalloc status_alloc
+#define ngx_inet_ntop status_inet_ntop
 #include "../../src/ngx_http_shield_status.h"
+#undef ngx_inet_ntop
 #undef ngx_pnalloc
 
 static int fail_alloc;
 static int huge_category;
 static unsigned allocations;
 static void *allocation;
+static size_t allocation_size;
 
 static size_t
 status_strlen(const void *s)
@@ -39,7 +44,30 @@ status_alloc(ngx_pool_t *pool, size_t size)
         return NULL;
     }
     allocation = malloc(size);
+    allocation_size = size;
     return allocation;
+}
+
+static size_t
+status_inet_ntop(int family, u_char *addr, u_char *text, size_t len)
+{
+    const char  *value;
+    size_t       size;
+
+    if (family == AF_INET && addr[0] == 127) {
+        value = "127.0.0.1";
+    } else if (family == AF_INET) {
+        value = "203.0.113.9";
+    } else {
+        value = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255";
+    }
+
+    size = strlen(value);
+    if (len < size) {
+        return 0;
+    }
+    memcpy(text, value, size);
+    return size;
 }
 
 int
@@ -48,8 +76,13 @@ main(void)
     ngx_str_t zone = ngx_string("quote\"slash\\line\n");
     ngx_str_t body;
     uint64_t hits[NGX_HTTP_SHIELD_CAT_N] = { 0 };
+    ngx_http_shield_ban_node_t source, source6;
+    ngx_http_shield_status_ban_t copied;
+    ngx_http_shield_status_snapshot_t snapshot;
     char *text;
+    void *entries_allocation;
     size_t limit;
+    ngx_uint_t i;
 
     assert(strcmp(ngx_http_shield_cat_name(NGX_HTTP_SHIELD_CAT_N),
                   "unknown") == 0);
@@ -102,6 +135,127 @@ main(void)
     assert(allocations == 4);
     assert(memcmp(body.data, "# HELP shield_hits ", 19) == 0);
     free(allocation);
-    puts("status_unit: maximum counters, escaping, empty label and error paths passed");
+
+    /* The JSON renderer consumes an owned copy, not the shared source node. */
+    ngx_memzero(&source, sizeof(source));
+    ngx_memzero(&snapshot, sizeof(snapshot));
+    zone.data = (u_char *) "quote\"slash\\line\n";
+    zone.len = strlen((char *) zone.data);
+    source.len = 4;
+    source.addr[0] = 127;
+    source.hits = (ngx_uint_t) -1;
+    source.banned_until = 20;
+
+    assert(ngx_http_shield_status_snapshot_alloc(NULL, 1, &snapshot)
+           == NGX_OK);
+    entries_allocation = allocation;
+    ngx_memzero(snapshot.entries, sizeof(ngx_http_shield_status_ban_t));
+    assert(ngx_http_shield_status_snapshot_ban(snapshot.entries, &source, 10)
+           == NGX_OK);
+    snapshot.nodes = 1;
+    snapshot.banned = 1;
+    snapshot.blocked = UINT64_MAX;
+    snapshot.bans = UINT64_MAX;
+    snapshot.cat_hits[0] = UINT64_MAX;
+
+    memset(source.addr, 0, sizeof(source.addr));
+    source.hits = 0;
+    source.banned_until = 0;
+
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body)
+           == NGX_OK);
+    assert(body.len < allocation_size); /* spare byte proves no truncation */
+    text = malloc(body.len + 1);
+    assert(text != NULL);
+    memcpy(text, body.data, body.len);
+    text[body.len] = '\0';
+    assert(strstr(text, "\"zone\":\"quote\\\"slash\\\\line\\n\"")
+           != NULL);
+    assert(strstr(text, "\"blocked\":18446744073709551615") != NULL);
+    assert(strstr(text, "\"sqli\":18446744073709551615") != NULL);
+    assert(strstr(text, "\"addr\":\"127.0.0.1\"") != NULL);
+    assert(strstr(text, "\"hits\":18446744073709551615") != NULL);
+    assert(strstr(text, "\"expires\":10") != NULL);
+    assert(body.len >= 2 && memcmp(text + body.len - 2, "]}", 2) == 0);
+    free(text);
+    free(allocation);
+    free(entries_allocation);
+
+    /* Saturate every formatter width so an undersized entry reservation has
+     * no unrelated numeric slack in which to hide. */
+    ngx_memzero(&source6, sizeof(source6));
+    ngx_memzero(&snapshot, sizeof(snapshot));
+    source6.len = 16;
+    memset(source6.addr, 0xff, sizeof(source6.addr));
+    source6.hits = (ngx_uint_t) -1;
+    source6.banned_until = NGX_MAX_TIME_T_VALUE;
+    assert(ngx_http_shield_status_snapshot_alloc(NULL, 1, &snapshot)
+           == NGX_OK);
+    entries_allocation = allocation;
+    assert(ngx_http_shield_status_snapshot_ban(snapshot.entries,
+                                               &source6, 0)
+           == NGX_OK);
+    snapshot.nodes = (ngx_uint_t) -1;
+    snapshot.banned = 1;
+    snapshot.blocked = UINT64_MAX;
+    snapshot.bans = UINT64_MAX;
+    for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+        snapshot.cat_hits[i] = UINT64_MAX;
+    }
+    zone.len = 0;
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body)
+           == NGX_OK);
+    assert(body.len < allocation_size);
+    text = malloc(body.len + 1);
+    assert(text != NULL);
+    memcpy(text, body.data, body.len);
+    text[body.len] = '\0';
+    assert(strstr(text,
+                  "\"addr\":\"ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255\"")
+           != NULL);
+    assert(strstr(text, "\"expires\":") != NULL);
+    assert(body.len >= 2 && memcmp(text + body.len - 2, "]}", 2) == 0);
+    free(text);
+    free(allocation);
+    free(entries_allocation);
+
+    source.len = 4;
+    source.banned_until = 10;
+    assert(ngx_http_shield_status_snapshot_ban(&copied, &source, 10)
+           == NGX_DECLINED);
+    source.len = 5;
+    source.banned_until = 11;
+    assert(ngx_http_shield_status_snapshot_ban(&copied, &source, 10)
+           == NGX_ERROR);
+
+    fail_alloc = 1;
+    assert(ngx_http_shield_status_snapshot_alloc(NULL, 1, &snapshot)
+           == NGX_ERROR);
+    fail_alloc = 0;
+    assert(ngx_http_shield_status_snapshot_alloc(NULL,
+               (ngx_uint_t) (NGX_MAX_SIZE_T_VALUE
+                   / sizeof(ngx_http_shield_status_ban_t)) + 1,
+               &snapshot) == NGX_ERROR);
+
+    ngx_memzero(&snapshot, sizeof(snapshot));
+    fail_alloc = 1;
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body)
+           == NGX_ERROR);
+    fail_alloc = 0;
+
+    zone.len = NGX_MAX_SIZE_T_VALUE;
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body)
+           == NGX_ERROR);
+    zone.len = 0;
+    snapshot.banned = 1;
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body)
+           == NGX_ERROR);
+    snapshot.capacity = (ngx_uint_t) -1;
+    snapshot.banned = (ngx_uint_t) -1;
+    snapshot.entries = (ngx_http_shield_status_ban_t *) &source;
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body)
+           == NGX_ERROR);
+
+    puts("status_unit: JSON/OpenMetrics bounds, ownership, escaping and error paths passed");
     return 0;
 }
