@@ -44,6 +44,36 @@ ngx_http_shield_status_size_add(size_t *size, size_t add)
 }
 
 
+/* Add modest retry slack without turning a small observed active set into a
+ * whole-zone request-pool allocation. Subtract before adding so both the zone
+ * cap and ngx_uint_t overflow are handled by the same bound. */
+static ngx_int_t
+ngx_http_shield_status_retry_capacity(ngx_uint_t observed,
+    ngx_uint_t physical, ngx_uint_t *capacity)
+{
+    ngx_uint_t  headroom, remaining;
+
+    if (observed == 0 || observed > physical) {
+        return NGX_ERROR;
+    }
+
+    headroom = observed / 4;
+    if (headroom == 0) {
+        headroom = 1;
+    } else if (headroom > 64) {
+        headroom = 64;
+    }
+
+    remaining = physical - observed;
+    if (headroom > remaining) {
+        headroom = remaining;
+    }
+
+    *capacity = observed + headroom;
+    return NGX_OK;
+}
+
+
 static ngx_int_t
 ngx_http_shield_status_snapshot_alloc(ngx_pool_t *pool, ngx_uint_t capacity,
     ngx_http_shield_status_snapshot_t *snapshot)

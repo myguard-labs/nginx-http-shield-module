@@ -82,7 +82,7 @@ main(void)
     char *text;
     void *entries_allocation;
     size_t limit;
-    ngx_uint_t i;
+    ngx_uint_t i, physical, retry;
 
     assert(strcmp(ngx_http_shield_cat_name(NGX_HTTP_SHIELD_CAT_N),
                   "unknown") == 0);
@@ -236,6 +236,25 @@ main(void)
                (ngx_uint_t) (NGX_MAX_SIZE_T_VALUE
                    / sizeof(ngx_http_shield_status_ban_t)) + 1,
                &snapshot) == NGX_ERROR);
+
+    /* Retry capacity follows the observed active set, not the whole zone. */
+    physical = (ngx_uint_t) -1;
+    assert(ngx_http_shield_status_retry_capacity(1, 4096, &retry) == NGX_OK);
+    assert(retry == 2);
+    assert(ngx_http_shield_status_retry_capacity(256, physical, &retry)
+           == NGX_OK);
+    assert(retry == 320); /* proportional headroom is bounded at 64 */
+    assert(ngx_http_shield_status_retry_capacity(physical - 1, physical,
+                                                 &retry) == NGX_OK);
+    assert(retry == physical);
+    assert(ngx_http_shield_status_retry_capacity(physical, physical, &retry)
+           == NGX_OK);
+    assert(retry == physical);
+    assert(ngx_http_shield_status_retry_capacity(1, 1, &retry) == NGX_OK);
+    assert(retry == 1);
+    assert(ngx_http_shield_status_retry_capacity(0, physical, &retry)
+           == NGX_ERROR);
+    assert(ngx_http_shield_status_retry_capacity(2, 1, &retry) == NGX_ERROR);
 
     ngx_memzero(&snapshot, sizeof(snapshot));
     fail_alloc = 1;

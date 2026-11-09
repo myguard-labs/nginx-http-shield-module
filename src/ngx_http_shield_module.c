@@ -2533,7 +2533,9 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
             if (rc == NGX_AGAIN) {
                 capacity = (ngx_uint_t) (slcf->status_zone->shm.size
                                          / sizeof(ngx_http_shield_ban_node_t));
-                if (capacity <= snapshot.capacity
+                if (ngx_http_shield_status_retry_capacity(snapshot.banned,
+                         capacity, &capacity) != NGX_OK
+                    || capacity <= snapshot.capacity
                     || ngx_http_shield_status_snapshot_alloc(r->pool,
                            capacity, &snapshot) != NGX_OK)
                 {
