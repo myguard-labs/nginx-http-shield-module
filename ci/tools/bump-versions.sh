@@ -94,8 +94,8 @@ if [ "$DRY_RUN" = 0 ]; then
     fi
 else
     actions_out="$(mktemp)"
-    bash ci/tools/bump-actions.sh --dry-run | tee "$actions_out" || true
-    rc="${PIPESTATUS[0]}"
+    rc=0
+    bash ci/tools/bump-actions.sh --dry-run | tee "$actions_out" || rc="${PIPESTATUS[0]}"
     if [ "$rc" != 0 ]; then
         rm -f "$actions_out"
         exit "$rc"
@@ -117,8 +117,8 @@ if [ "$DRY_RUN" = 0 ]; then
     fi
 else
     tools_out="$(mktemp)"
-    bash ci/tools/bump-tools.sh --dry-run | tee "$tools_out" || true
-    rc="${PIPESTATUS[0]}"
+    rc=0
+    bash ci/tools/bump-tools.sh --dry-run | tee "$tools_out" || rc="${PIPESTATUS[0]}"
     [ "$rc" = 0 ] || {
         rm -f "$tools_out"
         exit "$rc"

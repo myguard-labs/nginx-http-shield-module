@@ -205,6 +205,8 @@ case_ 0 "lint-ci-runners is dispatched by run-all.sh" \
 # job.  The focused suite includes held, admitted, and unreadable-policy paths.
 case_ 0 "bump-actions respects selected-actions exact SHA policy" \
     bash ci/tests/test_bump_actions.sh
+case_ 0 "bump dry-run propagates failures and change markers" \
+    bash ci/tests/test_bump_versions_dry_run.sh
 case_ 0 "actionlint adapter preserves self-repository validation" \
     bash ci/tests/test_actionlint_compat.sh
 
