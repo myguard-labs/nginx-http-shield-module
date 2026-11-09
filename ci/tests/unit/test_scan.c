@@ -70,6 +70,7 @@ check(int ok, const char *what)
  * one, and ngx_http_shield_ac_build() logs to it on a build failure. Output is
  * discarded by the ngx_log_error_core() stub below. */
 static ngx_log_t  test_log;
+static ngx_http_shield_automata_t  test_automata;
 
 /*
  * Referenced by ngx_palloc.c's allocation-failure path and by
@@ -112,7 +113,7 @@ build_automata(void)
         abort();
     }
 
-    if (ngx_http_shield_ac_build(pool, &test_log, &ngx_http_shield_ac_decoded,
+    if (ngx_http_shield_ac_build(pool, &test_log, &test_automata.decoded,
                                   NGX_HTTP_SHIELD_MATCH_DECODED)
         != NGX_OK)
     {
@@ -120,7 +121,7 @@ build_automata(void)
         abort();
     }
 
-    if (ngx_http_shield_ac_build(pool, &test_log, &ngx_http_shield_ac_raw,
+    if (ngx_http_shield_ac_build(pool, &test_log, &test_automata.raw,
                                   NGX_HTTP_SHIELD_MATCH_RAW)
         != NGX_OK)
     {
@@ -177,8 +178,9 @@ scan_str_skip(const char *s, uint64_t skip, ngx_http_shield_hit_t *hit)
         /* scan_input returns NGX_DECLINED for len == 0 before touching the
          * scratch pointers at all, so NULL is safe and malloc(0) is avoided
          * (its behaviour is implementation-defined). */
-        return ngx_http_shield_scan_input(NULL, 0, NULL, NULL, "test", skip,
-                                           hit != NULL ? hit : &local_hit);
+        return ngx_http_shield_scan_input(
+            &test_automata, NULL, 0, NULL, NULL, "test", skip,
+            hit != NULL ? hit : &local_hit);
     }
 
     buf = malloc(n);
@@ -190,8 +192,9 @@ scan_str_skip(const char *s, uint64_t skip, ngx_http_shield_hit_t *hit)
     }
     memcpy(buf, s, n);
 
-    rc = ngx_http_shield_scan_input(buf, n, lc, dec, "test", skip,
-                                     hit != NULL ? hit : &local_hit);
+    rc = ngx_http_shield_scan_input(&test_automata, buf, n, lc, dec, "test",
+                                    skip,
+                                    hit != NULL ? hit : &local_hit);
 
     free(buf);
     free(lc);
@@ -220,7 +223,8 @@ case_clean_baseline(void)
 {
     ngx_http_shield_hit_t  hit;
 
-    check(ngx_http_shield_scan_input(NULL, 0, NULL, NULL, "test", 0, &hit)
+    check(ngx_http_shield_scan_input(&test_automata, NULL, 0, NULL, NULL,
+                                     "test", 0, &hit)
               == NGX_DECLINED,
           "(NULL, 0, ...) is declined, not a crash");
 
@@ -421,7 +425,8 @@ case_malformed_and_embedded_nul(void)
     }
     memcpy(buf, embedded, elen);
 
-    rc = ngx_http_shield_scan_input(buf, elen, lc, dec, "test", 0, &hit);
+    rc = ngx_http_shield_scan_input(&test_automata, buf, elen, lc, dec,
+                                    "test", 0, &hit);
     check(rc == NGX_OK,
           "a literal embedded NUL does not truncate the scan -- the sqli "
           "marker AFTER it still matches");

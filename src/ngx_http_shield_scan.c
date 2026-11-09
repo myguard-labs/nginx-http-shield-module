@@ -25,12 +25,6 @@ static const ngx_http_shield_catdef_t *ngx_http_shield_ac_scan(
     const ngx_http_shield_ac_t *ac, u_char *data, size_t len, uint64_t skip);
 
 
-/* Built once at postconfiguration, read-only thereafter. One automaton per
- * buffer flavour, because categories disagree about which buffer they scan. */
-ngx_http_shield_ac_t  ngx_http_shield_ac_decoded;
-ngx_http_shield_ac_t  ngx_http_shield_ac_raw;
-
-
 /* Index of the lowest set bit. Only ever called with m != 0. */
 static ngx_inline ngx_uint_t
 ngx_http_shield_ac_lowest_bit(uint64_t m)
@@ -67,6 +61,7 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
     ngx_http_shield_ac_t *ac, ngx_uint_t match)
 {
     size_t                       i, j, k, cap, nstates, head, tail;
+    size_t                       next_bytes, mask_bytes, state_bytes;
     ngx_uint_t                   b, term;
     ngx_pool_t                  *temp;
     uint64_t                    *out, *rout;
@@ -115,14 +110,30 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
         return NGX_ERROR;
     }
 
+    /* Keep every allocation product explicit and checked. The state ceiling
+     * above is already far below these limits on supported nginx targets, but
+     * this makes that prerequisite local to the products it protects. */
+    if (cap > NGX_MAX_SIZE_T_VALUE / NGX_HTTP_SHIELD_AC_ALPHABET
+                                   / sizeof(*next)
+        || cap > NGX_MAX_SIZE_T_VALUE / sizeof(*out)
+        || cap > NGX_MAX_SIZE_T_VALUE / sizeof(*queue))
+    {
+        ngx_log_error(NGX_LOG_EMERG, log, 0,
+                      "shield: automaton allocation size overflow");
+        return NGX_ERROR;
+    }
+
+    next_bytes = cap * NGX_HTTP_SHIELD_AC_ALPHABET * sizeof(*next);
+    mask_bytes = cap * sizeof(*out);
+    state_bytes = cap * sizeof(*queue);
+
     /* next[] and out[] outlive the build and are read by every request, so
      * they come from the caller's pool (cf->pool in production). queue[] and
      * fail[] are build scratch: they go in a temporary pool that is destroyed
      * before this function returns. */
-    next = ngx_pcalloc(pool,
-                       cap * NGX_HTTP_SHIELD_AC_ALPHABET * sizeof(*next));
-    out = ngx_pcalloc(pool, cap * sizeof(*out));
-    rout = ngx_pcalloc(pool, cap * sizeof(*rout));
+    next = ngx_pcalloc(pool, next_bytes);
+    out = ngx_pcalloc(pool, mask_bytes);
+    rout = ngx_pcalloc(pool, mask_bytes);
 
     if (next == NULL || out == NULL || rout == NULL) {
         return NGX_ERROR;
@@ -133,8 +144,8 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
         return NGX_ERROR;
     }
 
-    queue = ngx_palloc(temp, cap * sizeof(*queue));
-    fail = ngx_pcalloc(temp, cap * sizeof(*fail));
+    queue = ngx_palloc(temp, state_bytes);
+    fail = ngx_pcalloc(temp, state_bytes);
 
     if (queue == NULL || fail == NULL) {
         ngx_destroy_pool(temp);
@@ -318,9 +329,9 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
  * of any allocator policy and linkable outside nginx.
  */
 ngx_int_t
-ngx_http_shield_scan_input(u_char *data, size_t len, u_char *scratch_lc,
-    u_char *scratch_dec, const char *source, uint64_t skip,
-    ngx_http_shield_hit_t *hit)
+ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
+    u_char *data, size_t len, u_char *scratch_lc, u_char *scratch_dec,
+    const char *source, uint64_t skip, ngx_http_shield_hit_t *hit)
 {
     size_t                           i, dlen;
     u_char                          *raw_lc, *dec, *dst, *src;
@@ -347,8 +358,7 @@ ngx_http_shield_scan_input(u_char *data, size_t len, u_char *scratch_lc,
     }
     ngx_strlow(dec, dec, dlen);
 
-    cat = ngx_http_shield_ac_scan(&ngx_http_shield_ac_raw, raw_lc, len,
-                                  skip);
+    cat = ngx_http_shield_ac_scan(&automata->raw, raw_lc, len, skip);
     if (cat != NULL) {
         hit->category = cat->name;
         hit->cat = cat->cat;
@@ -356,8 +366,7 @@ ngx_http_shield_scan_input(u_char *data, size_t len, u_char *scratch_lc,
         return NGX_OK;
     }
 
-    cat = ngx_http_shield_ac_scan(&ngx_http_shield_ac_decoded, dec, dlen,
-                                  skip);
+    cat = ngx_http_shield_ac_scan(&automata->decoded, dec, dlen, skip);
     if (cat != NULL) {
         hit->category = cat->name;
         hit->cat = cat->cat;

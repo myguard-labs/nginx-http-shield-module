@@ -71,6 +71,11 @@ typedef char ngx_http_shield_counters_cover_categories[
 
 
 typedef struct {
+    ngx_http_shield_automata_t  automata;
+} ngx_http_shield_main_conf_t;
+
+
+typedef struct {
     ngx_uint_t   mode;        /* OFF / DETECT / BLOCK                        */
     ngx_flag_t   body;        /* inspect request body                       */
     size_t       max_body;    /* bytes of body scanned                      */
@@ -135,6 +140,7 @@ static ngx_int_t ngx_http_shield_content_type_is(ngx_str_t *v,
 static ngx_int_t ngx_http_shield_content_type_suffix(ngx_str_t *v,
     const char *suffix, size_t len);
 
+static void *ngx_http_shield_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_shield_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent,
     void *child);
@@ -287,7 +293,7 @@ static ngx_http_module_t  ngx_http_shield_module_ctx = {
     NULL,                                  /* preconfiguration */
     ngx_http_shield_init,                  /* postconfiguration */
 
-    NULL,                                  /* create main configuration */
+    ngx_http_shield_create_main_conf,      /* create main configuration */
     NULL,                                  /* init main configuration */
 
     NULL,                                  /* create server configuration */
@@ -1174,7 +1180,8 @@ static ngx_int_t
 ngx_http_shield_scan_r(ngx_http_request_t *r, u_char *data, size_t len,
     const char *source, uint64_t skip, ngx_http_shield_hit_t *hit)
 {
-    u_char  *scratch_lc, *scratch_dec;
+    u_char                       *scratch_lc, *scratch_dec;
+    ngx_http_shield_main_conf_t  *smcf;
 
     if (len == 0) {
         return NGX_DECLINED;
@@ -1187,8 +1194,13 @@ ngx_http_shield_scan_r(ngx_http_request_t *r, u_char *data, size_t len,
         return NGX_ERROR;
     }
 
-    return ngx_http_shield_scan_input(data, len, scratch_lc, scratch_dec,
-                                      source, skip, hit);
+    smcf = ngx_http_get_module_main_conf(r, ngx_http_shield_module);
+    if (smcf == NULL) {
+        return NGX_ERROR;
+    }
+
+    return ngx_http_shield_scan_input(&smcf->automata, data, len, scratch_lc,
+                                      scratch_dec, source, skip, hit);
 }
 
 
@@ -2578,20 +2590,28 @@ send_response:
 static ngx_int_t
 ngx_http_shield_init(ngx_conf_t *cf)
 {
-    ngx_http_handler_pt        *h;
-    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_handler_pt          *h;
+    ngx_http_core_main_conf_t    *cmcf;
+    ngx_http_shield_main_conf_t  *smcf;
+
+    smcf = ngx_http_conf_get_module_main_conf(cf,
+                                               ngx_http_shield_module);
+    if (smcf == NULL) {
+        return NGX_ERROR;
+    }
 
     /* Build both automatons once, here, from the compiled-in tables. Failure
      * is fatal: running with a half-built automaton would silently stop
      * matching signatures. */
-    if (ngx_http_shield_ac_build(cf->pool, cf->log, &ngx_http_shield_ac_decoded,
+    if (ngx_http_shield_ac_build(cf->pool, cf->log,
+                                 &smcf->automata.decoded,
                                  NGX_HTTP_SHIELD_MATCH_DECODED)
         != NGX_OK)
     {
         return NGX_ERROR;
     }
 
-    if (ngx_http_shield_ac_build(cf->pool, cf->log, &ngx_http_shield_ac_raw,
+    if (ngx_http_shield_ac_build(cf->pool, cf->log, &smcf->automata.raw,
                                  NGX_HTTP_SHIELD_MATCH_RAW)
         != NGX_OK)
     {
@@ -2616,6 +2636,13 @@ ngx_http_shield_init(ngx_conf_t *cf)
 #endif
 
     return NGX_OK;
+}
+
+
+static void *
+ngx_http_shield_create_main_conf(ngx_conf_t *cf)
+{
+    return ngx_pcalloc(cf->pool, sizeof(ngx_http_shield_main_conf_t));
 }
 
 

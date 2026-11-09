@@ -34,10 +34,14 @@ typedef struct {
 
 
 /* The two automata, built once at postconfiguration and read-only for the life
- * of the cycle: no per-request allocation, no locking, safe to share. One per
- * buffer flavour, because categories disagree about which buffer they scan. */
-extern ngx_http_shield_ac_t  ngx_http_shield_ac_raw;
-extern ngx_http_shield_ac_t  ngx_http_shield_ac_decoded;
+ * of their owning cycle: no per-request allocation, no locking, safe to share.
+ * Keeping them together lets nginx store them in the active HTTP cycle's
+ * module configuration rather than publishing candidate-pool pointers through
+ * process globals before a reload has committed. */
+typedef struct {
+    ngx_http_shield_ac_t  raw;
+    ngx_http_shield_ac_t  decoded;
+} ngx_http_shield_automata_t;
 
 
 /*
@@ -70,7 +74,8 @@ ngx_int_t ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
  * Never returns NGX_ERROR: with the scratch supplied there is nothing left
  * that can fail, so the caller's fail-closed path lives at the allocation.
  */
-ngx_int_t ngx_http_shield_scan_input(u_char *data, size_t len,
+ngx_int_t ngx_http_shield_scan_input(
+    const ngx_http_shield_automata_t *automata, u_char *data, size_t len,
     u_char *scratch_lc, u_char *scratch_dec, const char *source,
     uint64_t skip, ngx_http_shield_hit_t *hit);
 
