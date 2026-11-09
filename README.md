@@ -33,9 +33,10 @@ reviewed October 2026 PHP [request-lifetime](https://github.com/php/php-src/secu
 [cross-request state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp),
 and [upload-progress](https://www.php.net/archive/2026.php#2026-10-23-1) issues
 provided no reliable attack-only literal to add here. The
-[Brotli issue](https://github.com/google/brotli/releases/tag/v1.2.1) concerns
-response decoding, which shield does not inspect. Remediate affected runtimes
-and dependencies upstream; these signatures do not make them safe.
+[Brotli issue](https://github.com/google/brotli/releases/tag/v1.2.1) also
+affects [backends that decompress incoming request bodies](https://github.com/dotnet/runtime/security/advisories/GHSA-p3jp-9v83-76w9).
+Shield does not decompress those bodies or inspect responses. Remediate affected
+runtimes and dependencies upstream; these signatures do not make them safe.
 
 ## What it blocks
 
