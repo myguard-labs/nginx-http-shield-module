@@ -12,6 +12,7 @@ ngx_module_srcs="$ngx_addon_dir/src/ngx_http_shield_module.c \
                  $ngx_addon_dir/src/ngx_shield_probe_hooks.c"
 ngx_module_deps="$ngx_addon_dir/src/ngx_http_shield_patterns.h \
                  $ngx_addon_dir/src/ngx_http_shield_scan.h \
+                 $ngx_addon_dir/src/ngx_http_shield_status.h \
                  $ngx_addon_dir/src/ngx_http_shield_ban.h \
                  $ngx_addon_dir/src/ngx_shield_probe_hooks.h"
 ngx_module_incs=""

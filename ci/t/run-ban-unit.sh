@@ -69,3 +69,18 @@ echo "==> Building ban_unit (nginx $NGINX_VERSION, CC=$CC) ..."
 
 echo "==> Running ban_unit ..."
 "$BIN"
+
+# Exercise the status renderer with allocation faults and maximum counters.
+# Keep gcov data beside ban_unit for the existing CI coverage collector.
+STATUS_BIN="$SCRIPT_DIR/status_unit"
+trap 'rm -f "$STATUS_BIN"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# shellcheck disable=SC2086
+"$CC" -g -O0 -Wall -Wextra -Wno-unused-parameter $EXTRA_CFLAGS $NGX_INCS \
+    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -o "$STATUS_BIN" \
+    "$SCRIPT_DIR/status_unit.c" "$NGX_SRC/src/core/ngx_string.c"
+"$STATUS_BIN"
+python3 "$REPO_ROOT/ci/tests/test_status_runner.py"

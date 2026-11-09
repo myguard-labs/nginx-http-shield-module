@@ -165,7 +165,8 @@ http {
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
 | `shield_ban_zone` | http | — | Define a shared-memory zone `name:size` (e.g. `shield:10m`) for the ban list. See [Repeat-offender banning](#repeat-offender-banning). |
 | `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. Optional `key=peer\|forwarded` and repeatable `trusted=<addr\|CIDR>` — see [Banning behind a proxy](#banning-behind-a-proxy). |
-| `shield_ban_status` | location | — | `<zone>` — serve a JSON report for that ban zone: per-category hit totals, blocked/ban counts, and the current ban list. See [Status endpoint](#status-endpoint). |
+| `shield_ban_status` | location | — | `<zone>` — serve a status report for that ban zone: per-category hit totals, blocked/ban counts, and the current ban list. See [Status endpoint](#status-endpoint). |
+| `shield_ban_status_format` | location | `json` | `json` or `prometheus` — select JSON or OpenMetrics 1.0 output. Inherited by nested locations. |
 
 ### Repeat-offender banning
 
@@ -296,6 +297,32 @@ location /shield-status {
   in `banned`; clients merely counting hits are in `nodes` but not the list.
 - Requires `shield_ban` on some location: the counters live in that zone's shared
   memory. Non-`GET`/`HEAD` returns 405.
+
+To scrape metrics directly, select `prometheus` (JSON remains the default):
+
+```nginx
+location /shield-metrics {
+    shield_ban_status shield;
+    shield_ban_status_format prometheus;
+    allow 127.0.0.1;
+    deny all;
+}
+```
+
+The response uses OpenMetrics 1.0 (`application/openmetrics-text;
+version=1.0.0; charset=utf-8`) and ends with `# EOF`. It exposes
+`shield_hits_total{zone="shield",category="sqli"}` for every category, including
+zeroes, plus `shield_blocked_total`, `shield_bans_total`, `shield_zone_nodes`,
+and `shield_banned_clients`, each labeled by `zone`. The first three are
+counters; the last two are gauges. Counter `HELP` and `TYPE` declarations use
+the family name without `_total`, as required by OpenMetrics. Zone label values
+escape quotes, backslashes and line feeds.
+
+`shield_banned_clients` counts only unexpired bans; `shield_zone_nodes` also
+includes clients accumulating hits and expired entries not yet reclaimed.
+Metrics use one snapshot under the zone lock, then render outside it, with
+response size independent of the number of clients. Individual client addresses
+remain available in JSON, avoiding unbounded metric series per client.
 
 > **Restrict this location.** The report names banned client addresses and reveals
 > which attack categories are firing — operational detail that should not be
