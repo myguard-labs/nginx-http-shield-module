@@ -24,6 +24,20 @@
 
 #include "ngx_http_shield_patterns.h"
 
+/* Keep the trie state count within the index type before each addition. */
+static ngx_inline ngx_int_t
+ngx_http_shield_ac_capacity_add(size_t *cap, size_t len)
+{
+    if (*cap > NGX_HTTP_SHIELD_AC_MAX_STATES
+        || len > NGX_HTTP_SHIELD_AC_MAX_STATES - *cap)
+    {
+        return NGX_ERROR;
+    }
+
+    *cap += len;
+    return NGX_OK;
+}
+
 
 /* A single detection result, for logging and for shield_status. */
 typedef struct {
@@ -56,6 +70,12 @@ typedef struct {
  */
 ngx_int_t ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
     ngx_http_shield_ac_t *ac, ngx_uint_t match);
+
+/* Count trie states from the same definition walk the builder uses. Exposed
+ * to the unit harness so synthetic tables can exercise the limit and errors. */
+ngx_int_t ngx_http_shield_ac_capacity(ngx_log_t *log, size_t *cap,
+    const ngx_http_shield_catdef_t *categories, size_t ncategories,
+    const ngx_http_shield_ruledef_t *rules, size_t nrules, ngx_uint_t match);
 
 
 /*

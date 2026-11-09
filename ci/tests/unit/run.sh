@@ -237,3 +237,33 @@ $CC "${LINK_EXTRA[@]}" -o "$BIN" \
 
 echo "==> Running"
 "$BIN"
+
+# Compile the exact production mask predicate at both adjacent limits. The
+# table/count agreement is asserted by case_rule_term_count() above.
+TERM_SOURCE='#include "ngx_http_shield_patterns.h"
+typedef char term_limit_control[
+    NGX_HTTP_SHIELD_RULE_TERMS_FIT(TEST_TERM_COUNT) ? 1 : -1];'
+TERM_ERR="$(mktemp "$DIR/term-limit.XXXXXX")"
+trap 'rm -f "$TERM_ERR"' EXIT
+
+if ! printf '%s\n' "$TERM_SOURCE" | $CC -Werror -Wno-unused-variable \
+    "${NGX_INCS[@]}" -I"$ROOT/src" -DTEST_TERM_COUNT=64 \
+    -x c -fsyntax-only - >"$TERM_ERR" 2>&1; then
+    cat "$TERM_ERR" >&2
+    echo 'FAIL: 64 rule terms must compile' >&2
+    exit 1
+fi
+echo 'ok   compile guard accepts 64 rule terms'
+
+if printf '%s\n' "$TERM_SOURCE" | $CC -Werror -Wno-unused-variable \
+    "${NGX_INCS[@]}" -I"$ROOT/src" -DTEST_TERM_COUNT=65 \
+    -x c -fsyntax-only - >"$TERM_ERR" 2>&1; then
+    echo 'FAIL: 65 rule terms must be rejected by the compiler' >&2
+    exit 1
+fi
+if ! grep -Eq 'negative|negative-size|size.*negative' "$TERM_ERR"; then
+    cat "$TERM_ERR" >&2
+    echo 'FAIL: 65-term rejection had an unrelated compiler error' >&2
+    exit 1
+fi
+echo 'ok   compile guard rejects 65 rule terms'

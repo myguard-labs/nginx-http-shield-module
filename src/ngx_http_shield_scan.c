@@ -44,6 +44,51 @@ ngx_http_shield_ac_lowest_bit(uint64_t m)
 }
 
 
+ngx_int_t
+ngx_http_shield_ac_capacity(ngx_log_t *log, size_t *cap,
+    const ngx_http_shield_catdef_t *categories, size_t ncategories,
+    const ngx_http_shield_ruledef_t *rules, size_t nrules, ngx_uint_t match)
+{
+    size_t  i, j;
+
+    *cap = 1;
+    for (i = 0; i < ncategories; i++) {
+        if (!(categories[i].match & match)) {
+            continue;
+        }
+        for (j = 0; j < categories[i].nsigs; j++) {
+            if (ngx_http_shield_ac_capacity_add(cap,
+                                                categories[i].sigs[j].len)
+                != NGX_OK)
+            {
+                ngx_log_error(NGX_LOG_EMERG, log, 0,
+                              "shield: signature set exceeds automaton "
+                              "state limit");
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    for (i = 0; i < nrules; i++) {
+        if (!(rules[i].match & match)) {
+            continue;
+        }
+        for (j = 0; j < rules[i].nterms; j++) {
+            if (ngx_http_shield_ac_capacity_add(cap, rules[i].terms[j].len)
+                != NGX_OK)
+            {
+                ngx_log_error(NGX_LOG_EMERG, log, 0,
+                              "shield: rule terms exceed automaton "
+                              "state limit");
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    return NGX_OK;
+}
+
+
 /*
  * Build the automaton over every signature of every category carrying `match`.
  *
@@ -67,47 +112,28 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
     uint64_t                    *out, *rout;
     ngx_http_shield_ac_state_t  *next, *queue, *fail, s, v, f;
 
-    /* Upper bound on trie size: one state per signature byte, plus the root.
-     * The BFS below never creates a state, so this is never exceeded. */
-    cap = 1;
-    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
-        if (!(ngx_http_shield_categories[i].match & match)) {
-            continue;
-        }
-        for (j = 0; j < ngx_http_shield_categories[i].nsigs; j++) {
-            cap += ngx_http_shield_categories[i].sigs[j].len;
-        }
+    /* One state per signature byte, plus the root. The BFS never creates a
+     * state, so this checked count bounds every subsequent state index. */
+    if (ngx_http_shield_ac_capacity(log, &cap, ngx_http_shield_categories,
+                                    NGX_HTTP_SHIELD_NCATEGORIES,
+                                    ngx_http_shield_rules,
+                                    NGX_HTTP_SHIELD_NRULES, match)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
     }
 
-    /* Rule terms live in the same trie -- they are matched by the same pass. */
-    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
-        if (!(ngx_http_shield_rules[i].match & match)) {
-            continue;
-        }
-        for (j = 0; j < ngx_http_shield_rules[i].nterms; j++) {
-            cap += ngx_http_shield_rules[i].terms[j].len;
-        }
-    }
-
-    /* The compile-time count is a useful early failure, but it is assembled
-     * from sizeof() terms and can be left stale when a rule is appended. Keep
-     * the shift itself safe independently of that bookkeeping. */
+    /* The compile-time count catches oversized tables early. Check the live
+     * table again before assigning any bit position, so no shift depends on
+     * the compile-time expression alone. */
     term = 0;
     for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        if (ngx_http_shield_rules[i].nterms > 64 - term) {
+            ngx_log_error(NGX_LOG_EMERG, log, 0,
+                          "shield: rule set exceeds 64 terms");
+            return NGX_ERROR;
+        }
         term += ngx_http_shield_rules[i].nterms;
-    }
-    if (term > 64) {
-        ngx_log_error(NGX_LOG_EMERG, log, 0,
-                           "shield: rule set has %ui terms, max 64", term);
-        return NGX_ERROR;
-    }
-
-    if (cap > NGX_HTTP_SHIELD_AC_MAX_STATES) {
-        ngx_log_error(NGX_LOG_EMERG, log, 0,
-                           "shield: signature set too large for the "
-                           "automaton (%uz states, max %d)",
-                           cap, NGX_HTTP_SHIELD_AC_MAX_STATES);
-        return NGX_ERROR;
     }
 
     /* Keep every allocation product explicit and checked. The state ceiling
