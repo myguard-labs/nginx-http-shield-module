@@ -6,6 +6,7 @@ import json
 import os
 import urllib.error
 from argparse import Namespace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -41,8 +42,8 @@ def test_valid_record_still_reports():
 def test_oversized_record_is_discarded_in_bounded_chunks():
     valid = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"}) + "\n"
     fh = io.StringIO("x" * (mod.MAX_LOG_LINE * 3) + "\n" + valid)
-    assert mod._read_log_line(fh) is None
-    assert mod._read_log_line(fh) == valid
+    assert mod._read_log_line(fh) == (None, False)
+    assert mod._read_log_line(fh) == (valid, False)
 
     sup = mod.Suppressor(window_s=900, daily_cap=1000)
     reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
@@ -52,6 +53,48 @@ def test_oversized_record_is_discarded_in_bounded_chunks():
     )
     assert sup._count == 0
     assert logs == ["skip: oversized log record"]
+
+
+def test_split_oversized_record_discards_tail_and_reports_next(tmp_path, monkeypatch):
+    logfile = tmp_path / "shield.log"
+    logfile.write_text("x" * (mod.MAX_LOG_LINE + 1))  # no newline yet
+    args = Namespace(
+        logfile=str(logfile), state=str(tmp_path / "offset.json"), poll=0.01
+    )
+    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
+    logs = []
+    sleeps = 0
+    checkpoint_offsets = []
+    forged_tail = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /tail"})
+    next_record = json.dumps({"ip": "9.9.9.9", "cat": "sqli", "req": "GET /next"})
+
+    def append_during_eof(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            checkpoint_offsets.append(mod.load_offset(args.state, args.logfile)[0])
+            with logfile.open("a") as fh:
+                fh.write(forged_tail + "\n")
+        elif sleeps == 2:
+            with logfile.open("a") as fh:
+                fh.write(next_record + "\n")
+        elif sleeps >= 3:
+            mod._stop = True
+
+    monkeypatch.setattr(mod.time, "sleep", append_during_eof)
+    mod._stop = False
+    try:
+        mod.follow(args, reporter, sup, logs.append)
+    finally:
+        mod._stop = False
+    assert sleeps >= 3  # no busy spin at the transient EOF
+    assert checkpoint_offsets == [0]  # resume from the whole rejected line
+    assert "skip: oversized log record" in logs
+    assert not any("reported 8.8.8.8" in message for message in logs)
+    assert any("reported 9.9.9.9" in message for message in logs)
+    assert set(sup._last) == {"9.9.9.9"}
+    assert mod.load_offset(args.state, args.logfile)[0] == logfile.stat().st_size
 
 
 def test_follow_skips_oversized_record_then_reports_next(tmp_path, monkeypatch):
@@ -152,6 +195,79 @@ def test_malformed_persisted_state_does_not_crash_or_accept_negative_count(tmp_p
     for value in ("[]", '{"path":"log","offset":-2,"inode":4}'):
         offset.write_text(value)
         assert mod.load_offset(str(offset), "log") == (0, -1)
+
+
+def test_valid_persisted_numeric_boundaries_remain_accepted(tmp_path):
+    suppress = tmp_path / "suppress.json"
+    day = datetime.fromtimestamp(1000, timezone.utc).strftime("%Y-%m-%d")
+    suppress.write_text(
+        json.dumps({"day": day, "count": 1, "last": {"8.8.8.8": 1000.0}})
+    )
+    sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=str(suppress))
+    assert sup.allow("8.8.8.8", 1050) == (False, "deduped")
+    assert sup._count == 1
+
+    offset = tmp_path / "offset.json"
+    path = str(tmp_path / "shield.log")
+    offset.write_text(json.dumps({"path": path, "offset": 0, "inode": -1}))
+    assert mod.load_offset(str(offset), path) == (0, -1)
+    offset.write_text(
+        json.dumps({"path": path, "offset": (1 << 63) - 1, "inode": (1 << 64) - 1})
+    )
+    assert mod.load_offset(str(offset), path) == ((1 << 63) - 1, (1 << 64) - 1)
+
+
+@pytest.mark.parametrize("count", ["Infinity", "NaN", "1.5", "true", str(1 << 63)])
+def test_invalid_persisted_counts_reset(tmp_path, count):
+    state = tmp_path / "suppress.json"
+    state.write_text('{"day":"1970-01-01","count":' + count + ',"last":{}}')
+    sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=str(state))
+    assert sup._count == 0
+    assert sup.allow("8.8.8.8", 1000) == (True, "")
+
+
+@pytest.mark.parametrize("timestamp", ["Infinity", "NaN", "1e300", "-1"])
+def test_invalid_persisted_last_timestamps_reset(tmp_path, timestamp):
+    state = tmp_path / "suppress.json"
+    state.write_text(
+        '{"day":"1970-01-01","count":1,"last":{"8.8.8.8":' + timestamp + "}}"
+    )
+    sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=str(state))
+    assert sup._last == {}
+    assert sup.allow("8.8.8.8", 1000) == (True, "")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("offset", "Infinity"),
+        ("offset", "NaN"),
+        ("offset", "1.5"),
+        ("offset", "true"),
+        ("offset", str(1 << 63)),
+        ("inode", "Infinity"),
+        ("inode", "NaN"),
+        ("inode", "1.5"),
+        ("inode", "true"),
+        ("inode", "-2"),
+        ("inode", str(1 << 64)),
+    ],
+)
+def test_invalid_persisted_offset_numbers_reset(tmp_path, field, value):
+    state = tmp_path / "offset.json"
+    path = str(tmp_path / "shield.log")
+    values = {"offset": "0", "inode": "-1"}
+    values[field] = value
+    state.write_text(
+        '{"path":'
+        + json.dumps(path)
+        + ',"offset":'
+        + values["offset"]
+        + ',"inode":'
+        + values["inode"]
+        + "}"
+    )
+    assert mod.load_offset(str(state), path) == (0, -1)
 
 
 @pytest.mark.parametrize(

@@ -84,6 +84,9 @@ DEFAULT_CATS = [21]
 # AbuseIPDB comment cap is 1024 chars; stay well under and never leak internals.
 COMMENT_MAX = 500
 MAX_LOG_LINE = 8192  # module records fit below this; cap damaged/untrusted files
+MAX_STATE_COUNT = (1 << 63) - 1
+MAX_STATE_OFFSET = (1 << 63) - 1  # seekable signed file offset
+MAX_STATE_INODE = (1 << 64) - 1
 
 # After a rotation is detected, keep reading the OLD (renamed) inode until it
 # returns this many consecutive empty reads a poll apart -- a "stable EOF" --
@@ -93,6 +96,15 @@ MAX_LOG_LINE = 8192  # module records fit below this; cap damaged/untrusted file
 ROTATION_EOF_GRACE = 2
 
 _stop = False
+
+
+def _state_int(value, minimum: int, maximum: int) -> int:
+    """Accept only an integer emitted by our JSON state writer, within range."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("invalid state integer")
+    if not minimum <= value <= maximum:
+        raise ValueError("state integer out of range")
+    return value
 
 
 def _handle_stop(signum, frame):
@@ -237,14 +249,22 @@ class Suppressor:
                 st = json.load(fh)
             if not isinstance(st, dict) or not isinstance(st.get("last", {}), dict):
                 raise TypeError("invalid suppression state")
-            count = int(st.get("count", 0))
-            if count < 0:
-                raise ValueError("negative report count")
-            last = {k: float(v) for k, v in st.get("last", {}).items()}
+            count = _state_int(st.get("count", 0), 0, MAX_STATE_COUNT)
+            last = {}
+            latest = time.time() + self.window_s
+            for ip, value in st.get("last", {}).items():
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or not 0 <= value <= latest
+                ):
+                    raise ValueError("invalid suppression timestamp")
+                last[ip] = float(value)
             self._day = st.get("day")
             self._count = count
             self._last = last
-        except (FileNotFoundError, ValueError, KeyError, TypeError):
+        except (FileNotFoundError, ValueError, KeyError, TypeError, OverflowError):
             pass
 
     def _save(self) -> None:
@@ -412,10 +432,10 @@ def load_offset(state_path: str, log_path: str) -> tuple[int, int]:
         if not isinstance(st, dict):
             raise TypeError("invalid offset state")
         if st.get("path") == os.path.abspath(log_path):
-            offset, inode = int(st.get("offset", 0)), int(st.get("inode", -1))
-            if offset >= 0 and inode >= -1:
-                return offset, inode
-    except (FileNotFoundError, ValueError, KeyError, TypeError):
+            offset = _state_int(st.get("offset", 0), 0, MAX_STATE_OFFSET)
+            inode = _state_int(st.get("inode", -1), -1, MAX_STATE_INODE)
+            return offset, inode
+    except (FileNotFoundError, ValueError, KeyError, TypeError, OverflowError):
         pass
     return 0, -1
 
@@ -483,14 +503,16 @@ def process_line(
     return False
 
 
-def _read_log_line(fh):
-    """Read one record with bounded memory, discarding an oversized tail."""
+def _read_log_line(fh, discarding=False):
+    """Read bounded chunks; preserve an oversized line across transient EOF."""
     line = fh.readline(MAX_LOG_LINE + 1)
-    if len(line) <= MAX_LOG_LINE:
-        return line
+    if not line:
+        return "", discarding
+    if not discarding and len(line) <= MAX_LOG_LINE:
+        return line, False
     while line and not line.endswith("\n"):
         line = fh.readline(MAX_LOG_LINE + 1)
-    return None
+    return None, not line.endswith("\n")
 
 
 def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
@@ -501,6 +523,7 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
     cur_inode = -1
     last_save = 0.0
     rotation_eofs = 0  # consecutive stable-EOF polls after rotation detected
+    discarding = False  # an oversized record has not reached its newline yet
 
     while not _stop:
         # (Re)open if not open, or if the file was rotated/truncated.
@@ -512,6 +535,7 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
                 # below), never at the end of a single scope a `with` could
                 # describe.
                 fh = open(log_path, "r", encoding="utf-8", errors="replace")  # noqa: SIM115
+                discarding = False
                 stat = os.fstat(fh.fileno())
                 cur_inode = stat.st_ino
                 if cur_inode == saved_inode and offset <= stat.st_size:
@@ -534,7 +558,8 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
             continue
 
         pos = fh.tell()
-        line = _read_log_line(fh)
+        was_discarding = discarding
+        line, discarding = _read_log_line(fh, discarding)
         if line is not None and line:
             # A line was available: if we were counting down a post-rotation
             # EOF grace, a late write just arrived on the old inode -> the fd is
@@ -561,8 +586,12 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
             # Consuming a late oversized record is still activity on the old
             # inode. Restart the stable-EOF grace before deciding to rotate.
             rotation_eofs = 0
-            log("skip: oversized log record")
-            offset = fh.tell()
+            if not was_discarding:
+                log("skip: oversized log record")
+            # Do not checkpoint a position inside an incomplete record: after
+            # restart that would make its valid-looking tail a new report.
+            if not discarding:
+                offset = fh.tell()
             continue
 
         # EOF: persist offset, then check for rotation/truncation.
