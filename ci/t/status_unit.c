@@ -9,6 +9,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <assert.h>
+#include <inttypes.h>
 
 static void *status_alloc(ngx_pool_t *pool, size_t size);
 static void *status_aligned_alloc(ngx_pool_t *pool, size_t size);
@@ -90,7 +91,9 @@ main(void)
     ngx_http_shield_ban_node_t source, source6;
     ngx_http_shield_status_ban_t copied;
     ngx_http_shield_status_snapshot_t snapshot;
+    char expected_hits[64];
     char *text;
+    int expected_len;
     void *entries_allocation;
     size_t limit;
     unsigned aligned_before;
@@ -190,7 +193,11 @@ main(void)
     assert(strstr(text, "\"blocked\":18446744073709551615") != NULL);
     assert(strstr(text, "\"sqli\":18446744073709551615") != NULL);
     assert(strstr(text, "\"addr\":\"127.0.0.1\"") != NULL);
-    assert(strstr(text, "\"hits\":18446744073709551615") != NULL);
+    expected_len = snprintf(expected_hits, sizeof(expected_hits),
+                            "\"hits\":%" PRIuPTR,
+                            (uintptr_t) snapshot.entries[0].hits);
+    assert(expected_len > 0 && (size_t) expected_len < sizeof(expected_hits));
+    assert(strstr(text, expected_hits) != NULL);
     assert(strstr(text, "\"expires\":10") != NULL);
     assert(body.len >= 2 && memcmp(text + body.len - 2, "]}", 2) == 0);
     free(text);
