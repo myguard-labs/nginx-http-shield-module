@@ -11,21 +11,25 @@
 #include <assert.h>
 
 static void *status_alloc(ngx_pool_t *pool, size_t size);
+static void *status_aligned_alloc(ngx_pool_t *pool, size_t size);
 static size_t status_strlen(const void *s);
 static size_t status_inet_ntop(int family, u_char *addr, u_char *text,
     size_t len);
 
 #undef ngx_strlen
 #define ngx_strlen(s) status_strlen(s)
+#define ngx_palloc status_aligned_alloc
 #define ngx_pnalloc status_alloc
 #define ngx_inet_ntop status_inet_ntop
 #include "../../src/ngx_http_shield_status.h"
 #undef ngx_inet_ntop
 #undef ngx_pnalloc
+#undef ngx_palloc
 
 static int fail_alloc;
 static int huge_category;
 static unsigned allocations;
+static unsigned aligned_allocations;
 static void *allocation;
 static size_t allocation_size;
 
@@ -46,6 +50,13 @@ status_alloc(ngx_pool_t *pool, size_t size)
     allocation = malloc(size);
     allocation_size = size;
     return allocation;
+}
+
+static void *
+status_aligned_alloc(ngx_pool_t *pool, size_t size)
+{
+    aligned_allocations++;
+    return status_alloc(pool, size);
 }
 
 static size_t
@@ -82,6 +93,7 @@ main(void)
     char *text;
     void *entries_allocation;
     size_t limit;
+    unsigned aligned_before;
     ngx_uint_t i, physical, retry;
 
     assert(strcmp(ngx_http_shield_cat_name(NGX_HTTP_SHIELD_CAT_N),
@@ -90,6 +102,7 @@ main(void)
     assert(ngx_http_shield_status_prometheus(NULL, &zone, hits,
                UINT64_MAX, UINT64_MAX, 1, 1, &body) == NGX_OK);
     assert(allocations == 1);
+    assert(aligned_allocations == 0); /* byte output remains unaligned */
     text = malloc(body.len + 1);
     assert(text != NULL);
     memcpy(text, body.data, body.len);
@@ -146,8 +159,10 @@ main(void)
     source.hits = (ngx_uint_t) -1;
     source.banned_until = 20;
 
+    aligned_before = aligned_allocations;
     assert(ngx_http_shield_status_snapshot_alloc(NULL, 1, &snapshot)
            == NGX_OK);
+    assert(aligned_allocations == aligned_before + 1);
     entries_allocation = allocation;
     ngx_memzero(snapshot.entries, sizeof(ngx_http_shield_status_ban_t));
     assert(ngx_http_shield_status_snapshot_ban(snapshot.entries, &source, 10)
@@ -164,6 +179,7 @@ main(void)
 
     assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body)
            == NGX_OK);
+    assert(aligned_allocations == aligned_before + 1);
     assert(body.len < allocation_size); /* spare byte proves no truncation */
     text = malloc(body.len + 1);
     assert(text != NULL);

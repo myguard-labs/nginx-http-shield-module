@@ -93,7 +93,7 @@ ngx_http_shield_status_snapshot_alloc(ngx_pool_t *pool, ngx_uint_t capacity,
     }
 
     size = capacity * sizeof(ngx_http_shield_status_ban_t);
-    snapshot->entries = ngx_pnalloc(pool, size);
+    snapshot->entries = ngx_palloc(pool, size);
     if (snapshot->entries == NULL) {
         return NGX_ERROR;
     }
