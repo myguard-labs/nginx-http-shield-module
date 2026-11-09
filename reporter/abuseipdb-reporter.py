@@ -35,6 +35,7 @@ import datetime as dt
 import email.utils
 import ipaddress
 import json
+import math
 import os
 import signal
 import sys
@@ -82,6 +83,7 @@ DEFAULT_CATS = [21]
 
 # AbuseIPDB comment cap is 1024 chars; stay well under and never leak internals.
 COMMENT_MAX = 500
+MAX_LOG_LINE = 8192  # module records fit below this; cap damaged/untrusted files
 
 # After a rotation is detected, keep reading the OLD (renamed) inode until it
 # returns this many consecutive empty reads a poll apart -- a "stable EOF" --
@@ -233,9 +235,15 @@ class Suppressor:
         try:
             with open(self.state_path, "r", encoding="utf-8") as fh:
                 st = json.load(fh)
+            if not isinstance(st, dict) or not isinstance(st.get("last", {}), dict):
+                raise TypeError("invalid suppression state")
+            count = int(st.get("count", 0))
+            if count < 0:
+                raise ValueError("negative report count")
+            last = {k: float(v) for k, v in st.get("last", {}).items()}
             self._day = st.get("day")
-            self._count = int(st.get("count", 0))
-            self._last = {k: float(v) for k, v in st.get("last", {}).items()}
+            self._count = count
+            self._last = last
         except (FileNotFoundError, ValueError, KeyError, TypeError):
             pass
 
@@ -368,30 +376,32 @@ class Reporter:
             method="POST",
         )
         try:
-            with _OPENER.open(req, timeout=self.timeout) as resp:
-                body = resp.read().decode("utf-8", "replace")
+            with _OPENER.open(req, timeout=self.timeout):
+                pass
             self._note_success()
-            return self.OK, body
+            return self.OK, "HTTP success"
         except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "replace")
+            # The response is remote input. It can be arbitrarily large and may
+            # echo the credential or submitted request, so never read or log it.
+            e.close()
             if e.code == 429:
                 self._note_failure(
                     now, _parse_retry_after(e.headers.get("Retry-After"), now)
                 )
-                return self.RETRY, f"HTTP 429: {body}"
+                return self.RETRY, "HTTP 429"
             if 500 <= e.code < 600:
                 # Server-side error: transient -> retry with backoff.
                 self._note_failure(now, None)
-                return self.RETRY, f"HTTP {e.code}: {body}"
+                return self.RETRY, f"HTTP {e.code}"
             # Anything else (permanent 4xx, or a 3xx redirect that _NoRedirect
             # refused before the Key header could be re-sent -- F1): retrying
             # never helps. DROP -- log, advance, and do NOT
             # set a cooldown or bump the backoff streak, so one bad record can
             # never stall the whole queue. Only 429 and 5xx are retryable.
-            return self.DROP, f"HTTP {e.code} (permanent, dropped): {body}"
-        except (urllib.error.URLError, OSError) as e:
+            return self.DROP, f"HTTP {e.code} (permanent, dropped)"
+        except (urllib.error.URLError, OSError):
             self._note_failure(now, None)
-            return self.RETRY, f"network: {e}"
+            return self.RETRY, "network: request failed"
 
 
 def load_offset(state_path: str, log_path: str) -> tuple[int, int]:
@@ -399,9 +409,13 @@ def load_offset(state_path: str, log_path: str) -> tuple[int, int]:
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             st = json.load(fh)
+        if not isinstance(st, dict):
+            raise TypeError("invalid offset state")
         if st.get("path") == os.path.abspath(log_path):
-            return int(st.get("offset", 0)), int(st.get("inode", -1))
-    except (FileNotFoundError, ValueError, KeyError):
+            offset, inode = int(st.get("offset", 0)), int(st.get("inode", -1))
+            if offset >= 0 and inode >= -1:
+                return offset, inode
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
         pass
     return 0, -1
 
@@ -422,14 +436,21 @@ def process_line(
     """Process one log line. Return True if the line is done with (advance the
     offset past it), False if it must be retried later (a send failed / API in
     cooldown) so the caller keeps the offset on this line."""
+    if len(line) > MAX_LOG_LINE:
+        log("skip: oversized log record")
+        return True
     line = line.strip()
     if not line:
         return True
     try:
         entry = json.loads(line)
     except ValueError:
-        log(f"skip: malformed JSON: {line[:120]!r}")
+        log("skip: malformed JSON")
         return True  # never parseable; do not retry
+
+    if not isinstance(entry, dict):
+        log("skip: JSON record is not an object")
+        return True
 
     ip = str(entry.get("ip", ""))
     if not is_reportable_ip(ip):
@@ -460,6 +481,16 @@ def process_line(
     # retried once the cooldown clears, giving at-least-once delivery.
     log(f"FAILED  {ip} cats={cats} (retry after cooldown): {detail[:200]}")
     return False
+
+
+def _read_log_line(fh):
+    """Read one record with bounded memory, discarding an oversized tail."""
+    line = fh.readline(MAX_LOG_LINE + 1)
+    if len(line) <= MAX_LOG_LINE:
+        return line
+    while line and not line.endswith("\n"):
+        line = fh.readline(MAX_LOG_LINE + 1)
+    return None
 
 
 def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
@@ -503,8 +534,8 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
             continue
 
         pos = fh.tell()
-        line = fh.readline()
-        if line:
+        line = _read_log_line(fh)
+        if line is not None and line:
             # A line was available: if we were counting down a post-rotation
             # EOF grace, a late write just arrived on the old inode -> the fd is
             # not stable yet, restart the grace count.
@@ -524,6 +555,11 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
                 # Send failed: rewind to retry this exact line after cooldown.
                 fh.seek(pos)
                 time.sleep(args.poll)
+            continue
+
+        if line is None:
+            log("skip: oversized log record")
+            offset = fh.tell()
             continue
 
         # EOF: persist offset, then check for rotation/truncation.
@@ -631,6 +667,15 @@ def main(argv: list[str]) -> int:
         help="do not call AbuseIPDB; log the payload that would be sent",
     )
     args = p.parse_args(argv)
+
+    if args.dedup_window <= 0:
+        p.error("--dedup-window must be positive")
+    if args.daily_cap < 0:
+        p.error("--daily-cap must be nonnegative")
+    if not math.isfinite(args.poll) or args.poll <= 0:
+        p.error("--poll must be finite and positive")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        p.error("--timeout must be finite and positive")
 
     api_key = os.environ.get("ABUSEIPDB_API_KEY", "")
     if not api_key and not args.dry_run:

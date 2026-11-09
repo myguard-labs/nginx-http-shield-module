@@ -555,7 +555,7 @@ def test_reporter_success_clears_cooldown(monkeypatch):
     monkeypatch.setattr(mod._OPENER, "open", okresp)
     outcome, detail = r.report("8.8.8.8", [21], "c", "", now=0.0)
     assert outcome == mod.Reporter.OK
-    assert "abuseConfidenceScore" in detail
+    assert detail == "HTTP success"
     assert r.in_cooldown(now=0.0) == 0.0
 
 
