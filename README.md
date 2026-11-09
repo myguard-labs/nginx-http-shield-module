@@ -28,10 +28,20 @@ Think of it as a **legacy-exploit floor**: cheap, always-on, catches the
 internet background radiation of exploit scanners hammering CVEs from 2012.
 Run a real WAF on top where you need one.
 
+Coverage is limited to known request forms, not all PHP vulnerabilities. The
+reviewed October 2026 PHP [request-lifetime](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w),
+[cross-request state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp),
+and [upload-progress](https://www.php.net/archive/2026.php#2026-10-23-1) issues
+provided no reliable attack-only literal to add here. The
+[Brotli issue](https://github.com/google/brotli/releases/tag/v1.2.1) also
+affects [backends that decompress incoming request bodies](https://github.com/dotnet/runtime/security/advisories/GHSA-p3jp-9v83-76w9).
+Shield does not decompress those bodies or inspect responses. Remediate affected
+runtimes and dependencies upstream; these signatures do not make them safe.
+
 ## What it blocks
 
-30 categories (656 signatures), all matched case-insensitively after
-percent-decoding:
+30 categories contain 642 standalone signatures and six AND rules with 12
+terms, matched case-insensitively after percent-decoding:
 
 | Category | Examples |
 |----------|----------|
@@ -159,7 +169,7 @@ http {
 |-----------|---------|---------|-------------|
 | `shield` | http, server, location | `off` | `off` disables; `detect` logs only; `block` rejects. |
 | `shield_body` | http, server, location | `on` | Inspect the request body (text-shaped content types only). |
-| `shield_max_body` | http, server, location | `8k` | Bytes of body scanned. Larger bodies are passed through unscanned — uploads are never blocked for being big. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
+| `shield_max_body` | http, server, location | `8k` | Maximum bytes scanned from the start of an eligible body. For larger bodies, the remainder is not inspected; this limit does not enforce upload size. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus the structural checks `httpoxy`, `range_dos`, `ctrl_char` and `dotfile`). A child block that sets `shield_skip` **replaces** the inherited list wholesale (masks do not merge); a child that omits it inherits the parent's. An empty child cannot clear an inherited skip — to un-skip, re-state the categories you still want disabled. |
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
