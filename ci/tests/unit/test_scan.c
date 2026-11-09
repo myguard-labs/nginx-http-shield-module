@@ -241,6 +241,44 @@ case_clean_baseline(void)
 }
 
 
+static void
+case_rule_term_count(void)
+{
+    size_t  i, total = 0;
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        total += ngx_http_shield_rules[i].nterms;
+    }
+
+    check(total == 12, "all six shipped AND rules contain 12 terms");
+    check(NGX_HTTP_SHIELD_NRULE_TERMS == total,
+          "compile-time term guard includes every live rule term");
+    check(total <= 64, "live rule-term shifts fit the 64-bit mask");
+}
+
+
+static void
+case_state_capacity(void)
+{
+    size_t  cap;
+
+    cap = NGX_HTTP_SHIELD_AC_MAX_STATES - 1;
+    check(ngx_http_shield_ac_capacity_add(&cap, 1) == NGX_OK,
+          "state capacity accepts its last index");
+    check(cap == NGX_HTTP_SHIELD_AC_MAX_STATES,
+          "state capacity reaches the exact ceiling");
+    check(ngx_http_shield_ac_capacity_add(&cap, 1) == NGX_ERROR,
+          "state capacity rejects one past its ceiling");
+    check(cap == NGX_HTTP_SHIELD_AC_MAX_STATES,
+          "rejected state addition leaves capacity unchanged");
+
+    cap = 1;
+    check(ngx_http_shield_ac_capacity_add(&cap, (size_t) -1) == NGX_ERROR,
+          "state capacity rejects a wrapping length");
+    check(cap == 1, "wrapping length leaves capacity unchanged");
+}
+
+
 /*
  * One positive hit per representative category, proving the automaton
  * actually reports the category it matched (hit.cat / hit.category) rather
@@ -575,6 +613,8 @@ main(void)
     build_automata();
 
     case_clean_baseline();
+    case_rule_term_count();
+    case_state_capacity();
     case_category_hits();
     case_percent_decoding();
     case_skip_mask();
