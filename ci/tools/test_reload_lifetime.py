@@ -146,6 +146,10 @@ http {{
             raise Failure(f"expected one worker child, found {workers}")
         return workers[0]
 
+    def has_sole_worker_other_than(self, pid: int) -> bool:
+        workers = self.children()
+        return len(workers) == 1 and workers[0] != pid
+
     def wait_until(self, predicate, what: str) -> None:
         deadline = time.monotonic() + WAIT_S
         while time.monotonic() < deadline:
@@ -217,7 +221,7 @@ def test_rejected_reload_replacement(srv: Server) -> None:
 
         os.kill(old_worker, signal.SIGTERM)
         srv.wait_until(
-            lambda: len(srv.children()) == 1 and srv.children()[0] != old_worker,
+            lambda: srv.has_sole_worker_other_than(old_worker),
             "replacement worker from unchanged master",
         )
         replacement = srv.sole_worker()
@@ -236,7 +240,7 @@ def test_rejected_reload_replacement(srv: Server) -> None:
     srv.write_config()
     srv.reload()
     srv.wait_until(
-        lambda: len(srv.children()) == 1 and srv.children()[0] != replacement,
+        lambda: srv.has_sole_worker_other_than(replacement),
         "worker from successful reload",
     )
     expect_status(srv.port, marker, BLOCKED, "scan after successful reload")
