@@ -601,7 +601,10 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
             last_save = now
         try:
             disk = os.stat(log_path)
-            if disk.st_ino != cur_inode or disk.st_size < offset:
+            # `offset` is the durable checkpoint and deliberately stays at the
+            # start of an incomplete oversized line. Truncation must compare
+            # with the current reader position, which may be much farther on.
+            if disk.st_ino != cur_inode or disk.st_size < fh.tell():
                 # Rotation (new inode) or truncation detected on the path. Do NOT
                 # close the old descriptor yet: nginx may still be appending to
                 # the renamed inode until it reopens on SIGUSR1, and we may have a

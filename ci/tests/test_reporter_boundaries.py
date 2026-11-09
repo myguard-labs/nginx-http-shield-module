@@ -97,6 +97,42 @@ def test_split_oversized_record_discards_tail_and_reports_next(tmp_path, monkeyp
     assert mod.load_offset(args.state, args.logfile)[0] == logfile.stat().st_size
 
 
+def test_copy_truncate_reopens_while_discarding_oversized_line(tmp_path, monkeypatch):
+    logfile = tmp_path / "shield.log"
+    logfile.write_text("x" * (mod.MAX_LOG_LINE + 1))  # no newline
+    inode = logfile.stat().st_ino
+    replacement = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /new"}) + "\n"
+    args = Namespace(
+        logfile=str(logfile), state=str(tmp_path / "offset.json"), poll=0.01
+    )
+    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
+    logs = []
+    sleeps = 0
+
+    def copy_truncate_during_eof(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            logfile.write_text(replacement)
+            assert logfile.stat().st_ino == inode  # same inode, shorter file
+        elif sleeps >= 3:
+            mod._stop = True
+
+    monkeypatch.setattr(mod.time, "sleep", copy_truncate_during_eof)
+    mod._stop = False
+    try:
+        mod.follow(args, reporter, sup, logs.append)
+    finally:
+        mod._stop = False
+    assert sleeps >= 2  # EOF polling remains paced
+    assert "truncation detected; reopening" in logs
+    assert sum(message.startswith("opened ") for message in logs) == 2
+    assert any("reported 8.8.8.8" in message for message in logs)
+    assert sup._count == 1
+    assert mod.load_offset(args.state, args.logfile) == (len(replacement), inode)
+
+
 def test_follow_skips_oversized_record_then_reports_next(tmp_path, monkeypatch):
     logfile = tmp_path / "shield.log"
     logfile.write_text(
