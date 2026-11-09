@@ -251,6 +251,13 @@ main(void)
     assert(ngx_http_shield_status_snapshot_ban(&copied, &source, 10)
            == NGX_ERROR);
 
+    snapshot.capacity = 1;
+    snapshot.entries = &copied;
+    assert(ngx_http_shield_status_snapshot_alloc(NULL, 0, &snapshot)
+           == NGX_OK);
+    assert(snapshot.capacity == 0);
+    assert(snapshot.entries == NULL);
+
     fail_alloc = 1;
     assert(ngx_http_shield_status_snapshot_alloc(NULL, 1, &snapshot)
            == NGX_ERROR);
