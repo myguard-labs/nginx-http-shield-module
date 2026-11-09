@@ -504,15 +504,23 @@ def process_line(
 
 
 def _read_log_line(fh, discarding=False):
-    """Read bounded chunks; preserve an oversized line across transient EOF."""
+    """Read bounded chunks; defer incomplete lines across transient EOF."""
+    start = fh.tell()
     line = fh.readline(MAX_LOG_LINE + 1)
     if not line:
-        return "", discarding
+        return "", discarding, 0
     if not discarding and len(line) <= MAX_LOG_LINE:
-        return line, False
+        if not line.endswith("\n"):
+            # A short write may stop before its newline. Re-read the whole
+            # bounded fragment on the next paced EOF poll, so an appended tail
+            # cannot be mistaken for a separate record.
+            end = fh.tell()
+            fh.seek(start)
+            return "", False, end
+        return line, False, 0
     while line and not line.endswith("\n"):
         line = fh.readline(MAX_LOG_LINE + 1)
-    return None, not line.endswith("\n")
+    return None, not line.endswith("\n"), 0
 
 
 def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
@@ -524,6 +532,7 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
     last_save = 0.0
     rotation_eofs = 0  # consecutive stable-EOF polls after rotation detected
     discarding = False  # an oversized record has not reached its newline yet
+    partial_end = 0  # farthest read position of a deferred short fragment
 
     while not _stop:
         # (Re)open if not open, or if the file was rotated/truncated.
@@ -536,6 +545,7 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
                 # describe.
                 fh = open(log_path, "r", encoding="utf-8", errors="replace")  # noqa: SIM115
                 discarding = False
+                partial_end = 0
                 stat = os.fstat(fh.fileno())
                 cur_inode = stat.st_ino
                 if cur_inode == saved_inode and offset <= stat.st_size:
@@ -557,9 +567,30 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
             time.sleep(min(wait, args.poll))
             continue
 
+        if partial_end:
+            # A deferred line is rewound to its start. Check the farthest
+            # position read before trying again, or a shorter replacement
+            # could be consumed without detecting same-inode truncation.
+            try:
+                disk = os.stat(log_path)
+                if disk.st_ino == cur_inode and disk.st_size < partial_end:
+                    log("truncation detected; reopening")
+                    fh.close()
+                    fh = None
+                    offset = 0
+                    saved_inode = -1
+                    continue
+            except FileNotFoundError:
+                pass
+
         pos = fh.tell()
         was_discarding = discarding
-        line, discarding = _read_log_line(fh, discarding)
+        line, discarding, seen_partial_end = _read_log_line(fh, discarding)
+        if seen_partial_end > partial_end:
+            # New bytes on a rotated old inode restart its stable-EOF grace,
+            # even while the record is still waiting for a newline.
+            rotation_eofs = 0
+        partial_end = seen_partial_end
         if line is not None and line:
             # A line was available: if we were counting down a post-rotation
             # EOF grace, a late write just arrived on the old inode -> the fd is
@@ -601,10 +632,10 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
             last_save = now
         try:
             disk = os.stat(log_path)
-            # `offset` is the durable checkpoint and deliberately stays at the
-            # start of an incomplete oversized line. Truncation must compare
-            # with the current reader position, which may be much farther on.
-            if disk.st_ino != cur_inode or disk.st_size < fh.tell():
+            # `offset` stays at the last complete line, including while a
+            # damaged record is being discarded. Truncation must compare with
+            # the current or deferred reader position, which may be farther on.
+            if disk.st_ino != cur_inode or disk.st_size < max(fh.tell(), partial_end):
                 # Rotation (new inode) or truncation detected on the path. Do NOT
                 # close the old descriptor yet: nginx may still be appending to
                 # the renamed inode until it reopens on SIGUSR1, and we may have a

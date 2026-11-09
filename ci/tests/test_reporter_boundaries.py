@@ -42,8 +42,8 @@ def test_valid_record_still_reports():
 def test_oversized_record_is_discarded_in_bounded_chunks():
     valid = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"}) + "\n"
     fh = io.StringIO("x" * (mod.MAX_LOG_LINE * 3) + "\n" + valid)
-    assert mod._read_log_line(fh) == (None, False)
-    assert mod._read_log_line(fh) == (valid, False)
+    assert mod._read_log_line(fh) == (None, False, 0)
+    assert mod._read_log_line(fh) == (valid, False, 0)
 
     sup = mod.Suppressor(window_s=900, daily_cap=1000)
     reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
@@ -97,6 +97,101 @@ def test_split_oversized_record_discards_tail_and_reports_next(tmp_path, monkeyp
     assert mod.load_offset(args.state, args.logfile)[0] == logfile.stat().st_size
 
 
+def test_short_partial_line_waits_for_newline_and_keeps_checkpoint(
+    tmp_path, monkeypatch
+):
+    logfile = tmp_path / "shield.log"
+    logfile.write_text("bad-json: ")  # ten bytes, no newline
+    args = Namespace(
+        logfile=str(logfile), state=str(tmp_path / "offset.json"), poll=0.01
+    )
+    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
+    logs = []
+    first_poll = []
+    sleeps = 0
+    tail = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /tail"})
+    next_record = json.dumps({"ip": "9.9.9.9", "cat": "sqli", "req": "GET /next"})
+
+    def append_during_eof(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            first_poll.append(
+                (mod.load_offset(args.state, args.logfile)[0], list(logs))
+            )
+            with logfile.open("a") as fh:
+                fh.write(tail + "\n")
+        elif sleeps == 2:
+            with logfile.open("a") as fh:
+                fh.write(next_record + "\n")
+        elif sleeps >= 3:
+            mod._stop = True
+
+    monkeypatch.setattr(mod.time, "sleep", append_during_eof)
+    mod._stop = False
+    try:
+        mod.follow(args, reporter, sup, logs.append)
+    finally:
+        mod._stop = False
+    assert sleeps >= 3  # the deferred fragment is polled, not spun on
+    assert first_poll[0][0] == 0
+    assert not any("malformed JSON" in message for message in first_poll[0][1])
+    assert logs.count("skip: malformed JSON") == 1
+    assert not any("reported 8.8.8.8" in message for message in logs)
+    assert any("reported 9.9.9.9" in message for message in logs)
+    assert set(sup._last) == {"9.9.9.9"}
+    assert mod.load_offset(args.state, args.logfile)[0] == logfile.stat().st_size
+
+
+def test_short_partial_growth_restarts_rotation_grace(tmp_path, monkeypatch):
+    logfile = tmp_path / "shield.log"
+    rotated = tmp_path / "shield.log.1"
+    logfile.write_text('{"ip":"8.8.8.8",')
+    args = Namespace(
+        logfile=str(logfile), state=str(tmp_path / "offset.json"), poll=0.01
+    )
+    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
+    logs = []
+    stat_calls = 0
+    sleeps = 0
+    real_stat = os.stat
+
+    def rotating_stat(path, *a, **kw):
+        nonlocal stat_calls
+        if str(path) == args.logfile:
+            stat_calls += 1
+            if stat_calls == 1:
+                logfile.rename(rotated)
+                logfile.write_text("")
+        return real_stat(path, *a, **kw)
+
+    def append_during_grace(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            with rotated.open("a") as fh:
+                fh.write('"cat":"sqli",')
+        elif sleeps == 2:
+            with rotated.open("a") as fh:
+                fh.write('"req":"GET /late"}\n')
+        elif sleeps >= 4:
+            mod._stop = True
+
+    monkeypatch.setattr(mod.os, "stat", rotating_stat)
+    monkeypatch.setattr(mod.time, "sleep", append_during_grace)
+    mod._stop = False
+    try:
+        mod.follow(args, reporter, sup, logs.append)
+    finally:
+        mod._stop = False
+    assert stat_calls >= 2
+    assert sleeps >= 3
+    assert any("reported 8.8.8.8" in message for message in logs)
+    assert sup._count == 1
+
+
 def test_copy_truncate_reopens_while_discarding_oversized_line(tmp_path, monkeypatch):
     logfile = tmp_path / "shield.log"
     logfile.write_text("x" * (mod.MAX_LOG_LINE + 1))  # no newline
@@ -128,6 +223,42 @@ def test_copy_truncate_reopens_while_discarding_oversized_line(tmp_path, monkeyp
     assert sleeps >= 2  # EOF polling remains paced
     assert "truncation detected; reopening" in logs
     assert sum(message.startswith("opened ") for message in logs) == 2
+    assert any("reported 8.8.8.8" in message for message in logs)
+    assert sup._count == 1
+    assert mod.load_offset(args.state, args.logfile) == (len(replacement), inode)
+
+
+def test_copy_truncate_reopens_while_short_line_is_deferred(tmp_path, monkeypatch):
+    logfile = tmp_path / "shield.log"
+    logfile.write_text("x" * 100)  # short, unterminated line
+    inode = logfile.stat().st_ino
+    replacement = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /new"}) + "\n"
+    assert len(replacement) < 100
+    args = Namespace(
+        logfile=str(logfile), state=str(tmp_path / "offset.json"), poll=0.01
+    )
+    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
+    logs = []
+    sleeps = 0
+
+    def copy_truncate_during_eof(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            logfile.write_text(replacement)
+            assert logfile.stat().st_ino == inode
+        elif sleeps >= 3:
+            mod._stop = True
+
+    monkeypatch.setattr(mod.time, "sleep", copy_truncate_during_eof)
+    mod._stop = False
+    try:
+        mod.follow(args, reporter, sup, logs.append)
+    finally:
+        mod._stop = False
+    assert sleeps >= 2
+    assert "truncation detected; reopening" in logs
     assert any("reported 8.8.8.8" in message for message in logs)
     assert sup._count == 1
     assert mod.load_offset(args.state, args.logfile) == (len(replacement), inode)
