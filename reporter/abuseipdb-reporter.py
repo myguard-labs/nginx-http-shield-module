@@ -558,6 +558,9 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
             continue
 
         if line is None:
+            # Consuming a late oversized record is still activity on the old
+            # inode. Restart the stable-EOF grace before deciding to rotate.
+            rotation_eofs = 0
             log("skip: oversized log record")
             offset = fh.tell()
             continue

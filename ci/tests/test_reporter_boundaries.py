@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import os
 import urllib.error
 from argparse import Namespace
 from pathlib import Path
@@ -80,6 +81,59 @@ def test_follow_skips_oversized_record_then_reports_next(tmp_path, monkeypatch):
     assert sup._count == 1
     assert any(message == "skip: oversized log record" for message in logs)
     assert mod.load_offset(args.state, args.logfile)[0] == logfile.stat().st_size
+
+
+def test_oversized_late_record_restarts_rotation_grace(tmp_path, monkeypatch):
+    logfile = tmp_path / "shield.log"
+    rotated = tmp_path / "shield.log.1"
+    logfile.write_text("")
+    args = Namespace(
+        logfile=str(logfile), state=str(tmp_path / "offset.json"), poll=0.01
+    )
+    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
+    logs = []
+    stat_calls = 0
+    sleep_calls = 0
+    real_stat = os.stat
+
+    def rotating_stat(path, *a, **kw):
+        nonlocal stat_calls
+        if str(path) == args.logfile:
+            stat_calls += 1
+            if stat_calls == 1:
+                logfile.rename(rotated)
+                logfile.write_text("")
+            elif stat_calls == 2:
+                # This is the EOF after the oversized line. nginx can still
+                # append to its open old inode before the reporter closes it.
+                with rotated.open("a") as fh:
+                    fh.write(
+                        json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /late"})
+                        + "\n"
+                    )
+        return real_stat(path, *a, **kw)
+
+    def sleep_during_grace(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            with rotated.open("a") as fh:
+                fh.write("x" * (mod.MAX_LOG_LINE + 1) + "\n")
+        if sleep_calls >= 4:
+            mod._stop = True
+
+    monkeypatch.setattr(mod.os, "stat", rotating_stat)
+    monkeypatch.setattr(mod.time, "sleep", sleep_during_grace)
+    mod._stop = False
+    try:
+        mod.follow(args, reporter, sup, logs.append)
+    finally:
+        mod._stop = False
+    assert stat_calls >= 2
+    assert "skip: oversized log record" in logs
+    assert any("reported 8.8.8.8" in message for message in logs)
+    assert sup._count == 1
 
 
 def test_malformed_persisted_state_does_not_crash_or_accept_negative_count(tmp_path):
