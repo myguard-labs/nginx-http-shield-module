@@ -41,6 +41,9 @@
 #define NGX_HTTP_SHIELD_DETECT  1
 #define NGX_HTTP_SHIELD_BLOCK   2
 
+#define NGX_HTTP_SHIELD_STATUS_JSON        0
+#define NGX_HTTP_SHIELD_STATUS_PROMETHEUS  1
+
 /* Maximum number of comma-separated ranges tolerated in a Range header before
  * it is treated as an Apache-Killer (CVE-2011-3192) attempt. */
 #define NGX_HTTP_SHIELD_MAX_RANGES  10
@@ -91,6 +94,7 @@ typedef struct {
     ngx_array_t *ban_trusted; /* ngx_cidr_t, trusted proxies; NULL = none     */
 
     ngx_shm_zone_t *status_zone; /* zone shield_status reports on; NULL = off */
+    ngx_uint_t   status_format; /* JSON (default) or OpenMetrics             */
 
 #ifdef NGX_TEST_HARNESS
     ngx_shm_zone_t *probe_zone; /* zone the shield_probe endpoint reports on  */
@@ -179,6 +183,13 @@ static char *ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
 
+static ngx_conf_enum_t  ngx_http_shield_status_formats[] = {
+    { ngx_string("json"), NGX_HTTP_SHIELD_STATUS_JSON },
+    { ngx_string("prometheus"), NGX_HTTP_SHIELD_STATUS_PROMETHEUS },
+    { ngx_null_string, 0 }
+};
+
+
 static ngx_command_t  ngx_http_shield_commands[] = {
 
     { ngx_string("shield"),
@@ -246,6 +257,13 @@ static ngx_command_t  ngx_http_shield_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
+
+    { ngx_string("shield_ban_status_format"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_enum_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_shield_loc_conf_t, status_format),
+      &ngx_http_shield_status_formats },
 
 #ifdef NGX_TEST_HARNESS
 
@@ -1405,6 +1423,7 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     slcf->ban_trusted = NULL;
 
     slcf->status_zone = NULL;
+    slcf->status_format = NGX_CONF_UNSET_UINT;
 
     return slcf;
 }
@@ -1427,6 +1446,8 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
      * the budget is still attacker-driven, and 8k covers real form/JSON. */
     ngx_conf_merge_size_value(conf->max_body, prev->max_body, 8 * 1024);
     ngx_conf_merge_uint_value(conf->status, prev->status, NGX_HTTP_FORBIDDEN);
+    ngx_conf_merge_uint_value(conf->status_format, prev->status_format,
+                             NGX_HTTP_SHIELD_STATUS_JSON);
 
     /* skip: a child that names ANY shield_skip token replaces the parent mask
      * wholesale (masks do not union). A child that names none (conf->skip == 0)
@@ -2306,46 +2327,9 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
-/* ---- shield_ban_status: operator-facing JSON status endpoint ----------- */
+/* ---- shield_ban_status: operator-facing status endpoint ---------------- */
 
-/*
- * Name of a category by enum value, for the status report.
- *
- * Derived from ngx_http_shield_categories[] rather than from a second hand-kept
- * list, so adding a signature category cannot make the two disagree. The four
- * STRUCTURAL categories have no table row (nothing to match with signatures),
- * so they are named from the same NGX_HTTP_SHIELD_NAME_* macros the detection
- * sites use -- again, no new copy of the string.
- *
- * Returns "unknown" rather than NULL for an unnamed value: a category added to
- * the enum but to neither the table nor the switch below should show up as a
- * visibly wrong key in monitoring, not crash the endpoint.
- */
-static const char *
-ngx_http_shield_cat_name(ngx_uint_t cat)
-{
-    ngx_uint_t  i;
-
-    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
-        if (ngx_http_shield_categories[i].cat == cat) {
-            return ngx_http_shield_categories[i].name;
-        }
-    }
-
-    switch (cat) {
-    case NGX_HTTP_SHIELD_CAT_HTTPOXY:
-        return NGX_HTTP_SHIELD_NAME_HTTPOXY;
-    case NGX_HTTP_SHIELD_CAT_RANGE_DOS:
-        return NGX_HTTP_SHIELD_NAME_RANGE_DOS;
-    case NGX_HTTP_SHIELD_CAT_CTRL_CHAR:
-        return NGX_HTTP_SHIELD_NAME_CTRL_CHAR;
-    case NGX_HTTP_SHIELD_CAT_DOTFILE:
-        return NGX_HTTP_SHIELD_NAME_DOTFILE;
-    default:
-        return "unknown";   /* LCOV_EXCL_LINE -- unreachable while the enum, */
-                            /* the table, and this switch stay in sync       */
-    }
-}
+#include "ngx_http_shield_status.h"
 
 
 /*
@@ -2412,7 +2396,8 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
     time_t                       now;
     ngx_int_t                    rc;
     ngx_buf_t                   *b;
-    ngx_uint_t                   i, nodes, first;
+    ngx_uint_t                   i, nodes, first, banned;
+    ngx_str_t                    metrics;
     ngx_chain_t                  out;
     ngx_queue_t                 *q;
     uint64_t                     cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
@@ -2451,14 +2436,37 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
     bans = ctx->sh->bans;
 
     nodes = 0;
+    banned = 0;
     for (q = ngx_queue_head(&ctx->sh->queue);
          q != ngx_queue_sentinel(&ctx->sh->queue);
          q = ngx_queue_next(q))
     {
         nodes++;
+        if (slcf->status_format == NGX_HTTP_SHIELD_STATUS_PROMETHEUS) {
+            bn = ngx_queue_data(q, ngx_http_shield_ban_node_t, queue);
+            if (bn->banned_until > now) {
+                banned++;
+            }
+        }
     }
 
     ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+    if (slcf->status_format == NGX_HTTP_SHIELD_STATUS_PROMETHEUS) {
+        if (ngx_http_shield_status_prometheus(r->pool,
+                                             &slcf->status_zone->shm.name,
+                                             cat_hits, blocked, bans, nodes,
+                                             banned, &metrics) != NGX_OK)
+        {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        buf = metrics.data;
+        p = buf + metrics.len;
+        ngx_str_set(&r->headers_out.content_type,
+                    "application/openmetrics-text; version=1.0.0; "
+                    "charset=utf-8");
+        goto send_response;
+    }
 
     /* Per banned entry: a quoted IPv6 text address, hits, and an expiry, plus
      * punctuation -- 96 bytes is comfortable for the widest form. Per category:
@@ -2535,9 +2543,12 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
 
     p = ngx_slprintf(p, last, "]}");
 
+    ngx_str_set(&r->headers_out.content_type, "application/json");
+
+send_response:
+
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = p - buf;
-    ngx_str_set(&r->headers_out.content_type, "application/json");
     r->headers_out.content_type_len = r->headers_out.content_type.len;
     r->headers_out.content_type_lowcase = NULL;
 
