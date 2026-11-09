@@ -71,6 +71,12 @@ typedef struct {
 ngx_int_t ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
     ngx_http_shield_ac_t *ac, ngx_uint_t match);
 
+/* Count trie states from the same definition walk the builder uses. Exposed
+ * to the unit harness so synthetic tables can exercise the limit and errors. */
+ngx_int_t ngx_http_shield_ac_capacity(ngx_log_t *log, size_t *cap,
+    const ngx_http_shield_catdef_t *categories, size_t ncategories,
+    const ngx_http_shield_ruledef_t *rules, size_t nrules, ngx_uint_t match);
+
 
 /*
  * Scan one input buffer against every enabled signature category.
