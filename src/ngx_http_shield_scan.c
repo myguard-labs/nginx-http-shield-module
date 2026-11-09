@@ -75,7 +75,15 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
             continue;
         }
         for (j = 0; j < ngx_http_shield_categories[i].nsigs; j++) {
-            cap += ngx_http_shield_categories[i].sigs[j].len;
+            if (ngx_http_shield_ac_capacity_add(
+                    &cap, ngx_http_shield_categories[i].sigs[j].len)
+                != NGX_OK)
+            {
+                ngx_log_error(NGX_LOG_EMERG, log, 0,
+                              "shield: signature set exceeds automaton "
+                              "state limit");
+                return NGX_ERROR;
+            }
         }
     }
 
@@ -85,29 +93,29 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
             continue;
         }
         for (j = 0; j < ngx_http_shield_rules[i].nterms; j++) {
-            cap += ngx_http_shield_rules[i].terms[j].len;
+            if (ngx_http_shield_ac_capacity_add(
+                    &cap, ngx_http_shield_rules[i].terms[j].len)
+                != NGX_OK)
+            {
+                ngx_log_error(NGX_LOG_EMERG, log, 0,
+                              "shield: rule terms exceed automaton "
+                              "state limit");
+                return NGX_ERROR;
+            }
         }
     }
 
-    /* The compile-time count is a useful early failure, but it is assembled
-     * from sizeof() terms and can be left stale when a rule is appended. Keep
-     * the shift itself safe independently of that bookkeeping. */
+    /* The compile-time count catches oversized tables early. Check the live
+     * table again before assigning any bit position, so no shift depends on
+     * the compile-time expression alone. */
     term = 0;
     for (i = 0; i < NGX_HTTP_SHIELD_NRULES; i++) {
+        if (ngx_http_shield_rules[i].nterms > 64 - term) {
+            ngx_log_error(NGX_LOG_EMERG, log, 0,
+                          "shield: rule set exceeds 64 terms");
+            return NGX_ERROR;
+        }
         term += ngx_http_shield_rules[i].nterms;
-    }
-    if (term > 64) {
-        ngx_log_error(NGX_LOG_EMERG, log, 0,
-                           "shield: rule set has %ui terms, max 64", term);
-        return NGX_ERROR;
-    }
-
-    if (cap > NGX_HTTP_SHIELD_AC_MAX_STATES) {
-        ngx_log_error(NGX_LOG_EMERG, log, 0,
-                           "shield: signature set too large for the "
-                           "automaton (%uz states, max %d)",
-                           cap, NGX_HTTP_SHIELD_AC_MAX_STATES);
-        return NGX_ERROR;
     }
 
     /* Keep every allocation product explicit and checked. The state ceiling

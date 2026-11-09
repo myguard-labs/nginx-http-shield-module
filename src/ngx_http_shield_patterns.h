@@ -1453,30 +1453,34 @@ static const ngx_http_shield_sig_t
 };
 
 #define NGX_HTTP_SHIELD_RULE(c, nm, arr, m)                                   \
-    { (c), (nm), (arr), sizeof(arr) / sizeof((arr)[0]), (m) }
+    { (c), (nm), (arr), sizeof(arr) / sizeof((arr)[0]), (m) },
+
+/* Reported as deserial, NOT exploit_path: the Metabase attack is delivered
+ * in a POST BODY (an H2 JDBC connection string with an INIT script), and
+ * exploit_path now carries NO_BODY so a rule reported under it would be
+ * skipped on the body scan -- which is the only place this attack appears.
+ * deserial is the right home anyway: an H2 JDBC INIT-script RCE is a
+ * JDBC/deserialization-class gadget, and deserial stays body-scanning. The
+ * setup-validate path is still matched in the target by exploit_path; this
+ * rule adds the body-gadget half. */
+/* This list creates both the rule table and its compile-time term count. A new
+ * rule cannot be present in the table while absent from the mask bound. */
+#define NGX_HTTP_SHIELD_FOR_EACH_RULE(X)                                      \
+    X(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "ofbiz_authbypass",                   \
+      ngx_http_shield_rule_ofbiz, NGX_HTTP_SHIELD_MATCH_DECODED)              \
+    X(NGX_HTTP_SHIELD_CAT_DESERIAL, "metabase_jdbc_rce",                      \
+      ngx_http_shield_rule_metabase, NGX_HTTP_SHIELD_MATCH_DECODED)           \
+    X(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "jenkins_cli_read",                   \
+      ngx_http_shield_rule_jenkins_cli, NGX_HTTP_SHIELD_MATCH_DECODED)        \
+    X(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "vmware_wsone_ssti",                  \
+      ngx_http_shield_rule_vmware_ssti, NGX_HTTP_SHIELD_MATCH_DECODED)        \
+    X(NGX_HTTP_SHIELD_CAT_SSRF_META, "ssrf_wildcard_dns",                     \
+      ngx_http_shield_rule_ssrf_wildcard_dns, NGX_HTTP_SHIELD_MATCH_DECODED)  \
+    X(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "coldfusion_cfclient",                \
+      ngx_http_shield_rule_coldfusion_cfclient, NGX_HTTP_SHIELD_MATCH_DECODED)
 
 static const ngx_http_shield_ruledef_t  ngx_http_shield_rules[] = {
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "ofbiz_authbypass",
-        ngx_http_shield_rule_ofbiz, NGX_HTTP_SHIELD_MATCH_DECODED),
-    /* Reported as deserial, NOT exploit_path: the Metabase attack is delivered
-     * in a POST BODY (an H2 JDBC connection string with an INIT script), and
-     * exploit_path now carries NO_BODY so a rule reported under it would be
-     * skipped on the body scan -- which is the only place this attack appears.
-     * deserial is the right home anyway: an H2 JDBC INIT-script RCE is a
-     * JDBC/deserialization-class gadget, and deserial stays body-scanning. The
-     * setup-validate path is still matched in the target by exploit_path; this
-     * rule adds the body-gadget half. */
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_DESERIAL, "metabase_jdbc_rce",
-        ngx_http_shield_rule_metabase, NGX_HTTP_SHIELD_MATCH_DECODED),
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "jenkins_cli_read",
-        ngx_http_shield_rule_jenkins_cli, NGX_HTTP_SHIELD_MATCH_DECODED),
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH, "vmware_wsone_ssti",
-        ngx_http_shield_rule_vmware_ssti, NGX_HTTP_SHIELD_MATCH_DECODED),
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_SSRF_META, "ssrf_wildcard_dns",
-        ngx_http_shield_rule_ssrf_wildcard_dns, NGX_HTTP_SHIELD_MATCH_DECODED),
-    NGX_HTTP_SHIELD_RULE(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH,
-        "coldfusion_cfclient", ngx_http_shield_rule_coldfusion_cfclient,
-        NGX_HTTP_SHIELD_MATCH_DECODED),
+    NGX_HTTP_SHIELD_FOR_EACH_RULE(NGX_HTTP_SHIELD_RULE)
 };
 
 #define NGX_HTTP_SHIELD_NRULES                                                \
@@ -1532,23 +1536,16 @@ typedef char ngx_http_shield_cat_fits_in_mask[
 
 /* Rule terms are numbered across ngx_http_shield_rules[] in declaration order
  * (rule 0's terms first, then rule 1's, ...). The id is a bit position in the
- * per-state rule mask, so the total number of terms must fit in a uint64. Ten
- * today; the assert makes an overflow a compile error rather than a silently
- * mis-evaluated rule. */
+ * per-state rule mask, so the total number of terms must fit in a uint64. The
+ * same rule list that initializes the table yields this constant expression. */
+#define NGX_HTTP_SHIELD_COUNT_RULE_TERMS(c, nm, arr, m)                      \
+    + sizeof(arr) / sizeof((arr)[0])
 #define NGX_HTTP_SHIELD_NRULE_TERMS                                           \
-    (sizeof(ngx_http_shield_rule_ofbiz)                                       \
-       / sizeof(ngx_http_shield_rule_ofbiz[0])                                \
-     + sizeof(ngx_http_shield_rule_metabase)                                  \
-       / sizeof(ngx_http_shield_rule_metabase[0])                             \
-     + sizeof(ngx_http_shield_rule_jenkins_cli)                               \
-       / sizeof(ngx_http_shield_rule_jenkins_cli[0])                          \
-     + sizeof(ngx_http_shield_rule_vmware_ssti)                               \
-       / sizeof(ngx_http_shield_rule_vmware_ssti[0])                          \
-     + sizeof(ngx_http_shield_rule_ssrf_wildcard_dns)                         \
-       / sizeof(ngx_http_shield_rule_ssrf_wildcard_dns[0]))
+    (0 NGX_HTTP_SHIELD_FOR_EACH_RULE(NGX_HTTP_SHIELD_COUNT_RULE_TERMS))
 
+#define NGX_HTTP_SHIELD_RULE_TERMS_FIT(n)  ((n) <= 64)
 typedef char ngx_http_shield_rule_terms_fit_in_mask[
-    (NGX_HTTP_SHIELD_NRULE_TERMS <= 64) ? 1 : -1];
+    NGX_HTTP_SHIELD_RULE_TERMS_FIT(NGX_HTTP_SHIELD_NRULE_TERMS) ? 1 : -1];
 
 typedef struct {
     ngx_http_shield_ac_state_t  *next;   /* [nstates][256] goto table        */
