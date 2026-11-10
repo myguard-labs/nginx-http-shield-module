@@ -2504,6 +2504,10 @@ ngx_http_shield_status_snapshot(ngx_http_shield_ban_ctx_t *ctx,
     now = ngx_time();
     ngx_memcpy(snapshot->cat_hits, ctx->sh->cat_hits,
                sizeof(snapshot->cat_hits));
+    ngx_memcpy(snapshot->cat_detect, ctx->sh->cat_detect,
+               sizeof(snapshot->cat_detect));
+    ngx_memcpy(snapshot->cat_block, ctx->sh->cat_block,
+               sizeof(snapshot->cat_block));
     snapshot->blocked = ctx->sh->blocked;
     snapshot->bans = ctx->sh->bans;
     snapshot->inspected =

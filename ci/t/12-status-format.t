@@ -44,7 +44,7 @@ __DATA__
 --- request eval
 ["GET /default", "GET /explicit"]
 --- response_body_like eval
-[(qr/^\{"zone":"metrics1","nodes":0,"blocked":0,"bans":0,"inspected":0,"ban_refused":0,"evictions":0,"alloc_failures":0,"used":\d+,"size":1048576,"categories":\{.*\},"banned":\[\]\}$/) x 2]
+[(qr/^\{"zone":"metrics1","nodes":0,"blocked":0,"bans":0,"inspected":0,"ban_refused":0,"evictions":0,"alloc_failures":0,"used":\d+,"size":1048576,"categories":\{.*\},"detections":\{.*\},"banned":\[\]\}$/) x 2]
 --- response_headers eval
 ["Content-Type: application/json", "Content-Type: application/json"]
 --- error_code eval
@@ -98,6 +98,9 @@ my $expected = "# HELP shield_hits Shield signature hits by category.\n"
 . "# HELP shield_zone_size_bytes Shield zone size in bytes.\n"
 . "# TYPE shield_zone_size_bytes gauge\n"
 . "shield_zone_size_bytes{zone=\"metrics2\"} 1048576\n"
+. "# HELP shield_detections Shield detections by category and mode.\n"
+. "# TYPE shield_detections counter\n"
+. CORE::join('', map { "shield_detections_total{zone=\"metrics2\",category=\"$_\",mode=\"detect\"} 0\nshield_detections_total{zone=\"metrics2\",category=\"$_\",mode=\"block\"} 0\n" } @cats)
 . "# EOF\n";
 my $pattern = quotemeta($expected);
 $pattern =~ s/USED/[1-9][0-9]*/;
@@ -125,7 +128,7 @@ Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
  "GET /t", "GET /metrics", "GET /json"]
 --- response_body_like eval
 [qr/./, qr/./, qr/./,
- qr/shield_hits_total\{zone="metrics3",category="sqli"\} 2\n.*shield_blocked_total\{zone="metrics3"\} 2\n.*shield_bans_total\{zone="metrics3"\} 1\n.*shield_zone_nodes\{zone="metrics3"\} 1\n.*shield_banned_clients\{zone="metrics3"\} 1\n.*shield_requests_total\{zone="metrics3"\} 2\n.*shield_ban_refusals_total\{zone="metrics3"\} 1\n.*# EOF\n\z/s,
+ qr/shield_hits_total\{zone="metrics3",category="sqli"\} 2\n.*shield_blocked_total\{zone="metrics3"\} 2\n.*shield_bans_total\{zone="metrics3"\} 1\n.*shield_zone_nodes\{zone="metrics3"\} 1\n.*shield_banned_clients\{zone="metrics3"\} 1\n.*shield_requests_total\{zone="metrics3"\} 2\n.*shield_ban_refusals_total\{zone="metrics3"\} 1\n.*category="sqli",mode="detect"\} 0\n.*category="sqli",mode="block"\} 2\n.*# EOF\n\z/s,
  qr/"nodes":1,"blocked":2,"bans":1.*"sqli":2.*"banned":\[\{"addr":"127\.0\.0\.1"/s]
 --- error_code eval
 [403, 403, 403, 200, 200]
@@ -146,7 +149,7 @@ Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
 --- request eval
 ["GET /t?id=1%20union%20select%20pw", "GET /metrics"]
 --- response_body_like eval
-[qr/./, qr/category="sqli"\} 1\n.*shield_blocked_total\{zone="metrics4"\} 0\n.*shield_bans_total\{zone="metrics4"\} 0\n.*shield_zone_nodes\{zone="metrics4"\} 1\n.*shield_banned_clients\{zone="metrics4"\} 0\n/s]
+[qr/./, qr/category="sqli"\} 1\n.*shield_blocked_total\{zone="metrics4"\} 0\n.*shield_bans_total\{zone="metrics4"\} 0\n.*shield_zone_nodes\{zone="metrics4"\} 1\n.*shield_banned_clients\{zone="metrics4"\} 0\n.*category="sqli",mode="detect"\} 1\n.*category="sqli",mode="block"\} 0\n/s]
 --- error_code eval
 [200, 200]
 

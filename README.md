@@ -295,6 +295,7 @@ location /shield-status {
  "inspected":100,"ban_refused":5,"evictions":0,"alloc_failures":0,
  "used":40960,"size":1048576,
  "categories":{"sqli":1,"xss":0,"httpoxy":1,"dotfile":0, "...":0},
+ "detections":{"sqli":{"detect":0,"block":1}, "...":{}},
  "banned":[{"addr":"203.0.113.10","hits":0,"expires":3417}]}
 ```
 
@@ -323,6 +324,7 @@ location /shield-status {
 - `categories` always lists **every** category, including those at zero, so a
   metrics scraper sees a stable key set. Counters are cumulative and survive a
   reload (the zone does); a restart clears them with the zone.
+- `detections` splits each category by the configured `detect` or `block` mode.
 - `expires` is seconds remaining on the ban. Only currently-banned clients appear
   in `banned`; clients merely counting hits are in `nodes` but not the list.
 - Requires `shield_ban` on some location: the counters live in that zone's shared
@@ -342,7 +344,8 @@ location /shield-metrics {
 The response uses OpenMetrics 1.0 (`application/openmetrics-text;
 version=1.0.0; charset=utf-8`) and ends with `# EOF`. It exposes
 `shield_hits_total{zone="shield",category="sqli"}` for every category, including
-zeroes, plus `shield_blocked_total`, `shield_bans_total`, `shield_zone_nodes`,
+zeroes, `shield_detections_total{zone,category,mode}` for both `detect` and
+`block`, plus `shield_blocked_total`, `shield_bans_total`, `shield_zone_nodes`,
 and `shield_banned_clients`, each labeled by `zone`. It also exposes
 `shield_requests_total`, `shield_ban_refusals_total`,
 `shield_zone_evictions_total`, `shield_zone_alloc_failures_total`,

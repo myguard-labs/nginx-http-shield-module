@@ -400,7 +400,7 @@ invalid shield_ban trusted address
     qr/./,
     # sqli fired twice, both blocked, one ban armed, and the banned client is
     # listed with its remaining lifetime.
-    qr/"blocked":2.*"bans":1.*"sqli":2.*"banned":\[\{"addr":"127\.0\.0\.1","hits":\d+,"expires":\d+\}\]/s,
+    qr/"blocked":2.*"bans":1.*"sqli":2.*"sqli":\{"detect":0,"block":2\}.*"banned":\[\{"addr":"127\.0\.0\.1","hits":\d+,"expires":\d+\}\]/s,
 ]
 --- error_code eval
 [403, 403, 200]
@@ -467,7 +467,7 @@ invalid shield_ban trusted address
 --- response_body_like eval
 [
     qr/./,
-    qr/"blocked":0.*"sqli":1/s,
+    qr/"blocked":0.*"sqli":1.*"sqli":\{"detect":1,"block":0\}/s,
 ]
 --- error_code eval
 [200, 200]

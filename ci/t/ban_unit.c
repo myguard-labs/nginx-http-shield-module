@@ -910,6 +910,31 @@ test_atomic_request_counters(void)
 }
 
 
+static void
+test_mode_counters(void)
+{
+    ngx_uint_t last = NGX_HTTP_SHIELD_BAN_NCOUNTERS - 1;
+
+    ngx_memset(&g_sh, 0xff, sizeof(g_sh));
+    ctx_reset();
+    OK(g_sh.cat_detect[0] == 0 && g_sh.cat_block[last] == 0,
+       "mode counters initialized");
+    ngx_http_shield_ban_count_hit(&g_ctx, 0, 0);
+    ngx_http_shield_ban_count_hit(&g_ctx, 0, 1);
+    ngx_http_shield_ban_count_hit(&g_ctx, last, 1);
+    ngx_http_shield_ban_count_hit(&g_ctx, last + 1, 0);
+    ngx_http_shield_ban_count_hit(&g_ctx, last + 1, 1);
+    OK(g_sh.cat_hits[0] == 2 && g_sh.cat_detect[0] == 1
+       && g_sh.cat_block[0] == 1, "mode counters split hits");
+    OK(g_sh.cat_hits[last] == 1 && g_sh.cat_block[last] == 1
+       && g_sh.cat_detect[last] == 0, "last category counted");
+    OK(g_sh.blocked == 3, "invalid category preserves blocked semantics");
+    g_sh.cat_detect[0] = UINT64_MAX;
+    ngx_http_shield_ban_count_hit(&g_ctx, 0, 0);
+    OK(g_sh.cat_detect[0] == 0 && g_sh.cat_block[0] == 1,
+       "mode counters wrap independently");
+}
+
 int
 main(void)
 {
@@ -936,6 +961,7 @@ main(void)
     test_ipv4_ipv6_distinct();
     test_slab_full();
     test_atomic_request_counters();
+    test_mode_counters();
     test_time_clamp();
 
     printf("1..%d\n", tests_run);

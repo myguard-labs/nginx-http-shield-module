@@ -56,6 +56,7 @@ http {{
     shield_ban_zone redirects:1m;
     shield_ban_zone second:1m;
     shield_ban_zone refusals:1m;
+    shield_ban_zone modes:1m;
     server {{
         listen 127.0.0.1:{port};
         root {root}/html;
@@ -95,6 +96,17 @@ http {{
             shield_ban zone=main count=2 window=60s bantime=30s;
             empty_gif;
         }}
+        location /mode-detect {{
+            shield detect;
+            shield_ban zone=modes count=99999 window=60s bantime=30s;
+            empty_gif;
+        }}
+        location /mode-block {{
+            shield block;
+            shield_ban zone=modes count=99999 window=60s bantime=30s;
+            empty_gif;
+        }}
+        location /mode-json {{ shield off; shield_ban_status modes; }}
         location /off {{ shield off; empty_gif; }}
         location /json {{ shield off; shield_ban_status main; }}
         location /metrics {{
@@ -217,6 +229,7 @@ def controls(port: int, output: Path) -> None:
     assert document["ban_refused"] == 40, "active-ban refusals lost updates"
     assert document["blocked"] == 2 and document["bans"] == 1
 
+    mode_controls(port)
     redirect_controls(port)
     pressure_controls(port)
     status, payload = request(port, "/metrics")
@@ -227,6 +240,30 @@ def controls(port: int, output: Path) -> None:
         "live: exact inspections/refusals, four-worker snapshots, forced error, "
         "real slab exhaustion and eviction passed"
     )
+
+
+def mode_controls(port: int) -> None:
+    """Concurrent mode updates and snapshots retain exact per-category totals."""
+    attack = "?id=1%20union%20select%20pw"
+
+    def hit(path: str, expected: int) -> None:
+        for _ in range(50):
+            assert request(port, path + attack)[0] == expected
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(hit, "/mode-detect", 200) for _ in range(2)]
+        futures += [executor.submit(hit, "/mode-block", 403) for _ in range(2)]
+        for _ in range(50):
+            current = snapshot(port, "/mode-json")
+            split = current["detections"]["sqli"]
+            assert split["detect"] + split["block"] == current["categories"]["sqli"]
+            assert split["block"] == current["blocked"]
+        for future in futures:
+            future.result()
+    current = snapshot(port, "/mode-json")
+    assert current["detections"]["sqli"] == {"detect": 100, "block": 100}
+    assert current["categories"]["sqli"] == 200 and current["blocked"] == 100
+    print("mode counters: concurrent updates and snapshots passed")
 
 
 def redirect_controls(port: int) -> None:
@@ -277,7 +314,7 @@ def redirect_controls(port: int) -> None:
 
 def reload_controls(port: int, process: subprocess.Popen, root: Path) -> None:
     """Preserve zone totals while a new cycle assigns different marker slots."""
-    paths = ("/json", "/redirect-json", "/second-json", "/pressure-json")
+    paths = ("/json", "/redirect-json", "/second-json", "/pressure-json", "/mode-json")
     before = {path: snapshot(port, path) for path in paths}
     assert request(port, "/reload-ready") == (200, b"before")
     config = root / "nginx.conf"
@@ -298,6 +335,8 @@ def reload_controls(port: int, process: subprocess.Popen, root: Path) -> None:
     for path in paths:
         after = snapshot(port, path)
         for field in (
+            "categories",
+            "detections",
             "inspected",
             "ban_refused",
             "blocked",
