@@ -430,12 +430,13 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
 }
 
 
-/* Render OpenMetrics outside the slab lock. Only aggregate gauges are exposed:
+/* Render metrics outside the slab lock. Only aggregate gauges are exposed:
  * per-client labels would create unbounded time-series cardinality. The zone
  * label is escaped once into the same allocation as the response body. */
 static ngx_int_t
 ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
-    ngx_http_shield_status_snapshot_t *snapshot, ngx_str_t *body)
+    ngx_http_shield_status_snapshot_t *snapshot, ngx_str_t *body,
+    ngx_flag_t openmetrics)
 {
     size_t       size, len;
     u_char      *buf, *p, *last;
@@ -497,15 +498,18 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
     body->data = p;
     last = buf + size;
 
-    /* OpenMetrics counter family names omit the _total sample suffix. */
+    /* OpenMetrics counter metadata omits _total; 0.0.4 uses sample names. */
     for (i = 0; i < NGX_SHIELD_STATUS_METRICS; i++) {
         const ngx_http_shield_status_metric_t *metric;
         uint64_t value;
         ngx_uint_t j;
 
         metric = &ngx_http_shield_status_metrics[i];
-        p = ngx_slprintf(p, last, "# HELP %s %s\n# TYPE %s %s\n",
-                         metric->family, metric->help, metric->family,
+        p = ngx_slprintf(p, last, "# HELP %s%s %s\n# TYPE %s%s %s\n",
+                         metric->family,
+                         metric->counter && !openmetrics ? "_total" : "",
+                         metric->help, metric->family,
+                         metric->counter && !openmetrics ? "_total" : "",
                          metric->counter ? "counter" : "gauge");
         if (i == 0) {
             for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
@@ -562,7 +566,9 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
                          metric->family, metric->counter ? "_total" : "",
                          &label, value);
     }
-    p = ngx_slprintf(p, last, "# EOF\n");
+    if (openmetrics) {
+        p = ngx_slprintf(p, last, "# EOF\n");
+    }
 
     body->len = p - body->data;
     return NGX_OK;
