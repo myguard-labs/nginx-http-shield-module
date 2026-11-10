@@ -64,6 +64,29 @@ typedef struct {
  */
 #define NGX_HTTP_SHIELD_BAN_NCOUNTERS  64
 
+/* Fixed vocabulary shared by detection logs and metric labels. */
+#define NGX_HTTP_SHIELD_SOURCE_URI          "uri"
+#define NGX_HTTP_SHIELD_SOURCE_HEADER       "header"
+#define NGX_HTTP_SHIELD_SOURCE_RANGE        "range"
+#define NGX_HTTP_SHIELD_SOURCE_USER_AGENT   "user-agent"
+#define NGX_HTTP_SHIELD_SOURCE_REFERER      "referer"
+#define NGX_HTTP_SHIELD_SOURCE_CONTENT_TYPE "content-type"
+#define NGX_HTTP_SHIELD_SOURCE_BODY         "body"
+#define NGX_HTTP_SHIELD_SOURCE_COUNT        7
+
+static ngx_inline const char *
+ngx_http_shield_source_name(ngx_uint_t source)
+{
+    static const char *names[] = {
+        NGX_HTTP_SHIELD_SOURCE_URI, NGX_HTTP_SHIELD_SOURCE_HEADER,
+        NGX_HTTP_SHIELD_SOURCE_RANGE, NGX_HTTP_SHIELD_SOURCE_USER_AGENT,
+        NGX_HTTP_SHIELD_SOURCE_REFERER, NGX_HTTP_SHIELD_SOURCE_CONTENT_TYPE,
+        NGX_HTTP_SHIELD_SOURCE_BODY
+    };
+
+    return source < NGX_HTTP_SHIELD_SOURCE_COUNT ? names[source] : NULL;
+}
+
 typedef struct {
     ngx_rbtree_t       rbtree;
     ngx_rbtree_node_t  sentinel;
@@ -77,6 +100,8 @@ typedef struct {
     uint64_t           cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
     uint64_t           cat_detect[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
     uint64_t           cat_block[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    uint64_t           source_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS]
+                                  [NGX_HTTP_SHIELD_SOURCE_COUNT];
 
     /* Totals that are not per-category: requests blocked, and bans armed. */
     uint64_t           blocked;   /* requests denied by shield (any cat) */
@@ -236,7 +261,7 @@ void ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh);
  * derives from scanner output, so the bound is enforced here at the single
  * write site. Caller holds the shm lock. */
 void ngx_http_shield_ban_count_hit(ngx_http_shield_ban_ctx_t *ctx,
-    ngx_uint_t cat, ngx_uint_t blocked);
+    ngx_uint_t cat, ngx_uint_t blocked, const char *source);
 
 /* Is this address currently banned (banned_until > now)? Also refreshes LRU.
  * Caller holds the shm lock. */

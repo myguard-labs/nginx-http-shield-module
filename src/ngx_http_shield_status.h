@@ -25,6 +25,8 @@ typedef struct {
     uint64_t                       cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
     uint64_t                       cat_detect[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
     uint64_t                       cat_block[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    uint64_t                       source_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS]
+                                              [NGX_HTTP_SHIELD_SOURCE_COUNT];
     uint64_t                       blocked;
     uint64_t                       bans;
     uint64_t                       inspected;
@@ -79,7 +81,9 @@ ngx_http_shield_status_metrics[] = {
     NGX_SHIELD_METRIC("size", "shield_zone_size_bytes",
                       "Shield zone size in bytes.", 0, size),
     { NULL, "shield_detections",
-      "Shield detections by category and mode.", 1, 0 }
+      "Shield detections by category and mode.", 1, 0 },
+    { NULL, "shield_source_hits",
+      "Shield signature hits by category and source.", 1, 0 }
 #undef NGX_SHIELD_METRIC
 };
 
@@ -428,23 +432,27 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
      * scratch label. Quotes, backslashes and line feeds each expand to 2 bytes.
      * Guard multiplication before allocating, even for huge config tokens. */
     if (zone->len > ((NGX_MAX_SIZE_T_VALUE - 2048)
-                    / (3 * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+                    / ((3 + NGX_HTTP_SHIELD_SOURCE_COUNT)
+                       * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
                     - 128) / 2)
     {
         return NGX_ERROR;
     }
 
-    size = 2048 + (3 * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+    size = 2048 + ((3 + NGX_HTTP_SHIELD_SOURCE_COUNT) * NGX_HTTP_SHIELD_CAT_N
+                       + NGX_SHIELD_STATUS_METRICS)
                   * (128 + 2 * zone->len);
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
         len = ngx_strlen(ngx_http_shield_cat_name(i));
         if (len > NGX_MAX_SIZE_T_VALUE - size) {
             return NGX_ERROR;
         }
-        if (len > (NGX_MAX_SIZE_T_VALUE - size) / 3) {
+        if (len > (NGX_MAX_SIZE_T_VALUE - size)
+                  / (3 + NGX_HTTP_SHIELD_SOURCE_COUNT))
+        {
             return NGX_ERROR;
         }
-        size += 3 * len;
+        size += (3 + NGX_HTTP_SHIELD_SOURCE_COUNT) * len;
     }
 
     buf = ngx_pnalloc(pool, size);
@@ -493,7 +501,7 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
             }
             continue;
         }
-        if (i == NGX_SHIELD_STATUS_METRICS - 1) {
+        if (i == NGX_SHIELD_STATUS_METRICS - 2) {
             for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
                 p = ngx_slprintf(p, last,
                     "%s_total{zone=\"%V\",category=\"%s\","
@@ -503,6 +511,23 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
                     metric->family, &label, ngx_http_shield_cat_name(j),
                     snapshot->cat_detect[j], metric->family, &label,
                     ngx_http_shield_cat_name(j), snapshot->cat_block[j]);
+            }
+            continue;
+        }
+        if (i == NGX_SHIELD_STATUS_METRICS - 1) {
+            ngx_uint_t source;
+
+            for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
+                for (source = 0; source < NGX_HTTP_SHIELD_SOURCE_COUNT;
+                     source++)
+                {
+                    p = ngx_slprintf(p, last,
+                        "%s_total{zone=\"%V\",category=\"%s\","
+                        "source=\"%s\"} %uL\n",
+                        metric->family, &label, ngx_http_shield_cat_name(j),
+                        ngx_http_shield_source_name(source),
+                        snapshot->source_hits[j][source]);
+                }
             }
             continue;
         }

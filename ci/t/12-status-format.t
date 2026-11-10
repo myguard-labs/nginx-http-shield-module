@@ -101,6 +101,9 @@ my $expected = "# HELP shield_hits Shield signature hits by category.\n"
 . "# HELP shield_detections Shield detections by category and mode.\n"
 . "# TYPE shield_detections counter\n"
 . CORE::join('', map { "shield_detections_total{zone=\"metrics2\",category=\"$_\",mode=\"detect\"} 0\nshield_detections_total{zone=\"metrics2\",category=\"$_\",mode=\"block\"} 0\n" } @cats)
+. "# HELP shield_source_hits Shield signature hits by category and source.\n"
+. "# TYPE shield_source_hits counter\n"
+. CORE::join('', map { my $cat = $_; map { "shield_source_hits_total{zone=\"metrics2\",category=\"$cat\",source=\"$_\"} 0\n" } qw(uri header range user-agent referer content-type body) } @cats)
 . "# EOF\n";
 my $pattern = quotemeta($expected);
 $pattern =~ s/USED/[1-9][0-9]*/;
@@ -128,7 +131,7 @@ Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
  "GET /t", "GET /metrics", "GET /json"]
 --- response_body_like eval
 [qr/./, qr/./, qr/./,
- qr/shield_hits_total\{zone="metrics3",category="sqli"\} 2\n.*shield_blocked_total\{zone="metrics3"\} 2\n.*shield_bans_total\{zone="metrics3"\} 1\n.*shield_zone_nodes\{zone="metrics3"\} 1\n.*shield_banned_clients\{zone="metrics3"\} 1\n.*shield_requests_total\{zone="metrics3"\} 2\n.*shield_ban_refusals_total\{zone="metrics3"\} 1\n.*category="sqli",mode="detect"\} 0\n.*category="sqli",mode="block"\} 2\n.*# EOF\n\z/s,
+ qr/shield_hits_total\{zone="metrics3",category="sqli"\} 2\n.*shield_blocked_total\{zone="metrics3"\} 2\n.*shield_bans_total\{zone="metrics3"\} 1\n.*shield_zone_nodes\{zone="metrics3"\} 1\n.*shield_banned_clients\{zone="metrics3"\} 1\n.*shield_requests_total\{zone="metrics3"\} 2\n.*shield_ban_refusals_total\{zone="metrics3"\} 1\n.*category="sqli",mode="detect"\} 0\n.*category="sqli",mode="block"\} 2\n.*shield_source_hits_total\{zone="metrics3",category="sqli",source="uri"\} 2\n.*# EOF\n\z/s,
  qr/"nodes":1,"blocked":2,"bans":1.*"sqli":2.*"banned":\[\{"addr":"127\.0\.0\.1"/s]
 --- error_code eval
 [403, 403, 403, 200, 200]

