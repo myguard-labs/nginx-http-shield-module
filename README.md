@@ -40,7 +40,7 @@ runtimes and dependencies upstream; these signatures do not make them safe.
 
 ## What it blocks
 
-30 categories contain 642 standalone signatures and six AND rules with 12
+30 categories contain 644 standalone signatures and six AND rules with 12
 terms, matched case-insensitively after percent-decoding:
 
 | Category | Examples |
@@ -575,6 +575,10 @@ read-only by every worker. Matching state itself needs no per-request
 allocation; normalization uses the two bounded scratch buffers described above.
 
 ## Adding a signature
+
+The [2025–2026 CVE survey](ci/definitions-2025-2026.md) records the
+React2Shell gadget additions and why October 2026 PHP RCEs cannot be
+reliably covered by literal signatures.
 
 Signatures live in [`src/ngx_http_shield_patterns.h`](src/ngx_http_shield_patterns.h).
 Store them lowercase, and never as a bare keyword — always a multi-token

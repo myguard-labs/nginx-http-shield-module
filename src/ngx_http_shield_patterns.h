@@ -507,6 +507,12 @@ static const ngx_http_shield_sig_t  ngx_http_shield_template[] = {
 
 /* ---- 10. Deserialization / XXE ----------------------------------------- */
 static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
+    /* React Flight prototype/function-constructor reference gadgets
+     * (React2Shell, CVE-2025-55182). Match the colon-delimited property
+     * chain, not ordinary keys or an attacker-selected chunk number.
+     * See ci/definitions-2025-2026.md for sources and coverage limits. */
+    NGX_HTTP_SHIELD_SIG(":__proto__:then"),
+    NGX_HTTP_SHIELD_SIG(":constructor:constructor"),
     NGX_HTTP_SHIELD_SIG("ro0ab"),         /* base64 of Java stream header    */
     NGX_HTTP_SHIELD_SIG("aced0005"),      /* hex of Java stream header       */
     NGX_HTTP_SHIELD_SIG("o:21:\"jdatabasedrivermysqli\""),

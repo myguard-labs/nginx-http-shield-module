@@ -668,6 +668,47 @@ case_category_tiebreak(void)
 }
 
 
+/* Flight reference gadgets, independent of the attacker's chunk number. */
+static void
+case_react_flight_gadgets(void)
+{
+    ngx_http_shield_hit_t  hit;
+    const char           *attacks[] = {
+        "$1:__proto__:then",
+        "$ab:constructor:constructor",
+        "$2:__PROTO__:THEN",
+        "%243%3Aconstructor%3Aconstructor",
+        "$4:__proto__:constructor:constructor",
+        ":__proto__:then",
+        ":constructor:constructor"
+    };
+    const char           *clean[] = {
+        "{\"then\":\"$@1\",\"value\":\"$2:profile:name\"}",
+        "{\"__proto__\":null,\"constructor\":\"Widget\",\"then\":true}",
+        "$1:__proto__:theme",
+        "$1:constructor:construct",
+        "$1:constructor",
+        "$1:__proto__"
+    };
+    size_t                i;
+
+    for (i = 0; i < sizeof(attacks) / sizeof(attacks[0]); i++) {
+        check(scan_str(attacks[i], &hit) == NGX_OK,
+              "Flight gadget matches without a fixed chunk number");
+        check(hit.cat == NGX_HTTP_SHIELD_CAT_DESERIAL,
+              "Flight gadget reports deserial");
+        check(scan_str_skip(attacks[i],
+                  (uint64_t) 1 << NGX_HTTP_SHIELD_CAT_DESERIAL, &hit)
+                  == NGX_DECLINED,
+              "Flight gadget respects deserial skip");
+    }
+    for (i = 0; i < sizeof(clean) / sizeof(clean[0]); i++) {
+        check(scan_str(clean[i], &hit) == NGX_DECLINED,
+              "ordinary Flight references and individual keys stay clean");
+    }
+}
+
+
 int
 main(void)
 {
@@ -678,6 +719,7 @@ main(void)
     case_state_capacity();
     case_definition_capacity();
     case_category_hits();
+    case_react_flight_gadgets();
     case_percent_decoding();
     case_skip_mask();
     case_case_folding();
