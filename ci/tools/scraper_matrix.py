@@ -143,8 +143,31 @@ class Docker:
         self.images = images
         self.owner = "shield-scrapers-" + uuid.uuid4().hex[:12]
         self.ids = []
+        self.prepared = set()
+
+    def prepare(self, key):
+        if key in self.prepared:
+            return
+        image = self.images[key]
+        result = subprocess.run(
+            ["docker", "image", "inspect", image],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode:
+            subprocess.run(
+                ["docker", "pull", image],
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=True,
+            )
+        self.prepared.add(key)
 
     def run(self, key, args, name, detached=False, entrypoint=None):
+        self.prepare(key)
         command = [
             "docker",
             "run",

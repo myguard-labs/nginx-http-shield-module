@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from subprocess import CompletedProcess, TimeoutExpired
+from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
@@ -78,13 +78,99 @@ class MatrixTests(unittest.TestCase):
             self.assertEqual(MATRIX.query(1, 'up{job="good"}'), [])
             self.assertIn("%7Bjob%3D%22good%22%7D", get.call_args.args[1])
 
+    def test_image_preparation_cached_and_repeated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            docker = MATRIX.Docker(Path(directory), {"test": "pinned-image"})
+            with patch.object(
+                MATRIX.subprocess,
+                "run",
+                side_effect=[
+                    CompletedProcess([], 0, "", ""),
+                    CompletedProcess([], 0, "", ""),
+                    CompletedProcess([], 0, "", ""),
+                ],
+            ) as run:
+                docker.run("test", [], "first")
+                docker.run("test", [], "second")
+            self.assertEqual(
+                [call.args[0][:3] for call in run.call_args_list],
+                [
+                    ["docker", "image", "inspect"],
+                    ["docker", "run", "--name"],
+                    ["docker", "run", "--name"],
+                ],
+            )
+            self.assertEqual(run.call_args_list[0].kwargs["timeout"], 60)
+
+    def test_image_preparation_pulls_missing_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            docker = MATRIX.Docker(Path(directory), {"test": "pinned-image"})
+            with patch.object(
+                MATRIX.subprocess,
+                "run",
+                side_effect=[
+                    CompletedProcess([], 1, "", "missing"),
+                    CompletedProcess([], 0, "", ""),
+                    CompletedProcess([], 0, "", ""),
+                ],
+            ) as run:
+                docker.run("test", [], "collector")
+            self.assertEqual(
+                run.call_args_list[1].args[0], ["docker", "pull", "pinned-image"]
+            )
+            self.assertEqual(run.call_args_list[1].kwargs["timeout"], 600)
+            self.assertTrue(run.call_args_list[1].kwargs["check"])
+
+    def test_image_preparation_failure_does_not_run_or_cache(self):
+        for failure in (
+            CalledProcessError(1, ["docker", "pull"]),
+            TimeoutExpired("docker pull", 600),
+            TimeoutExpired("docker image inspect", 60),
+        ):
+            with (
+                self.subTest(failure=failure),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                docker = MATRIX.Docker(Path(directory), {"test": "pinned-image"})
+                effects = (
+                    [failure]
+                    if isinstance(failure, TimeoutExpired) and failure.timeout == 60
+                    else [CompletedProcess([], 1, "", "missing"), failure]
+                )
+                with (
+                    patch.object(MATRIX.subprocess, "run", side_effect=effects) as run,
+                    self.assertRaises(type(failure)),
+                ):
+                    docker.run("test", [], "collector")
+                self.assertTrue(
+                    all(call.args[0][1] != "run" for call in run.call_args_list)
+                )
+                self.assertEqual(docker.ids, [])
+                with patch.object(
+                    MATRIX.subprocess,
+                    "run",
+                    side_effect=[
+                        CompletedProcess([], 0, "", ""),
+                        CompletedProcess([], 0, "", ""),
+                    ],
+                ) as retry:
+                    docker.run("test", [], "retry")
+                self.assertEqual(
+                    retry.call_args_list[0].args[0][:3], ["docker", "image", "inspect"]
+                )
+
     def test_owned_container_timeout_and_cleanup(self):
 
         with tempfile.TemporaryDirectory() as directory:
             docker = MATRIX.Docker(Path(directory), {"test": "pinned-image"})
             with (
                 patch.object(
-                    MATRIX.subprocess, "run", side_effect=TimeoutExpired("docker", 60)
+                    MATRIX.subprocess,
+                    "run",
+                    side_effect=[
+                        CompletedProcess([], 0, "", ""),
+                        TimeoutExpired("docker", 60),
+                    ],
                 ),
                 self.assertRaises(TimeoutExpired),
             ):
