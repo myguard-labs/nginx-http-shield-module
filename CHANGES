@@ -1,0 +1,10 @@
+Changes with the next minor release
+
+    *) Add inspected-request, active-ban refusal, eviction and allocation-failure
+       counters, plus reserved and total ban-zone byte gauges, to JSON and
+       OpenMetrics status output.
+
+    *) The ban-zone shared-memory layout has changed. Stop nginx completely and
+       restart it when upgrading from an earlier module binary. A configuration
+       reload or live binary upgrade cannot migrate existing shared zones.
+       Ordinary configuration reloads with the same binary retain all counters.

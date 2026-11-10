@@ -27,6 +27,30 @@ static size_t status_inet_ntop(int family, u_char *addr, u_char *text,
 #undef ngx_pnalloc
 #undef ngx_palloc
 
+ngx_uint_t ngx_pagesize = 4096;
+
+static uint64_t extra_value;
+
+static ngx_int_t
+render_metrics(ngx_pool_t *pool, ngx_str_t *zone, uint64_t *hits,
+    uint64_t blocked, uint64_t bans, ngx_uint_t nodes, ngx_uint_t banned,
+    ngx_str_t *body)
+{
+    ngx_http_shield_status_snapshot_t snapshot;
+
+    ngx_memzero(&snapshot, sizeof(snapshot));
+    ngx_memcpy(snapshot.cat_hits, hits,
+               NGX_HTTP_SHIELD_CAT_N * sizeof(uint64_t));
+    snapshot.blocked = blocked;
+    snapshot.bans = bans;
+    snapshot.nodes = nodes;
+    snapshot.banned = banned;
+    snapshot.inspected = snapshot.ban_refused = extra_value;
+    snapshot.evictions = snapshot.alloc_failures = extra_value;
+    snapshot.used = snapshot.size = extra_value;
+    return ngx_http_shield_status_prometheus(pool, zone, &snapshot, body);
+}
+
 static int fail_alloc;
 static int huge_category;
 static unsigned allocations;
@@ -120,17 +144,51 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
                "shield_zone_nodes{zone=\"quote\\\"slash\\\\line\\n\"} %" PRIuPTR "\n"
                "# HELP shield_banned_clients Shield clients currently banned.\n"
                "# TYPE shield_banned_clients gauge\n"
-               "shield_banned_clients{zone=\"quote\\\"slash\\\\line\\n\"} %" PRIuPTR "\n# EOF\n",
+               "shield_banned_clients{zone=\"quote\\\"slash\\\\line\\n\"} %" PRIuPTR "\n",
                maximum ? "18446744073709551615" : "0",
                maximum ? "18446744073709551615" : "0",
                maximum ? UINTPTR_MAX : (uintptr_t) 0,
                maximum ? UINTPTR_MAX : (uintptr_t) 0);
+        {
+            static const char *families[] = {
+                "shield_requests", "shield_ban_refusals", "shield_zone_evictions",
+                "shield_zone_alloc_failures", "shield_zone_used_bytes",
+                "shield_zone_size_bytes"
+            };
+            static const char *help[] = {
+                "Shield requests inspected.",
+                "Shield requests refused by an active ban.",
+                "Shield zone nodes evicted.",
+                "Shield zone node allocation failures.",
+                "Shield zone bytes reserved including slab overhead.",
+                "Shield zone size in bytes."
+            };
+            for (i = 0; i < 6; i++) {
+                APPEND("# HELP %s %s\n# TYPE %s %s\n"
+                       "%s%s{zone=\"quote\\\"slash\\\\line\\n\"} %s\n",
+                       families[i], help[i], families[i],
+                       i < 4 ? "counter" : "gauge", families[i],
+                       i < 4 ? "_total" : "",
+                       maximum ? "18446744073709551615" : "0");
+            }
+            APPEND("# EOF\n");
+        }
     } else {
         APPEND("{\"zone\":\"quote\\\"slash\\\\line\\n\",\"nodes\":%" PRIuPTR
-               ",\"blocked\":%s,\"bans\":%s,\"categories\":{" ,
+               ",\"blocked\":%s,\"bans\":%s" ,
                maximum ? UINTPTR_MAX : (uintptr_t) 0,
                maximum ? "18446744073709551615" : "0",
                maximum ? "18446744073709551615" : "0");
+        {
+            static const char *keys[] = {
+                "inspected", "ban_refused", "evictions", "alloc_failures", "used", "size"
+            };
+            for (i = 0; i < 6; i++) {
+                APPEND(",\"%s\":%s", keys[i],
+                       maximum ? "18446744073709551615" : "0");
+            }
+            APPEND(",\"categories\":{");
+        }
         for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
             APPEND("%s\"%s\":%s", i ? "," : "", cats[i],
                    maximum ? "18446744073709551615" : "0");
@@ -159,34 +217,92 @@ main(void)
     unsigned aligned_before;
     ngx_uint_t i, physical, retry;
 
+    /* Synthetic owned slab: whole-free pages only; partial pages and metadata
+     * remain reserved, and impossible free-page arithmetic is rejected. */
+    {
+        union {
+            ngx_slab_pool_t pool;
+            u_char bytes[16384];
+        } slab;
+        ngx_memzero(&slab, sizeof(slab));
+        slab.pool.end = slab.bytes + sizeof(slab.bytes);
+        slab.pool.pfree = 2;
+        assert(ngx_http_shield_status_slab_usage(&slab.pool, &snapshot) == NGX_OK);
+        assert(snapshot.size == 16384 && snapshot.used == 8192);
+        slab.pool.pfree = 0;
+        assert(ngx_http_shield_status_slab_usage(&slab.pool, &snapshot) == NGX_OK);
+        assert(snapshot.used == snapshot.size);
+        slab.pool.pfree = 5;
+        assert(ngx_http_shield_status_slab_usage(&slab.pool, &snapshot) == NGX_ERROR);
+    }
+
+    /* Distinct values make swapped descriptor offsets observable. */
+    ngx_memzero(&snapshot, sizeof(snapshot));
+    snapshot.inspected = 11;
+    snapshot.ban_refused = 22;
+    snapshot.evictions = 33;
+    snapshot.alloc_failures = 44;
+    snapshot.used = 55;
+    snapshot.size = 66;
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body) == NGX_OK);
+    text = malloc(body.len + 1);
+    assert(text != NULL);
+    memcpy(text, body.data, body.len);
+    text[body.len] = '\0';
+    assert(strstr(text, "\"inspected\":11,\"ban_refused\":22,"
+                        "\"evictions\":33,\"alloc_failures\":44,"
+                        "\"used\":55,\"size\":66") != NULL);
+    free(text);
+    free(allocation);
+    assert(ngx_http_shield_status_prometheus(NULL, &zone, &snapshot, &body) == NGX_OK);
+    text = malloc(body.len + 1);
+    assert(text != NULL);
+    memcpy(text, body.data, body.len);
+    text[body.len] = '\0';
+    assert(strstr(text, "shield_requests_total{zone=\"quote\\\"slash\\\\line\\n\"} 11\n") != NULL);
+    assert(strstr(text, "shield_ban_refusals_total{zone=\"quote\\\"slash\\\\line\\n\"} 22\n") != NULL);
+    assert(strstr(text, "shield_zone_evictions_total{zone=\"quote\\\"slash\\\\line\\n\"} 33\n") != NULL);
+    assert(strstr(text, "shield_zone_alloc_failures_total{zone=\"quote\\\"slash\\\\line\\n\"} 44\n") != NULL);
+    assert(strstr(text, "shield_zone_used_bytes{zone=\"quote\\\"slash\\\\line\\n\"} 55\n") != NULL);
+    assert(strstr(text, "shield_zone_size_bytes{zone=\"quote\\\"slash\\\\line\\n\"} 66\n") != NULL);
+    free(text);
+    free(allocation);
+    allocations = 0;
+
     /* Exact bytes for zero and maximum values, with escaping in both formats. */
     ngx_memzero(&snapshot, sizeof(snapshot));
     assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body) == NGX_OK);
     check_golden(&body, 0, 0);
     free(allocation);
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits, 0, 0, 0, 0,
+    assert(render_metrics(NULL, &zone, hits, 0, 0, 0, 0,
                                             &body) == NGX_OK);
     check_golden(&body, 1, 0);
     free(allocation);
     snapshot.nodes = (ngx_uint_t) -1;
     snapshot.blocked = snapshot.bans = UINT64_MAX;
+    snapshot.inspected = snapshot.ban_refused = UINT64_MAX;
+    snapshot.evictions = snapshot.alloc_failures = UINT64_MAX;
+    snapshot.used = snapshot.size = UINT64_MAX;
+    extra_value = UINT64_MAX;
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
         snapshot.cat_hits[i] = hits[i] = UINT64_MAX;
     }
     assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body) == NGX_OK);
     check_golden(&body, 0, 1);
     free(allocation);
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits, UINT64_MAX,
+    assert(render_metrics(NULL, &zone, hits, UINT64_MAX,
                UINT64_MAX, (ngx_uint_t) -1, (ngx_uint_t) -1, &body) == NGX_OK);
     check_golden(&body, 1, 1);
     free(allocation);
+    extra_value = 0;
     ngx_memzero(hits, sizeof(hits));
     allocations = 0;
+    aligned_allocations = 0;
 
     assert(strcmp(ngx_http_shield_cat_name(NGX_HTTP_SHIELD_CAT_N),
                   "unknown") == 0);
     hits[0] = UINT64_MAX;
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits,
+    assert(render_metrics(NULL, &zone, hits,
                UINT64_MAX, UINT64_MAX, 1, 1, &body) == NGX_OK);
     assert(allocations == 1);
     assert(aligned_allocations == 0); /* byte output remains unaligned */
@@ -204,33 +320,33 @@ main(void)
     free(allocation);
 
     fail_alloc = 1;
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits,
+    assert(render_metrics(NULL, &zone, hits,
                0, 0, 0, 0, &body) == NGX_ERROR);
     assert(allocations == 2);
     fail_alloc = 0;
 
     /* A large admissible size reaches the allocator; overflow is rejected. */
     limit = ((NGX_MAX_SIZE_T_VALUE - 2048)
-                / (NGX_HTTP_SHIELD_CAT_N + 5) - 128) / 2;
+                / (NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS) - 128) / 2;
     zone.len = limit - 1024;
     fail_alloc = 1;
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits,
+    assert(render_metrics(NULL, &zone, hits,
                0, 0, 0, 0, &body) == NGX_ERROR);
     assert(allocations == 3);
     fail_alloc = 0;
     zone.len = limit + 1;
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits,
+    assert(render_metrics(NULL, &zone, hits,
                0, 0, 0, 0, &body) == NGX_ERROR);
     assert(allocations == 3); /* size rejected before reading/allocating */
 
     zone.len = 0;
     huge_category = 1;
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits,
+    assert(render_metrics(NULL, &zone, hits,
                0, 0, 0, 0, &body) == NGX_ERROR);
     assert(allocations == 3);
     huge_category = 0;
 
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits,
+    assert(render_metrics(NULL, &zone, hits,
                0, 0, 0, 0, &body) == NGX_OK);
     assert(allocations == 4);
     assert(memcmp(body.data, "# HELP shield_hits ", 19) == 0);

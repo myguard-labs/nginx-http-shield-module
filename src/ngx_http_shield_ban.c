@@ -169,6 +169,10 @@ ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh)
     ngx_memzero(sh->cat_hits, sizeof(sh->cat_hits));
     sh->blocked = 0;
     sh->bans = 0;
+    sh->inspected = 0;
+    sh->ban_refused = 0;
+    sh->evictions = 0;
+    sh->alloc_failures = 0;
 }
 
 
@@ -356,6 +360,7 @@ ngx_http_shield_ban_expire(ngx_http_shield_ban_ctx_t *ctx, time_t now,
         ngx_rbtree_delete(&ctx->sh->rbtree, node);
         ngx_slab_free_locked(ctx->shpool, node);
         evicted++;
+        ctx->sh->evictions++;
         q = prev;
     }
 
@@ -409,6 +414,7 @@ ngx_http_shield_ban_record_locked(ngx_http_shield_ban_ctx_t *ctx,
 
         node = ngx_shield_slab_alloc(ctx, size);
         if (node == NULL) {
+            ctx->sh->alloc_failures++;
             /* Out of slab space and nothing reclaimable: drop this hit. */
             return NGX_ERROR;
         }

@@ -25,6 +25,7 @@
 
 #include "../../src/ngx_http_shield_ban.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -818,6 +819,15 @@ test_slab_full(void)
        "record reports NGX_ERROR when slab is full");
     OK(ngx_http_shield_ban_lookup(&g_ctx, 0x7070, a, 4) == NULL,
        "no node created on slab-full");
+    OK(g_sh.alloc_failures == 1, "one allocation failure counted");
+    fail_alloc = 0;
+    OK(hit(0x7070, a, 4, 100, 3, 60, 600) == NGX_OK,
+       "allocation recovers after forced failure");
+    OK(g_sh.alloc_failures == 1, "successful allocation is not a failure");
+    ngx_http_shield_ban_expire(&g_ctx, 160, 60);
+    OK(g_sh.evictions == 1, "one expired node eviction counted");
+    ngx_http_shield_ban_expire(&g_ctx, 160, 60);
+    OK(g_sh.evictions == 1, "empty expiry does not increment evictions");
 
     fail_alloc = 0;
     ctx_free_all();
@@ -847,6 +857,59 @@ test_time_clamp(void)
 }
 
 
+static void *
+count_requests(void *arg)
+{
+    ngx_uint_t i;
+    ngx_uint_t refused = (ngx_uint_t) (uintptr_t) arg;
+
+    for (i = 0; i < 50000; i++) {
+        ngx_http_shield_ban_count_request(&g_ctx, refused);
+    }
+    return NULL;
+}
+
+static void
+test_atomic_request_counters(void)
+{
+    pthread_t threads[4];
+    ngx_uint_t i;
+    ngx_atomic_uint_t inspected, refused, previous = 0;
+
+    ctx_reset();
+    OK(g_sh.inspected == 0 && g_sh.ban_refused == 0
+       && g_sh.evictions == 0 && g_sh.alloc_failures == 0,
+       "all new counters initialized on fresh zone");
+    for (i = 0; i < 4; i++) {
+        if (pthread_create(&threads[i], NULL, count_requests,
+                           (void *) (uintptr_t) (i % 2)) != 0) {
+            abort();
+        }
+    }
+    for (i = 0; i < 50000; i++) {
+        inspected = ngx_atomic_fetch_add(&g_sh.inspected, 0);
+        refused = ngx_atomic_fetch_add(&g_sh.ban_refused, 0);
+        if (inspected < previous || inspected > 100000 || refused > 100000) {
+            abort();
+        }
+        previous = inspected;
+    }
+    for (i = 0; i < 4; i++) {
+        if (pthread_join(threads[i], NULL) != 0) {
+            abort();
+        }
+    }
+    OK(ngx_atomic_fetch_add(&g_sh.inspected, 0) == 100000,
+       "concurrent inspections lose no updates");
+    OK(ngx_atomic_fetch_add(&g_sh.ban_refused, 0) == 100000,
+       "concurrent refusals lose no updates");
+    g_sh.inspected = (ngx_atomic_uint_t) -1;
+    ngx_http_shield_ban_count_request(&g_ctx, 0);
+    OK(ngx_atomic_fetch_add(&g_sh.inspected, 0) == 0,
+       "inspection counter wraps at native atomic width");
+}
+
+
 int
 main(void)
 {
@@ -872,6 +935,7 @@ main(void)
     test_hash_collision_distinct();
     test_ipv4_ipv6_distinct();
     test_slab_full();
+    test_atomic_request_counters();
     test_time_clamp();
 
     printf("1..%d\n", tests_run);
