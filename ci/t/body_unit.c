@@ -159,6 +159,75 @@ int main(void)
     ctx.sh = NULL;
     assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_ERROR);
     assert(shared.body_uninspected[NGX_HTTP_SHIELD_BODY_ERROR] == 3);
+    /* Counters-only storage uses atomics and a separate redirect marker. */
+    {
+        ngx_http_shield_stats_shctx_t stats;
+        ngx_http_shield_ban_ctx_t stats_ctx;
+        ngx_shm_zone_t stats_zone;
+        ngx_http_variable_value_t marks[2];
+        ngx_atomic_uint_t maximum = (ngx_atomic_uint_t) -1;
+
+        ngx_memzero(&stats, sizeof(stats));
+        ngx_memzero(&stats_ctx, sizeof(stats_ctx));
+        ngx_memzero(&stats_zone, sizeof(stats_zone));
+        ngx_memzero(marks, sizeof(marks));
+        stats_ctx.stats_only = 1;
+        stats_ctx.stats = &stats;
+        stats_ctx.request_index = 1;
+        stats_zone.data = &stats_ctx;
+        main_conf.stats_zone = &stats_zone;
+        r.variables = marks;
+        ctx.sh = &shared;
+        conf.ban_zone = &zone;
+        conf.max_body = 4;
+        buf.in_file = 0;
+        buf.memory = 1;
+        buf.last = data + 4;
+        fail_alloc = 1;
+        assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_ERROR);
+        assert(stats.body_uninspected[NGX_HTTP_SHIELD_BODY_ERROR] == 1);
+        assert(shared.body_uninspected[NGX_HTTP_SHIELD_BODY_ERROR] == 4);
+        assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_ERROR);
+        assert(stats.body_uninspected[NGX_HTTP_SHIELD_BODY_ERROR] == 1);
+        assert(shared.body_uninspected[NGX_HTTP_SHIELD_BODY_ERROR] == 4);
+        fail_alloc = 0;
+        conf.ban_zone = NULL;
+        encoding.hash = 1;
+        ngx_memzero(marks, sizeof(marks));
+        assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_DECLINED);
+        assert(stats.body_uninspected[NGX_HTTP_SHIELD_BODY_ENCODING] == 1);
+        encoding.hash = 0;
+        conf.max_body = 3;
+        ngx_memzero(marks, sizeof(marks));
+        assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_DECLINED);
+        assert(stats.body_uninspected[NGX_HTTP_SHIELD_BODY_TOO_LARGE] == 1);
+        ngx_memzero(marks, sizeof(marks));
+        ngx_http_shield_count_request(&r, &stats_ctx, 0);
+        ngx_http_shield_count_request(&r, &stats_ctx, 0);
+        ngx_http_shield_count_request(&r, &stats_ctx, 1);
+        ngx_http_shield_count_request(&r, &stats_ctx, 1);
+        assert(stats.inspected == 1 && stats.ban_refused == 1);
+        hit.cat = 0;
+        hit.source = NGX_HTTP_SHIELD_SOURCE_BODY;
+        ngx_http_shield_stats_hit(&stats_ctx, &hit, 0);
+        ngx_http_shield_stats_hit(&stats_ctx, &hit, 1);
+        assert(stats.cat_hits[0] == 2);
+        assert(stats.cat_detect[0] == 1 && stats.cat_block[0] == 1);
+        assert(stats.source_hits[0][6] == 2 && stats.blocked == 1);
+        stats.cat_hits[0] = maximum;
+        assert(ngx_http_shield_ban_counter_value(&stats.cat_hits[0])
+               == (uint64_t) maximum);
+        ngx_http_shield_stats_hit(&stats_ctx, &hit, 0);
+        assert(stats.cat_hits[0] == 0); /* native width wrap */
+        hit.cat = NGX_HTTP_SHIELD_BAN_NCOUNTERS;
+        hit.source = NULL;
+        ngx_http_shield_stats_hit(&stats_ctx, &hit, 1);
+        assert(stats.blocked == 2 && stats.cat_hits[0] == 0);
+        hit.cat = 0;
+        hit.source = "unknown";
+        ngx_http_shield_stats_hit(&stats_ctx, &hit, 0);
+        assert(stats.source_hits[0][6] == 3);
+    }
     puts("body_unit: errors, boundaries and once-per-zone accounting passed");
     return 0;
 }

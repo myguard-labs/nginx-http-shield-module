@@ -16,6 +16,7 @@ import signal
 import socket
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -524,6 +525,18 @@ def main() -> None:
                 source_controls(port, args.output)
             else:
                 controls(port, args.output)
+    if not args.benchmark_only and not args.source_only:
+        command = [
+            sys.executable,
+            str(Path(__file__).with_name("test_stats_zone.py")),
+            "--nginx",
+            str(args.nginx.resolve()),
+            "--output",
+            str(args.output),
+        ]
+        if args.module:
+            command.extend(["--module", str(args.module.resolve())])
+        subprocess.run(command, check=True)
     if args.baseline_module:
         samples: dict[str, list[float]] = {"baseline": [], "candidate": []}
         # Alternate order across rounds to expose scheduling/drift noise.

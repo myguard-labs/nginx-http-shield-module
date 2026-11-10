@@ -1099,3 +1099,32 @@ GET /m
 Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
 Vary: Accept
 --- error_code: 200
+
+=== TEST 30: counters-only zone supports the unchanged JSON schema
+--- http_config
+    shield_stats_zone stats30 32k;
+--- config
+    location /status { shield_ban_status stats30; }
+--- request
+GET /status
+--- response_body_like: ^\{"zone":"stats30","nodes":0,"blocked":0,"bans":0,"inspected":0,"ban_refused":0,"evictions":0,"alloc_failures":0,"used":\d+,"size":32768,.*"banned":\[\]\}$
+--- response_headers
+Content-Type: application/json
+--- error_code: 200
+
+=== TEST 31: counters-only zone supports negotiated OpenMetrics
+--- http_config
+    shield_stats_zone stats31 32k;
+--- config
+    location /metrics {
+        shield_ban_status stats31;
+        shield_ban_status_format prometheus;
+    }
+--- request
+GET /metrics
+--- more_headers
+Accept: application/openmetrics-text
+--- response_body_like: (?s)^# HELP shield_hits .*shield_requests_total\{zone="stats31"\} 0\n.*# EOF\n$
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+--- error_code: 200
