@@ -1,4 +1,4 @@
-# sync-sha: 4d96b11e5d916036c44dd795c915d7cc1956a67f7fbab4d829459c8829a1cae3
+# sync-sha: 904528fddd86fb55128790d4d0a1d357d07043927be31f564018a900cfb9ac93
 name: Build and Test
 
 env:
@@ -30,7 +30,7 @@ jobs:
       - name: Install validation tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cppcheck shellcheck shfmt
+          sudo apt-get install -y cppcheck shellcheck shfmt prometheus
 
       - name: Validate scripts and source
         run: |
@@ -59,6 +59,14 @@ jobs:
             src/ngx_http_shield_ban.c \
             src/ngx_shield_probe_hooks.c
           git diff --check
+
+      - name: Validate monitoring kit
+        run: |
+          promtool --version
+          promtool check rules contrib/prometheus-alerts.yml
+          promtool check config contrib/prometheus-scrape.yml
+          promtool test rules ci/tests/shield-alerts-test.yml
+          python3 ci/tests/test_operator_kit.py
 
       - name: Check runner trust boundary
         run: bash ci/tools/check-workflow-runners.sh

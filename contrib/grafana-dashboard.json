@@ -1,0 +1,366 @@
+{
+  "title": "nginx HTTP Shield",
+  "uid": "nginx-http-shield",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": [
+    "nginx",
+    "shield"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Zone reserved ratio",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "shield_zone_used_bytes / shield_zone_size_bytes",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Zone nodes",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "shield_zone_nodes",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Banned clients",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "shield_banned_clients",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Inspections",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_requests_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Ban refusals",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_ban_refusals_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Allocation failures",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_zone_alloc_failures_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Evictions",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_zone_evictions_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Incomplete body inspections by reason",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_body_uninspected_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Detections by category and mode",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_detections_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Hits by source",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_source_hits_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Blocked requests",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_blocked_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Bans armed",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_bans_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+        }
+      ]
+    }
+  ],
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ]
+}

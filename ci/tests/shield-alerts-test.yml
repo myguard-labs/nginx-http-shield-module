@@ -1,0 +1,70 @@
+---
+rule_files:
+  - ../../contrib/prometheus-alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'shield_zone_used_bytes{zone="high"}'
+        values: '81x10'
+      - series: 'shield_zone_used_bytes{zone="boundary"}'
+        values: '80x10'
+      - series: 'shield_zone_size_bytes{zone="high"}'
+        values: '100x10'
+      - series: 'shield_zone_size_bytes{zone="boundary"}'
+        values: '100x10'
+      - series: 'shield_zone_size_bytes{zone="missing"}'
+        values: '100x10'
+      - series: 'shield_zone_alloc_failures_total{zone="high"}'
+        values: '0+1x10'
+      - series: 'shield_zone_alloc_failures_total{zone="boundary"}'
+        values: '0x10'
+      - series: 'shield_zone_evictions_total{zone="high"}'
+        values: '0+1x10'
+      - series: 'shield_zone_evictions_total{zone="boundary"}'
+        values: '0x10'
+      - series: 'shield_ban_refusals_total{zone="high"}'
+        values: '0+660x10'
+      - series: 'shield_ban_refusals_total{zone="boundary"}'
+        values: '0+600x10'
+      - series: 'shield_body_uninspected_total{zone="high",reason="error"}'
+        values: '0+12x10'
+      - series: 'shield_body_uninspected_total{zone="boundary",reason="encoding"}'
+        values: '0+10x10'
+      - series: 'shield_body_uninspected_total{zone="zero",reason="error"}'
+        values: '0x10'
+      - series: 'shield_requests_total{zone="high"}'
+        values: '0+100x10'
+      - series: 'shield_requests_total{zone="boundary"}'
+        values: '0+100x10'
+      - series: 'shield_requests_total{zone="zero"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ShieldZonePressure
+        exp_alerts:
+          - exp_labels: {zone: high, severity: warning}
+            exp_annotations: {summary: Shield zone is over 80% reserved}
+      - eval_time: 10m
+        alertname: ShieldZoneAllocationFailures
+        exp_alerts:
+          - exp_labels: {zone: high, severity: critical}
+            exp_annotations: {summary: Shield zone allocations are failing}
+      - eval_time: 10m
+        alertname: ShieldZoneEvictions
+        exp_alerts:
+          - exp_labels: {zone: high, severity: warning}
+            exp_annotations: {summary: Shield zone nodes are being evicted}
+      - eval_time: 10m
+        alertname: ShieldBanRefusals
+        exp_alerts:
+          - exp_labels: {zone: high, severity: warning}
+            exp_annotations: {summary: Shield ban refusals exceed 10 requests per second}
+      - eval_time: 10m
+        alertname: ShieldBodiesUninspected
+        exp_alerts:
+          - exp_labels: {zone: high, severity: warning}
+            exp_annotations: {summary: Shield incomplete body inspections exceed 10% of inspections}
+      - eval_time: 4m
+        alertname: ShieldZonePressure
+        exp_alerts: []

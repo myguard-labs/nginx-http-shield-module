@@ -402,6 +402,52 @@ remain available in JSON, avoiding unbounded metric series per client.
 > Walking the ban list takes the zone's slab mutex for O(nodes), so scrape it at a
 > sane interval rather than per second on a large zone.
 
+### Monitoring
+
+Import [the Grafana dashboard](contrib/grafana-dashboard.json) and select a
+Prometheus data source through Grafana’s UI import. For file provisioning or
+the HTTP API, replace `${DS_PROMETHEUS}` with your data source UID. The
+[scrape configuration](contrib/prometheus-scrape.yml)
+and [alert rules](contrib/prometheus-alerts.yml) are starting points: adjust the
+target, thresholds and hold times for your traffic and route alerts in your
+alert manager. The scrape target must reach the access-controlled metrics
+location; do not expose the status endpoint publicly. The dashboard keeps the
+scrape target's `instance` and the module's `zone` labels separate.
+
+The example alerts detect reserved zone memory above 80%, allocation failures,
+eviction activity, ban refusals above 10 per second, and incomplete body
+inspections above 10% of inspected requests. The body ratio uses all inspected
+requests as its denominator, not just requests with bodies; it is a traffic
+indicator rather than a percentage of submitted bodies. A zero request
+rate produces no meaningful ratio. Counters reset on restart; Prometheus
+`rate` and `increase` account for counter resets. Monitor scrape health
+separately because missing metrics cannot trigger these alerts.
+
+JSON fields map to metric samples as follows; each metric has a `zone` label.
+
+| JSON field | Metric and additional labels |
+| --- | --- |
+| `zone` | `zone` label on every sample |
+| `nodes` | `shield_zone_nodes` |
+| `blocked` | `shield_blocked_total` |
+| `bans` | `shield_bans_total` |
+| `inspected` | `shield_requests_total` |
+| `ban_refused` | `shield_ban_refusals_total` |
+| `evictions` | `shield_zone_evictions_total` |
+| `alloc_failures` | `shield_zone_alloc_failures_total` |
+| `used` | `shield_zone_used_bytes` |
+| `size` | `shield_zone_size_bytes` |
+| `body_uninspected.<reason>` | `shield_body_uninspected_total{reason}` |
+| `categories.<category>` | `shield_hits_total{category}` |
+| `detections.<category>.<mode>` | `shield_detections_total{category,mode}` |
+| `banned` array length | `shield_banned_clients` |
+| `banned[].addr`, `hits`, `expires` | No per-client metric |
+| No JSON field | `shield_source_hits_total{category,source}` |
+
+The bounded body reasons are `too_large`, `encoding`, and `error`.
+The source breakdown is available only in metrics; the JSON ban array carries
+client details that are deliberately absent from metrics.
+
 ### Hit log
 
 `shield_log /var/log/nginx/shield.json;` writes one JSON object per line for
