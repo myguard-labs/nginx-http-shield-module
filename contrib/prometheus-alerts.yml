@@ -1,0 +1,40 @@
+---
+groups:
+  - name: nginx-shield
+    rules:
+      - alert: ShieldZonePressure
+        expr: shield_zone_used_bytes / shield_zone_size_bytes > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Shield zone is over 80% reserved
+      - alert: ShieldZoneAllocationFailures
+        expr: increase(shield_zone_alloc_failures_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Shield zone allocations are failing
+      - alert: ShieldZoneEvictions
+        expr: rate(shield_zone_evictions_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Shield zone nodes are being evicted
+      - alert: ShieldBanRefusals
+        expr: rate(shield_ban_refusals_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Shield ban refusals exceed 10 requests per second
+      - alert: ShieldBodiesUninspected
+        expr: >-
+          sum without (reason) (rate(shield_body_uninspected_total[5m]))
+          / rate(shield_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Shield incomplete body inspections exceed 10% of inspections
