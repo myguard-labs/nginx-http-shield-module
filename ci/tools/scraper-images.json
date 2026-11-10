@@ -1,0 +1,7 @@
+{
+  "prometheus": "prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996",
+  "vmagent": "victoriametrics/vmagent:v1.124.0@sha256:9f0cfd832f28aa1a52618bad201d9363d5b62682f56e08fed0db6356c5104be7",
+  "alloy": "grafana/alloy:v1.10.2@sha256:bcf27f18c4402869af112fb39e35e1db3804a404686f4caa20bdf77814219223",
+  "otel": "otel/opentelemetry-collector-contrib:0.131.0@sha256:13b685dc9f68fbbb0fce06d3be84e9d70ba5b90085d79dcbd4c4c0d909ee2d6e",
+  "telegraf": "telegraf:1.35.4@sha256:81d1898c9ac3065eec656e6f7d4f3b696fe09202471acb94d8ccfc13a84ba200"
+}

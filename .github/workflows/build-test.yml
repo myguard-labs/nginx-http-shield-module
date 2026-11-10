@@ -1,4 +1,4 @@
-# sync-sha: 904528fddd86fb55128790d4d0a1d357d07043927be31f564018a900cfb9ac93
+# sync-sha: ca075ac214e941d280db8497ce50e96367d54a1764ed9e2daa424739ab74b735
 name: Build and Test
 
 env:
@@ -67,6 +67,7 @@ jobs:
           promtool check config contrib/prometheus-scrape.yml
           promtool test rules ci/tests/shield-alerts-test.yml
           python3 ci/tests/test_operator_kit.py
+          python3 -m unittest discover -s ci/tests -p 'test_scraper*.py'
 
       - name: Check runner trust boundary
         run: bash ci/tools/check-workflow-runners.sh
@@ -633,3 +634,18 @@ jobs:
             --nginx "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/nginx" \
             --module "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/ngx_http_shield_module.so" \
             --port "$TEST_BASE_PORT" -v
+
+      - name: Run pinned scraper compatibility matrix
+        run: |
+          python3 ci/tools/scraper_matrix.py \
+            --nginx "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/nginx" \
+            --module "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-debug/objs/ngx_http_shield_module.so" \
+            --output "$RUNNER_TEMP/scraper-matrix"
+
+      - name: Preserve scraper compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: scraper-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scraper-matrix
+          retention-days: 14
