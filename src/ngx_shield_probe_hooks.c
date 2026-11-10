@@ -47,13 +47,11 @@
  * The probe calls this WITHOUT holding the slab mutex -- locking is the hook's
  * own responsibility -- so the queue walk takes it here.
  *
- * The harness decides "present" from zone->shm.addr (the master mapped the
- * segment) while shield's state needs ctx->sh and ctx->shpool, which the
- * per-worker init callback fills in later. A probe racing a reload can see the
- * former without the latter, so this re-checks rather than assuming the
- * harness's present implies shield's. In that window the shield-specific
- * members are reported at their zero values, which is honest: no nodes are
- * reachable through a zone this worker has not initialised.
+ * The harness decides "present" from zone->shm.addr. Stock nginx initializes
+ * or reuses the shared zone in the master before workers serve requests; a
+ * failed candidate cycle is rejected. The ctx->sh and ctx->shpool checks
+ * remain defensive. If either pointer is absent, the shield-specific members
+ * are reported at their zero values.
  */
 static u_char *
 ngx_shield_probe_zone_render(u_char *buf, u_char *last, ngx_shm_zone_t *zone)
