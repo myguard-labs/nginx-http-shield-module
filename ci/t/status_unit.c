@@ -82,6 +82,66 @@ status_inet_ntop(int family, u_char *addr, u_char *text, size_t len)
     return size;
 }
 
+/* Independent ordered wire oracle: catches missing, reordered or renamed families. */
+static void
+check_golden(ngx_str_t *body, int prometheus, int maximum)
+{
+    static const char *cats[] = {
+        "sqli", "xss", "traversal", "overlong", "cmdi", "lfi", "crlf",
+        "nullbyte", "template", "deserial", "shellshock", "php_rce",
+        "java_rce", "java_eval", "rails_yaml", "drupal", "vbulletin",
+        "xmlrpc", "ssi", "imagetragick", "httpoxy", "range_dos",
+        "sensitive_file", "webshell", "ssrf_meta", "nosql", "ssti",
+        "exploit_path", "ctrl_char", "dotfile"
+    };
+    char expected[8192];
+    size_t used = 0, i;
+    int n;
+#define APPEND(...) do { \
+    n = snprintf(expected + used, sizeof(expected) - used, __VA_ARGS__); \
+    assert(n >= 0 && (size_t) n < sizeof(expected) - used); \
+    used += (size_t) n; \
+} while (0)
+    if (prometheus) {
+        APPEND("# HELP shield_hits Shield signature hits by category.\n"
+               "# TYPE shield_hits counter\n");
+        for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
+            APPEND("shield_hits_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\"} %s\n",
+                   cats[i], maximum ? "18446744073709551615" : "0");
+        }
+        APPEND("# HELP shield_blocked Shield requests blocked.\n"
+               "# TYPE shield_blocked counter\n"
+               "shield_blocked_total{zone=\"quote\\\"slash\\\\line\\n\"} %s\n"
+               "# HELP shield_bans Shield bans armed.\n"
+               "# TYPE shield_bans counter\n"
+               "shield_bans_total{zone=\"quote\\\"slash\\\\line\\n\"} %s\n"
+               "# HELP shield_zone_nodes Shield zone nodes in use.\n"
+               "# TYPE shield_zone_nodes gauge\n"
+               "shield_zone_nodes{zone=\"quote\\\"slash\\\\line\\n\"} %" PRIuPTR "\n"
+               "# HELP shield_banned_clients Shield clients currently banned.\n"
+               "# TYPE shield_banned_clients gauge\n"
+               "shield_banned_clients{zone=\"quote\\\"slash\\\\line\\n\"} %" PRIuPTR "\n# EOF\n",
+               maximum ? "18446744073709551615" : "0",
+               maximum ? "18446744073709551615" : "0",
+               maximum ? UINTPTR_MAX : (uintptr_t) 0,
+               maximum ? UINTPTR_MAX : (uintptr_t) 0);
+    } else {
+        APPEND("{\"zone\":\"quote\\\"slash\\\\line\\n\",\"nodes\":%" PRIuPTR
+               ",\"blocked\":%s,\"bans\":%s,\"categories\":{" ,
+               maximum ? UINTPTR_MAX : (uintptr_t) 0,
+               maximum ? "18446744073709551615" : "0",
+               maximum ? "18446744073709551615" : "0");
+        for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
+            APPEND("%s\"%s\":%s", i ? "," : "", cats[i],
+                   maximum ? "18446744073709551615" : "0");
+        }
+        APPEND("},\"banned\":[]}");
+    }
+#undef APPEND
+    assert(body->len == used);
+    assert(memcmp(body->data, expected, used) == 0);
+}
+
 int
 main(void)
 {
@@ -98,6 +158,30 @@ main(void)
     size_t limit;
     unsigned aligned_before;
     ngx_uint_t i, physical, retry;
+
+    /* Exact bytes for zero and maximum values, with escaping in both formats. */
+    ngx_memzero(&snapshot, sizeof(snapshot));
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body) == NGX_OK);
+    check_golden(&body, 0, 0);
+    free(allocation);
+    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits, 0, 0, 0, 0,
+                                            &body) == NGX_OK);
+    check_golden(&body, 1, 0);
+    free(allocation);
+    snapshot.nodes = (ngx_uint_t) -1;
+    snapshot.blocked = snapshot.bans = UINT64_MAX;
+    for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+        snapshot.cat_hits[i] = hits[i] = UINT64_MAX;
+    }
+    assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body) == NGX_OK);
+    check_golden(&body, 0, 1);
+    free(allocation);
+    assert(ngx_http_shield_status_prometheus(NULL, &zone, hits, UINT64_MAX,
+               UINT64_MAX, (ngx_uint_t) -1, (ngx_uint_t) -1, &body) == NGX_OK);
+    check_golden(&body, 1, 1);
+    free(allocation);
+    ngx_memzero(hits, sizeof(hits));
+    allocations = 0;
 
     assert(strcmp(ngx_http_shield_cat_name(NGX_HTTP_SHIELD_CAT_N),
                   "unknown") == 0);

@@ -32,6 +32,29 @@ typedef struct {
 } ngx_http_shield_status_snapshot_t;
 
 
+/* Order is part of the status wire format. A NULL JSON key denotes a
+ * metric-only family; hits are emitted separately for each category. */
+typedef struct {
+    const char  *json_key;
+    const char  *family;
+    const char  *help;
+    ngx_uint_t   counter;
+} ngx_http_shield_status_metric_t;
+
+static const ngx_http_shield_status_metric_t
+ngx_http_shield_status_metrics[] = {
+    { NULL, "shield_hits", "Shield signature hits by category.", 1 },
+    { "blocked", "shield_blocked", "Shield requests blocked.", 1 },
+    { "bans", "shield_bans", "Shield bans armed.", 1 },
+    { "nodes", "shield_zone_nodes", "Shield zone nodes in use.", 0 },
+    { NULL, "shield_banned_clients", "Shield clients currently banned.", 0 }
+};
+
+#define NGX_SHIELD_STATUS_METRICS \
+    (sizeof(ngx_http_shield_status_metrics) \
+     / sizeof(ngx_http_shield_status_metrics[0]))
+
+
 static ngx_int_t
 ngx_http_shield_status_size_add(size_t *size, size_t add)
 {
@@ -203,17 +226,17 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
         return NGX_ERROR;
     }
 
-    NGX_SHIELD_STATUS_ADD_LITERAL("\",\"nodes\":");
-    if (ngx_http_shield_status_size_add(&size, NGX_INT_T_LEN) != NGX_OK) {
-        return NGX_ERROR;
-    }
-    NGX_SHIELD_STATUS_ADD_LITERAL(",\"blocked\":");
-    if (ngx_http_shield_status_size_add(&size, NGX_INT64_LEN) != NGX_OK) {
-        return NGX_ERROR;
-    }
-    NGX_SHIELD_STATUS_ADD_LITERAL(",\"bans\":");
-    if (ngx_http_shield_status_size_add(&size, NGX_INT64_LEN) != NGX_OK) {
-        return NGX_ERROR;
+    NGX_SHIELD_STATUS_ADD_LITERAL("\"");
+    /* JSON order is nodes, blocked, bans; metrics use exposition order. */
+    for (i = 0; i < 3; i++) {
+        ngx_uint_t index = i == 0 ? 3 : i;
+        len = ngx_strlen(ngx_http_shield_status_metrics[index].json_key);
+        if (ngx_http_shield_status_size_add(&size, len) != NGX_OK
+            || ngx_http_shield_status_size_add(&size,
+                   sizeof(",\"\":") - 1 + NGX_INT64_LEN) != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
     }
     NGX_SHIELD_STATUS_ADD_LITERAL(",\"categories\":{");
 
@@ -250,10 +273,15 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
     last = buf + size;
     p = ngx_slprintf(buf, last, "{\"zone\":\"");
     p = (u_char *) ngx_escape_json(p, zone->data, zone->len);
-    p = ngx_slprintf(p, last,
-                     "\",\"nodes\":%ui,\"blocked\":%uL,\"bans\":%uL,"
-                     "\"categories\":{",
-                     snapshot->nodes, snapshot->blocked, snapshot->bans);
+    p = ngx_slprintf(p, last, "\"");
+    for (i = 0; i < 3; i++) {
+        ngx_uint_t index = i == 0 ? 3 : i;
+        uint64_t value = i == 0 ? (uint64_t) snapshot->nodes
+                                : (i == 1 ? snapshot->blocked : snapshot->bans);
+        p = ngx_slprintf(p, last, ",\"%s\":%uL",
+                         ngx_http_shield_status_metrics[index].json_key, value);
+    }
+    p = ngx_slprintf(p, last, ",\"categories\":{");
 
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
         p = ngx_slprintf(p, last, "%s\"%s\":%uL",
@@ -354,32 +382,31 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
     last = buf + size;
 
     /* OpenMetrics counter family names omit the _total sample suffix. */
-    p = ngx_slprintf(p, last,
-                     "# HELP shield_hits Shield signature hits by category.\n"
-                     "# TYPE shield_hits counter\n");
-    for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
-        p = ngx_slprintf(p, last,
-                         "shield_hits_total{zone=\"%V\",category=\"%s\"} %uL\n",
-                         &label, ngx_http_shield_cat_name(i), cat_hits[i]);
-    }
+    for (i = 0; i < NGX_SHIELD_STATUS_METRICS; i++) {
+        const ngx_http_shield_status_metric_t *metric;
+        uint64_t value;
+        ngx_uint_t j;
 
-    p = ngx_slprintf(p, last,
-                     "# HELP shield_blocked Shield requests blocked.\n"
-                     "# TYPE shield_blocked counter\n"
-                     "shield_blocked_total{zone=\"%V\"} %uL\n"
-                     "# HELP shield_bans Shield bans armed.\n"
-                     "# TYPE shield_bans counter\n"
-                     "shield_bans_total{zone=\"%V\"} %uL\n"
-                     "# HELP shield_zone_nodes Shield zone nodes in use.\n"
-                     "# TYPE shield_zone_nodes gauge\n"
-                     "shield_zone_nodes{zone=\"%V\"} %ui\n"
-                     "# HELP shield_banned_clients "
-                     "Shield clients currently banned.\n"
-                     "# TYPE shield_banned_clients gauge\n"
-                     "shield_banned_clients{zone=\"%V\"} %ui\n"
-                     "# EOF\n",
-                     &label, blocked, &label, bans, &label, nodes,
-                     &label, banned);
+        metric = &ngx_http_shield_status_metrics[i];
+        p = ngx_slprintf(p, last, "# HELP %s %s\n# TYPE %s %s\n",
+                         metric->family, metric->help, metric->family,
+                         metric->counter ? "counter" : "gauge");
+        if (i == 0) {
+            for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
+                p = ngx_slprintf(p, last,
+                    "%s_total{zone=\"%V\",category=\"%s\"} %uL\n",
+                    metric->family, &label, ngx_http_shield_cat_name(j),
+                    cat_hits[j]);
+            }
+            continue;
+        }
+        value = i == 1 ? blocked : i == 2 ? bans
+                : i == 3 ? (uint64_t) nodes : (uint64_t) banned;
+        p = ngx_slprintf(p, last, "%s%s{zone=\"%V\"} %uL\n",
+                         metric->family, metric->counter ? "_total" : "",
+                         &label, value);
+    }
+    p = ngx_slprintf(p, last, "# EOF\n");
 
     body->len = p - body->data;
     return NGX_OK;
