@@ -450,6 +450,23 @@ jobs:
           MATRIX_FLAVOR: ${{ matrix.flavor }}
         run: bash ci/t/prober/run.sh "$MATRIX_FLAVOR" "$VER"
 
+      - name: Check metric counters, slab pressure and concurrent snapshots
+        env:
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
+          MATRIX_MODE: ${{ matrix.mode }}
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          build="$PWD/.build/${MATRIX_FLAVOR}-${VER}-${MATRIX_MODE}/objs"
+          binary="$build/nginx"
+          [ -x "$binary" ] || binary="$build/angie"
+          module=()
+          if [ -f "$build/ngx_http_shield_module.so" ]; then
+            module=(--module "$build/ngx_http_shield_module.so")
+          fi
+          python3 ci/tests/test_metrics_counters.py --nginx "$binary" \
+            "${module[@]}" --output "$PWD/.build/metrics-counters"
+
   coverage:
     name: C line coverage
     runs-on: ubuntu-latest
@@ -517,6 +534,12 @@ jobs:
         env:
           NGX_BUILD_MODE: coverage
         run: bash ci/t/prober/run.sh nginx "$NGINX_VERSION"
+
+      - name: Check metric counters and slab pressure with coverage
+        run: |
+          python3 ci/tests/test_metrics_counters.py \
+            --nginx "$PWD/.build/nginx-${NGINX_VERSION}-coverage/objs/nginx" \
+            --output "$PWD/.build/metrics-counters-coverage"
 
       # The ban state engine's multi-node / eviction / window-slide / expiry
       # paths are unreachable from Test::Nginx (single loopback client, no clock

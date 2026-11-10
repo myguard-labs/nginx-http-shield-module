@@ -292,6 +292,8 @@ location /shield-status {
 
 ```json
 {"zone":"shield","nodes":1,"blocked":2,"bans":1,
+ "inspected":100,"ban_refused":5,"evictions":0,"alloc_failures":0,
+ "used":40960,"size":1048576,
  "categories":{"sqli":1,"xss":0,"httpoxy":1,"dotfile":0, "...":0},
  "banned":[{"addr":"203.0.113.10","hits":0,"expires":3417}]}
 ```
@@ -300,6 +302,24 @@ location /shield-status {
   the per-category counters still climb — useful for sizing a ruleset before
   turning blocking on.
 - `bans` counts bans **armed**, not requests refused while banned.
+- `inspected` counts first-pass main-request inspections with a ban zone;
+  `ban_refused` counts main requests refused by an existing ban before inspection.
+  Each counter increments at most once per main request per zone across internal
+  and named redirects; reinspection of redirected URIs still runs. A request
+  first routed through an off location counts when it reaches an active one.
+  A later distinct zone counts its own inspection. One private variable slot
+  per configured zone uses nginx's existing request-variable allocation (16 bytes
+  per zone on 64-bit builds); no additional allocator call or mutex is needed.
+  Off locations, subrequests and body-handler re-entry do not increment them.
+  These independent atomic counters wrap at the platform's native atomic width.
+  `shield_ban_zone` requires nginx's native atomic operations; a build using
+  nginx's non-atomic fallback rejects that directive. Block-only configuration
+  without a ban zone remains available.
+- `evictions` counts reclaimed stale ban nodes; `alloc_failures` counts dropped
+  node allocations after reclamation. Successful allocations do not increment it.
+- `used` is reserved zone memory in bytes, including slab metadata and partially
+  occupied pages; only wholly free slab pages are subtracted. `size` is the
+  mapped zone size. Both gauges are sampled together under the slab mutex.
 - `categories` always lists **every** category, including those at zero, so a
   metrics scraper sees a stable key set. Counters are cumulative and survive a
   reload (the zone does); a restart clears them with the zone.
@@ -323,7 +343,12 @@ The response uses OpenMetrics 1.0 (`application/openmetrics-text;
 version=1.0.0; charset=utf-8`) and ends with `# EOF`. It exposes
 `shield_hits_total{zone="shield",category="sqli"}` for every category, including
 zeroes, plus `shield_blocked_total`, `shield_bans_total`, `shield_zone_nodes`,
-and `shield_banned_clients`, each labeled by `zone`. The first three are
+and `shield_banned_clients`, each labeled by `zone`. It also exposes
+`shield_requests_total`, `shield_ban_refusals_total`,
+`shield_zone_evictions_total`, `shield_zone_alloc_failures_total`,
+`shield_zone_used_bytes` and `shield_zone_size_bytes`, using the corresponding
+JSON fields above. The first four additions are counters; the byte families are
+gauges. The first three original families are
 counters; the last two are gauges. Counter `HELP` and `TYPE` declarations use
 the family name without `_total`, as required by OpenMetrics. Zone label values
 escape quotes, backslashes and line feeds.

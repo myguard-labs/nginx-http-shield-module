@@ -61,7 +61,7 @@ BIN="$SCRIPT_DIR/ban_unit"
 
 echo "==> Building ban_unit (nginx $NGINX_VERSION, CC=$CC) ..."
 # shellcheck disable=SC2086
-"$CC" -g -O0 -Wall -Wextra $EXTRA_CFLAGS $NGX_INCS \
+"$CC" -g -O0 -Wall -Wextra -pthread $EXTRA_CFLAGS $NGX_INCS \
     -o "$BIN" \
     "$SCRIPT_DIR/ban_unit.c" \
     "$REPO_ROOT/src/ngx_http_shield_ban.c" \
@@ -73,7 +73,9 @@ echo "==> Running ban_unit ..."
 # Exercise the status renderer with allocation faults and maximum counters.
 # Keep gcov data beside ban_unit for the existing CI coverage collector.
 STATUS_BIN="$SCRIPT_DIR/status_unit"
-trap 'rm -f "$STATUS_BIN"' EXIT
+ATOMIC_BIN="$SCRIPT_DIR/atomic_width_unit"
+CONFIG_BIN="$SCRIPT_DIR/atomic_config_unit"
+trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -83,4 +85,33 @@ trap 'exit 143' TERM
     -o "$STATUS_BIN" \
     "$SCRIPT_DIR/status_unit.c" "$NGX_SRC/src/core/ngx_string.c"
 "$STATUS_BIN"
+# Emulate Windows LONG32 atomic returns with 64-bit snapshots on this host.
+# shellcheck disable=SC2086
+"$CC" -g -O0 -Wall -Wextra $EXTRA_CFLAGS $NGX_INCS \
+    -o "$ATOMIC_BIN" "$SCRIPT_DIR/atomic_width_unit.c"
+"$ATOMIC_BIN"
+# Include the real module's config callbacks, discarding unrelated sections.
+# ASan global registration would retain those discarded nginx callbacks and
+# require a whole nginx link. Disable only global redzones in this isolated
+# callback harness; its executable code and stack keep sanitizer instrumentation.
+case "$("$CC" --version)" in
+    *clang*) CONFIG_GLOBAL_FLAGS="-mllvm -asan-globals=0" ;;
+    *) CONFIG_GLOBAL_FLAGS="--param=asan-globals=0" ;;
+esac
+for capability in 1 0; do
+    CONFIG_CAP_FLAGS=""
+    if [ "$capability" = 0 ]; then
+        # Select nginx's actual Unix fallback backend on this x64 test host.
+        CONFIG_CAP_FLAGS="-DNGX_HAVE_GCC_ATOMIC=0 -DNGX_HAVE_LIBATOMIC=0
+            -DNGX_DARWIN_ATOMIC=0 -U__amd64__ -U__amd64"
+    fi
+    # shellcheck disable=SC2086
+    "$CC" -g -O2 -Wall -Wextra -Wno-unused-parameter \
+        -ffunction-sections -fdata-sections -Wl,--gc-sections \
+        $EXTRA_CFLAGS $CONFIG_GLOBAL_FLAGS $CONFIG_CAP_FLAGS $NGX_INCS \
+        -I"$NGX_SRC/src/http" -I"$NGX_SRC/src/http/modules" \
+        -DEXPECT_ATOMICS="$capability" \
+        -o "$CONFIG_BIN-$capability" "$SCRIPT_DIR/atomic_config_unit.c"
+    "$CONFIG_BIN-$capability"
+done
 python3 "$REPO_ROOT/ci/tests/test_status_runner.py"

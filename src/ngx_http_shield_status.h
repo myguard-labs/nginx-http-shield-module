@@ -25,6 +25,12 @@ typedef struct {
     uint64_t                       cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
     uint64_t                       blocked;
     uint64_t                       bans;
+    uint64_t                       inspected;
+    uint64_t                       ban_refused;
+    uint64_t                       evictions;
+    uint64_t                       alloc_failures;
+    uint64_t                       used;
+    uint64_t                       size;
     ngx_uint_t                     nodes;
     ngx_uint_t                     banned;
     ngx_uint_t                     capacity;
@@ -39,20 +45,77 @@ typedef struct {
     const char  *family;
     const char  *help;
     ngx_uint_t   counter;
+    size_t       offset;
 } ngx_http_shield_status_metric_t;
 
 static const ngx_http_shield_status_metric_t
 ngx_http_shield_status_metrics[] = {
-    { NULL, "shield_hits", "Shield signature hits by category.", 1 },
-    { "blocked", "shield_blocked", "Shield requests blocked.", 1 },
-    { "bans", "shield_bans", "Shield bans armed.", 1 },
-    { "nodes", "shield_zone_nodes", "Shield zone nodes in use.", 0 },
-    { NULL, "shield_banned_clients", "Shield clients currently banned.", 0 }
+    { NULL, "shield_hits", "Shield signature hits by category.", 1, 0 },
+#define NGX_SHIELD_METRIC(key, family, help, counter, field) \
+    { key, family, help, counter, \
+      offsetof(ngx_http_shield_status_snapshot_t, field) }
+    NGX_SHIELD_METRIC("blocked", "shield_blocked", "Shield requests blocked.",
+                      1, blocked),
+    NGX_SHIELD_METRIC("bans", "shield_bans", "Shield bans armed.", 1, bans),
+    NGX_SHIELD_METRIC("nodes", "shield_zone_nodes", "Shield zone nodes in use.",
+                      0, nodes),
+    NGX_SHIELD_METRIC(NULL, "shield_banned_clients",
+                      "Shield clients currently banned.", 0, banned),
+    NGX_SHIELD_METRIC("inspected", "shield_requests",
+                      "Shield requests inspected.", 1, inspected),
+    NGX_SHIELD_METRIC("ban_refused", "shield_ban_refusals",
+                      "Shield requests refused by an active ban.",
+                      1, ban_refused),
+    NGX_SHIELD_METRIC("evictions", "shield_zone_evictions",
+                      "Shield zone nodes evicted.", 1, evictions),
+    NGX_SHIELD_METRIC("alloc_failures", "shield_zone_alloc_failures",
+                      "Shield zone node allocation failures.",
+                      1, alloc_failures),
+    NGX_SHIELD_METRIC("used", "shield_zone_used_bytes",
+                      "Shield zone bytes reserved including slab overhead.",
+                      0, used),
+    NGX_SHIELD_METRIC("size", "shield_zone_size_bytes",
+                      "Shield zone size in bytes.", 0, size)
+#undef NGX_SHIELD_METRIC
 };
 
 #define NGX_SHIELD_STATUS_METRICS \
     (sizeof(ngx_http_shield_status_metrics) \
      / sizeof(ngx_http_shield_status_metrics[0]))
+
+
+/* Caller holds the slab mutex. Include metadata and reserved partial pages;
+ * only wholly free slab pages are subtracted from the mapped zone size. */
+static ngx_int_t
+ngx_http_shield_status_slab_usage(ngx_slab_pool_t *shpool,
+    ngx_http_shield_status_snapshot_t *snapshot)
+{
+    snapshot->size = (u_char *) shpool->end - (u_char *) shpool;
+    if (shpool->pfree > snapshot->size / ngx_pagesize) {
+        return NGX_ERROR;
+    }
+    snapshot->used = snapshot->size - shpool->pfree * ngx_pagesize;
+    return NGX_OK;
+}
+
+
+static uint64_t
+ngx_http_shield_status_value(ngx_http_shield_status_snapshot_t *snapshot,
+    ngx_uint_t index)
+{
+    uint64_t value;
+
+    if (index == 3) {
+        return snapshot->nodes;
+    }
+    if (index == 4) {
+        return snapshot->banned;
+    }
+    ngx_memcpy(&value, (u_char *) snapshot
+                      + ngx_http_shield_status_metrics[index].offset,
+               sizeof(value));
+    return value;
+}
 
 
 static ngx_int_t
@@ -228,8 +291,11 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
 
     NGX_SHIELD_STATUS_ADD_LITERAL("\"");
     /* JSON order is nodes, blocked, bans; metrics use exposition order. */
-    for (i = 0; i < 3; i++) {
-        ngx_uint_t index = i == 0 ? 3 : i;
+    for (i = 0; i < NGX_SHIELD_STATUS_METRICS; i++) {
+        ngx_uint_t index = i == 0 ? 3 : (i == 3 ? 0 : i);
+        if (ngx_http_shield_status_metrics[index].json_key == NULL) {
+            continue;
+        }
         len = ngx_strlen(ngx_http_shield_status_metrics[index].json_key);
         if (ngx_http_shield_status_size_add(&size, len) != NGX_OK
             || ngx_http_shield_status_size_add(&size,
@@ -274,10 +340,12 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
     p = ngx_slprintf(buf, last, "{\"zone\":\"");
     p = (u_char *) ngx_escape_json(p, zone->data, zone->len);
     p = ngx_slprintf(p, last, "\"");
-    for (i = 0; i < 3; i++) {
-        ngx_uint_t index = i == 0 ? 3 : i;
-        uint64_t value = i == 0 ? (uint64_t) snapshot->nodes
-                                : (i == 1 ? snapshot->blocked : snapshot->bans);
+    for (i = 0; i < NGX_SHIELD_STATUS_METRICS; i++) {
+        ngx_uint_t index = i == 0 ? 3 : (i == 3 ? 0 : i);
+        if (ngx_http_shield_status_metrics[index].json_key == NULL) {
+            continue;
+        }
+        uint64_t value = ngx_http_shield_status_value(snapshot, index);
         p = ngx_slprintf(p, last, ",\"%s\":%uL",
                          ngx_http_shield_status_metrics[index].json_key, value);
     }
@@ -327,8 +395,7 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
  * label is escaped once into the same allocation as the response body. */
 static ngx_int_t
 ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
-    uint64_t *cat_hits, uint64_t blocked, uint64_t bans, ngx_uint_t nodes,
-    ngx_uint_t banned, ngx_str_t *body)
+    ngx_http_shield_status_snapshot_t *snapshot, ngx_str_t *body)
 {
     size_t       size, len;
     u_char      *buf, *p, *last;
@@ -340,12 +407,14 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
      * scratch label. Quotes, backslashes and line feeds each expand to 2 bytes.
      * Guard multiplication before allocating, even for huge config tokens. */
     if (zone->len > ((NGX_MAX_SIZE_T_VALUE - 2048)
-                    / (NGX_HTTP_SHIELD_CAT_N + 5) - 128) / 2)
+                    / (NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+                    - 128) / 2)
     {
         return NGX_ERROR;
     }
 
-    size = 2048 + (NGX_HTTP_SHIELD_CAT_N + 5) * (128 + 2 * zone->len);
+    size = 2048 + (NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+                  * (128 + 2 * zone->len);
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
         len = ngx_strlen(ngx_http_shield_cat_name(i));
         if (len > NGX_MAX_SIZE_T_VALUE - size) {
@@ -396,12 +465,11 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
                 p = ngx_slprintf(p, last,
                     "%s_total{zone=\"%V\",category=\"%s\"} %uL\n",
                     metric->family, &label, ngx_http_shield_cat_name(j),
-                    cat_hits[j]);
+                    snapshot->cat_hits[j]);
             }
             continue;
         }
-        value = i == 1 ? blocked : i == 2 ? bans
-                : i == 3 ? (uint64_t) nodes : (uint64_t) banned;
+        value = ngx_http_shield_status_value(snapshot, i);
         p = ngx_slprintf(p, last, "%s%s{zone=\"%V\"} %uL\n",
                          metric->family, metric->counter ? "_total" : "",
                          &label, value);

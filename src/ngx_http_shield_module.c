@@ -72,6 +72,7 @@ typedef char ngx_http_shield_counters_cover_categories[
 
 typedef struct {
     ngx_http_shield_automata_t  automata;
+    ngx_uint_t                 metric_zones;
 } ngx_http_shield_main_conf_t;
 
 
@@ -114,6 +115,10 @@ typedef struct {
 
 static ngx_int_t ngx_http_shield_handler(ngx_http_request_t *r);
 static void ngx_http_shield_body_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_shield_request_marker(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data);
+static void ngx_http_shield_count_request(ngx_http_request_t *r,
+    ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t refused);
 static ngx_int_t ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit);
 static ngx_int_t ngx_http_shield_inspect_body(ngx_http_request_t *r,
@@ -194,6 +199,43 @@ static ngx_conf_enum_t  ngx_http_shield_status_formats[] = {
     { ngx_string("prometheus"), NGX_HTTP_SHIELD_STATUS_PROMETHEUS },
     { ngx_null_string, 0 }
 };
+
+
+/* Four immutable states in a private indexed variable per configured zone.
+ * Core allocates the slots with its existing request-variable array. Unlike
+ * r->ctx, that array survives internal and named redirects. */
+static ngx_http_variable_value_t ngx_http_shield_request_marks[] = {
+    ngx_http_variable("0"), ngx_http_variable("1"),
+    ngx_http_variable("2"), ngx_http_variable("3")
+};
+
+
+static ngx_int_t
+ngx_http_shield_request_marker(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    *v = ngx_http_shield_request_marks[0];
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_shield_count_request(ngx_http_request_t *r,
+    ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t refused)
+{
+    ngx_uint_t state, bit;
+    ngx_http_variable_value_t *v;
+
+    v = &r->main->variables[ctx->request_index];
+    state = v->data == ngx_http_shield_request_marks[1].data ? 1
+          : v->data == ngx_http_shield_request_marks[2].data ? 2
+          : v->data == ngx_http_shield_request_marks[3].data ? 3 : 0;
+    bit = refused ? 2 : 1;
+    if (!(state & bit)) {
+        *v = ngx_http_shield_request_marks[state | bit];
+        ngx_http_shield_ban_count_request(ctx, refused);
+    }
+}
 
 
 static ngx_command_t  ngx_http_shield_commands[] = {
@@ -329,6 +371,7 @@ ngx_http_shield_handler(ngx_http_request_t *r)
     ngx_http_shield_ctx_t       *ctx;
     ngx_http_shield_hit_t        hit;
     ngx_http_shield_loc_conf_t  *slcf;
+    ngx_http_shield_ban_ctx_t   *ban_ctx;
 
     if (r != r->main) {
         return NGX_DECLINED;
@@ -352,10 +395,17 @@ ngx_http_shield_handler(ngx_http_request_t *r)
      * cost only a shm rbtree lookup. Checked before the first pass so a banned
      * IP never reaches the (more expensive) inspection or body read. */
     if (slcf->ban_zone != NULL && ngx_http_shield_ban_is_banned(r, slcf)) {
+        ban_ctx = slcf->ban_zone->data;
+        ngx_http_shield_count_request(r, ban_ctx, 1);
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
                       "shield: banned request from %V, status=%ui",
                       &r->connection->addr_text, slcf->status);
         return (ngx_int_t) slcf->status;
+    }
+
+    if (slcf->ban_zone != NULL) {
+        ban_ctx = slcf->ban_zone->data;
+        ngx_http_shield_count_request(r, ban_ctx, 0);
     }
 
     /* First pass: request line + headers (no body). */
@@ -1962,6 +2012,21 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 }
 
 
+/* The no-atomics backend exposes the same nginx API with plain volatile RMW.
+ * Reject counter-bearing zones there; block-only locations remain usable. */
+static ngx_int_t
+ngx_http_shield_ban_atomic_required(ngx_conf_t *cf)
+{
+#if !(NGX_HAVE_ATOMIC_OPS)
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                      "shield_ban_zone requires native atomic operations");
+    return NGX_ERROR;
+#else
+    return NGX_OK;
+#endif
+}
+
+
 /*
  * shield_ban_zone <name>:<size>  (http{} only) -- define the shared segment.
  * Mirrors the limit_req_zone "name:size" spelling. The zone is referenced by
@@ -1975,6 +2040,15 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_str_t                  *value, name, s;
     ngx_shm_zone_t             *shm_zone;
     ngx_http_shield_ban_ctx_t  *ctx;
+
+    ngx_http_variable_t        *variable;
+    ngx_http_shield_main_conf_t *smcf;
+    u_char marker_name[sizeof("__shield_metric_zone_") - 1 + NGX_INT_T_LEN];
+    ngx_str_t marker;
+
+    if (ngx_http_shield_ban_atomic_required(cf) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
 
     value = cf->args->elts;
 
@@ -2021,6 +2095,30 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                            "shield_ban_zone \"%V\" is already defined", &name);
         return NGX_CONF_ERROR;
     }
+
+    /* Reserve one non-changeable, non-hashed slot per zone. It adds only
+     * sizeof(ngx_http_variable_value_t) bytes to core's existing per-request
+     * allocation and is never reset when r->ctx is cleared on a redirect. */
+    smcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_shield_module);
+    marker.data = marker_name;
+    marker.len = ngx_snprintf(marker_name, sizeof(marker_name),
+                             "__shield_metric_zone_%ui", smcf->metric_zones)
+                 - marker_name;
+    variable = ngx_http_add_variable(cf, &marker, NGX_HTTP_VAR_NOHASH);
+    if (variable == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    if (variable->flags & NGX_HTTP_VAR_CHANGEABLE) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                          "shield metric marker variable is reserved");
+        return NGX_CONF_ERROR;
+    }
+    variable->get_handler = ngx_http_shield_request_marker;
+    ctx->request_index = ngx_http_get_variable_index(cf, &marker);
+    if (ctx->request_index == NGX_ERROR) {
+        return NGX_CONF_ERROR;
+    }
+    smcf->metric_zones++;
 
     shm_zone->init = ngx_http_shield_ban_init_zone;
     shm_zone->data = ctx;
@@ -2412,6 +2510,16 @@ ngx_http_shield_status_snapshot(ngx_http_shield_ban_ctx_t *ctx,
                sizeof(snapshot->cat_hits));
     snapshot->blocked = ctx->sh->blocked;
     snapshot->bans = ctx->sh->bans;
+    snapshot->inspected =
+        ngx_http_shield_ban_counter_value(&ctx->sh->inspected);
+    snapshot->ban_refused =
+        ngx_http_shield_ban_counter_value(&ctx->sh->ban_refused);
+    snapshot->evictions = ctx->sh->evictions;
+    snapshot->alloc_failures = ctx->sh->alloc_failures;
+    if (ngx_http_shield_status_slab_usage(ctx->shpool, snapshot) != NGX_OK) {
+        ngx_shmtx_unlock(&ctx->shpool->mutex);
+        return NGX_ERROR;
+    }
 
     {
         ngx_http_shield_ban_node_t  *bn;
@@ -2511,9 +2619,7 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
     if (slcf->status_format == NGX_HTTP_SHIELD_STATUS_PROMETHEUS) {
         if (ngx_http_shield_status_prometheus(r->pool,
                                              &slcf->status_zone->shm.name,
-                                             snapshot.cat_hits,
-                                             snapshot.blocked, snapshot.bans,
-                                             snapshot.nodes, snapshot.banned,
+                                             &snapshot,
                                              &body) != NGX_OK)
         {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;

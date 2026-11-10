@@ -620,3 +620,33 @@ invalid shield_ban trusted address
 ]
 --- error_code eval
 [403, 403, 403, 200]
+
+
+=== TEST 30: inspections count once after body reentry and exclude off and banned requests
+--- http_config
+    shield_ban_zone shield30:1m;
+--- config
+    shield_ban zone=shield30 count=1 window=60s bantime=30s;
+    location /off { shield off; empty_gif; }
+    location /t { shield block; shield_body on; empty_gif; }
+    location /status { shield_ban_status shield30; }
+--- request eval
+["GET /off", "GET /t", "POST /t\r\nContent-Type: application/json\r\n\r\n{}",
+ "GET /t?id=1%20union%20select%20pw", "GET /t", "GET /status"]
+--- response_body_like eval
+[(qr/./) x 5,
+ qr/"blocked":1,"bans":1,"inspected":3,"ban_refused":1,"evictions":0,"alloc_failures":0,"used":[1-9][0-9]*,"size":1048576/]
+--- error_code eval
+# empty_gif rejects POST after Shield resumes the content phase.
+[200, 200, 405, 403, 403, 200]
+
+
+=== TEST 31: private per-zone marker cannot be overwritten by a set directive
+--- http_config
+    shield_ban_zone marker31:1m;
+--- config
+    set $__shield_metric_zone_0 0;
+    location /t { empty_gif; }
+--- must_die
+--- error_log
+duplicate "__shield_metric_zone_0" variable

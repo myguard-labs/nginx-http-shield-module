@@ -80,6 +80,16 @@ typedef struct {
     uint64_t           blocked;   /* requests denied by shield (any cat) */
     uint64_t           bans;      /* ban arms, i.e. hits reaching threshold */
 
+    /* Independent totals, not a publication protocol. All concurrent accesses
+     * use ngx_atomic_fetch_add (including zero-delta snapshot reads); nginx's
+     * native atomics need no slab mutex. They wrap at native atomic width. */
+    ngx_atomic_t       inspected;
+    ngx_atomic_t       ban_refused;
+
+    /* Protected by shpool->mutex, together with node allocation/reclamation. */
+    uint64_t           evictions;
+    uint64_t           alloc_failures;
+
     /* Resumable eviction cursor: where the NEXT ngx_http_shield_ban_expire()
      * call starts its walk, instead of always restarting at the LRU tail.
      *
@@ -125,7 +135,29 @@ typedef struct {
 typedef struct {
     ngx_http_shield_ban_shctx_t *sh;
     ngx_slab_pool_t             *shpool;
+    ngx_int_t                   request_index; /* cycle-owned indexed marker */
 } ngx_http_shield_ban_ctx_t;
+
+
+/* nginx's Windows atomic primitive returns a signed LONG even though its
+ * storage is uint32_t. Recover the native unsigned width before widening. */
+static ngx_inline uint64_t
+ngx_http_shield_ban_counter_value(ngx_atomic_t *counter)
+{
+    return (uint64_t) (ngx_atomic_uint_t) ngx_atomic_fetch_add(counter, 0);
+}
+
+
+/* Count only first-pass inspections or active-ban refusals. The counters are
+ * independent; no cross-counter consistency or memory publication is
+ * implied. */
+static ngx_inline void
+ngx_http_shield_ban_count_request(ngx_http_shield_ban_ctx_t *ctx,
+    ngx_uint_t refused)
+{
+    (void) ngx_atomic_fetch_add(refused ? &ctx->sh->ban_refused
+                                      : &ctx->sh->inspected, 1);
+}
 
 
 /*
