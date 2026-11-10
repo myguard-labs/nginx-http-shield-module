@@ -1,4 +1,4 @@
-# Native OpenMetrics status; exact empty exposition also guards stable zero series.
+# Native JSON and negotiated metrics status; exact empty exposition also guards stable zero series.
 use Test::Nginx::Socket 'no_plan';
 use JSON::PP qw(decode_json);
 use Test::More ();
@@ -58,6 +58,8 @@ __DATA__
         shield_ban_status metrics2;
         shield_ban_status_format prometheus;
     }
+--- more_headers
+Accept: application/openmetrics-text
 --- request
 GET /metrics
 --- response_body_like eval
@@ -129,6 +131,8 @@ Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
         shield_ban_status_format prometheus;
     }
     location /json { shield_ban_status metrics3; }
+--- more_headers
+Accept: application/openmetrics-text
 --- request eval
 ["GET /t?id=1%20union%20select%20pw", "GET /t?id=1%20union%20select%20pw",
  "GET /t", "GET /metrics", "GET /json"]
@@ -152,6 +156,8 @@ Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
         shield_ban_status metrics4;
         shield_ban_status_format prometheus;
     }
+--- more_headers
+Accept: application/openmetrics-text
 --- request eval
 ["GET /t?id=1%20union%20select%20pw", "GET /metrics"]
 --- response_body_like eval
@@ -167,6 +173,8 @@ Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
         shield_ban_status metrics5;
         shield_ban_status_format prometheus;
     }
+--- more_headers
+Accept: application/openmetrics-text
 --- request
 HEAD /metrics
 --- response_body
@@ -182,6 +190,8 @@ Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
         shield_ban_status metrics6;
         shield_ban_status_format prometheus;
     }
+--- more_headers
+Accept: application/openmetrics-text
 --- request
 POST /metrics
 --- error_code: 405
@@ -229,6 +239,8 @@ invalid number of arguments in "shield_ban_status_format" directive
             shield_ban_status metrics11;
         }
     }
+--- more_headers
+Accept: application/openmetrics-text
 --- request eval
 ["GET /status/metrics", "GET /status/json"]
 --- response_body_like eval
@@ -245,6 +257,8 @@ invalid number of arguments in "shield_ban_status_format" directive
         shield_ban_status 'zone"\\name\nline';
         shield_ban_status_format prometheus;
     }
+--- more_headers
+Accept: application/openmetrics-text
 --- request
 GET /metrics
 --- response_body_like chomp
@@ -257,6 +271,8 @@ shield_hits_total\{zone="zone\\"\\\\name\\nline",category="sqli"\} 0\n
 --- config eval
 "location /metrics { shield_ban_status " . ("z" x 4000)
 . "; shield_ban_status_format prometheus; }"
+--- more_headers
+Accept: application/openmetrics-text
 --- request
 GET /metrics
 --- response_body_like eval
@@ -276,6 +292,8 @@ qr/shield_banned_clients\{zone="z{4000}"\} 0\n.*# EOF\n\z/s
         shield_ban_status metrics14;
         shield_ban_status_format prometheus;
     }
+--- more_headers
+Accept: application/openmetrics-text
 --- request eval
 ["GET /t?id=1%20union%20select%20pw", "GET /metrics"]
 --- wait: 2
@@ -299,6 +317,7 @@ qr/shield_banned_clients\{zone="z{4000}"\} 0\n.*# EOF\n\z/s
     }
 --- more_headers
 Proxy: attacker.example
+Accept: application/openmetrics-text
 --- request eval
 ["GET /t", "GET /metrics"]
 --- response_body_like eval
@@ -455,3 +474,628 @@ Content-Encoding: gzip
 [qr/./, (qr/"body_uninspected":\{"too_large":1,"encoding":0,"error":0\}/) x 2]
 --- error_code eval
 [405, 200, 200]
+
+=== TEST 25: JSON default ignores Accept
+--- http_config
+    shield_ban_zone negotiate18:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate18;
+    }
+--- more_headers
+Accept: application/openmetrics-text
+--- request
+GET /m
+--- response_body_like: ^\{"zone":
+--- response_headers
+Content-Type: application/json
+Vary: Accept
+--- error_code: 200
+
+=== TEST 26: query overrides JSON default
+--- http_config
+    shield_ban_zone negotiate19:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate19;
+    }
+--- request
+GET /m?format=prometheus
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 27: query overrides metrics directive
+--- http_config
+    shield_ban_zone negotiate20:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate20;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text
+--- request
+GET /m?format=json
+--- response_body_like: ^\{"zone":
+--- response_headers
+Content-Type: application/json
+Vary: Accept
+--- error_code: 200
+
+=== TEST 28: metrics default without Accept
+--- http_config
+    shield_ban_zone negotiate21:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate21;
+        shield_ban_status_format prometheus;
+    }
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 29: wildcard does not opt into OM
+--- http_config
+    shield_ban_zone negotiate22:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate22;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: */*
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 30: exact OM media type case insensitive
+--- http_config
+    shield_ban_zone negotiate23:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate23;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: APPLICATION/OPENMETRICS-TEXT
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 31: OM parameters and q
+--- http_config
+    shield_ban_zone negotiate24:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate24;
+    }
+--- more_headers
+Accept: application/openmetrics-text;version="1.0.0";charset=UTF-8;q=0.999
+--- request
+GET /m?format=prometheus
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 32: q zero excludes OM
+--- http_config
+    shield_ban_zone negotiate25:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate25;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text;q=0
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 33: plain higher priority
+--- http_config
+    shield_ban_zone negotiate26:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate26;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text;q=0.5, text/plain;q=0.9
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 34: OM higher priority
+--- http_config
+    shield_ban_zone negotiate27:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate27;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: text/plain;q=0.1, application/openmetrics-text;q=0.9
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 35: OM wins tie
+--- http_config
+    shield_ban_zone negotiate28:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate28;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: text/plain, application/openmetrics-text
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 36: unsupported OM version
+--- http_config
+    shield_ban_zone negotiate29:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate29;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text;version=2.0.0
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 37: invalid quality
+--- http_config
+    shield_ban_zone negotiate30:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate30;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text;q=1.1
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 38: duplicate quality
+--- http_config
+    shield_ban_zone negotiate31:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate31;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text;q=1;q=0
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 39: unclosed quoted parameter
+--- http_config
+    shield_ban_zone negotiate32:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate32;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text;version="1.0.0
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 40: substring is not a media match
+--- http_config
+    shield_ban_zone negotiate33:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate33;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text-extra
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 41: unrelated args allowed
+--- http_config
+    shield_ban_zone negotiate34:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate34;
+    }
+--- more_headers
+Accept: application/openmetrics-text
+--- request
+GET /m?x=1&format=prometheus&y=2
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 42: empty query rejected
+--- http_config
+    shield_ban_zone negotiate35:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate35;
+    }
+--- request
+GET /m?format=
+--- error_code: 400
+
+=== TEST 43: bare query rejected
+--- http_config
+    shield_ban_zone negotiate36:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate36;
+    }
+--- request
+GET /m?format
+--- error_code: 400
+
+=== TEST 44: invalid query rejected
+--- http_config
+    shield_ban_zone negotiate37:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate37;
+    }
+--- request
+GET /m?format=xml
+--- error_code: 400
+
+=== TEST 45: duplicate query rejected
+--- http_config
+    shield_ban_zone negotiate38:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate38;
+    }
+--- request
+GET /m?format=json&format=prometheus
+--- error_code: 400
+
+=== TEST 46: identical duplicate rejected
+--- http_config
+    shield_ban_zone negotiate39:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate39;
+    }
+--- request
+GET /m?format=json&format=json
+--- error_code: 400
+
+=== TEST 47: encoded value not decoded
+--- http_config
+    shield_ban_zone negotiate40:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate40;
+    }
+--- request
+GET /m?format=%6ason
+--- error_code: 400
+
+=== TEST 48: query names case sensitive
+--- http_config
+    shield_ban_zone negotiate41:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate41;
+    }
+--- request
+GET /m?FORMAT=prometheus
+--- response_body_like: ^\{"zone":
+--- response_headers
+Content-Type: application/json
+Vary: Accept
+--- error_code: 200
+
+=== TEST 49: malformed later member falls back
+--- http_config
+    shield_ban_zone negotiate42:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate42;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text, broken
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 50: repeated Accept fields combined
+--- http_config
+    shield_ban_zone negotiate43:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate43;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: text/plain;q=0.2
+Accept: application/openmetrics-text;q=0.9
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 51: HEAD Prometheus
+--- http_config
+    shield_ban_zone negotiate44:1m;
+--- config
+    location /m {
+        shield_ban_status negotiate44;
+    }
+--- request
+HEAD /m?format=prometheus
+--- response_body
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 52: Accept item limit
+--- http_config
+    large_client_header_buffers 4 16k;
+    shield_ban_zone budget:1m;
+--- config
+    location /m {
+        shield_ban_status budget;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,application/openmetrics-text
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 53: Accept over item limit
+--- http_config
+    large_client_header_buffers 4 16k;
+    shield_ban_zone budget:1m;
+--- config
+    location /m {
+        shield_ban_status budget;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,application/openmetrics-text
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 54: Accept malformed second field
+--- http_config
+    large_client_header_buffers 4 16k;
+    shield_ban_zone budget:1m;
+--- config
+    location /m {
+        shield_ban_status budget;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers
+Accept: application/openmetrics-text
+Accept: broken
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 55: Accept combined bytes limit
+--- http_config
+    large_client_header_buffers 4 16k;
+    shield_ban_zone budget:1m;
+--- config
+    location /m {
+        shield_ban_status budget;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers eval
+"Accept: application/openmetrics-text;q=1;x=" . ("a" x 4900) . "\nAccept: text/plain;q=0;x=" . ("b" x 4900)
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 56: Accept exact bytes limit
+--- http_config
+    large_client_header_buffers 4 16k;
+    shield_ban_zone budget:1m;
+--- config
+    location /m {
+        shield_ban_status budget;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers eval
+"Accept: application/openmetrics-text;q=1;x=" . ("a" x 8157)
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 57: Accept over bytes limit
+--- http_config
+    large_client_header_buffers 4 16k;
+    shield_ban_zone budget:1m;
+--- config
+    location /m {
+        shield_ban_status budget;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers eval
+"Accept: application/openmetrics-text;q=1;x=" . ("a" x 8158)
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 58: Accept after a full nginx header list part
+--- http_config
+    shield_ban_zone listpart:1m;
+--- config
+    location /m {
+        shield_ban_status listpart;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers eval
+CORE::join("\n", (map { "X-Padding-$_: x" } 1..25),
+           "Accept: application/openmetrics-text")
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 59: query budget 8192 bytes
+--- http_config
+    large_client_header_buffers 4 16k;
+    shield_ban_zone querybudget:1m;
+--- config
+    location /m { shield_ban_status querybudget; }
+--- request eval
+"GET /m?format=prometheus&x=" . ("a" x 8172)
+--- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_headers
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 60: query budget 8193 bytes
+--- http_config
+    large_client_header_buffers 4 16k;
+    shield_ban_zone querybudget:1m;
+--- config
+    location /m { shield_ban_status querybudget; }
+--- request eval
+"GET /m?format=prometheus&x=" . ("a" x 8173)
+--- error_code: 400
+
+=== TEST 61: HTAB in quoted Accept extension
+--- http_config
+    shield_ban_zone quotedtab:1m;
+--- config
+    location /m {
+        shield_ban_status quotedtab;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers eval
+"Accept: application/openmetrics-text;q=1;x=\"a\tb\""
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200
+
+=== TEST 62: escaped HTAB in quoted Accept extension
+--- http_config
+    shield_ban_zone quotedtab:1m;
+--- config
+    location /m {
+        shield_ban_status quotedtab;
+        shield_ban_status_format prometheus;
+    }
+--- more_headers eval
+"Accept: application/openmetrics-text;q=1;x=\"a\\\tb\""
+--- request
+GET /m
+--- response_body_like: \A# HELP shield_hits .*# EOF\n\z
+--- response_headers
+Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
+Vary: Accept
+--- error_code: 200

@@ -30,6 +30,7 @@
 #include "ngx_http_shield_patterns.h"
 #include "ngx_http_shield_scan.h"
 #include "ngx_http_shield_ban.h"
+#include "ngx_http_shield_negotiate.h"
 #include "ngx_shield_probe_hooks.h"
 
 #ifdef NGX_TEST_HARNESS
@@ -40,9 +41,6 @@
 #define NGX_HTTP_SHIELD_OFF     0
 #define NGX_HTTP_SHIELD_DETECT  1
 #define NGX_HTTP_SHIELD_BLOCK   2
-
-#define NGX_HTTP_SHIELD_STATUS_JSON        0
-#define NGX_HTTP_SHIELD_STATUS_PROMETHEUS  1
 
 /* Maximum number of comma-separated ranges tolerated in a Range header before
  * it is treated as an Apache-Killer (CVE-2011-3192) attempt. */
@@ -100,7 +98,7 @@ typedef struct {
     ngx_array_t *ban_trusted; /* ngx_cidr_t, trusted proxies; NULL = none     */
 
     ngx_shm_zone_t *status_zone; /* zone shield_status reports on; NULL = off */
-    ngx_uint_t   status_format; /* JSON (default) or OpenMetrics             */
+    ngx_uint_t   status_format; /* JSON (default) or metrics                  */
 
 #ifdef NGX_TEST_HARNESS
     ngx_shm_zone_t *probe_zone; /* zone the shield_probe endpoint reports on  */
@@ -2721,7 +2719,12 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
     u_char                      *buf, *p;
     ngx_int_t                    rc;
     ngx_buf_t                   *b;
-    ngx_uint_t                   capacity;
+    ngx_uint_t                   capacity, format, items, n;
+    size_t                       accept_bytes;
+    ngx_int_t                    om_q, plain_q;
+    ngx_flag_t                   openmetrics;
+    ngx_list_part_t             *part;
+    ngx_table_elt_t             *headers, *vary;
     ngx_str_t                    body;
     ngx_chain_t                  out;
     ngx_http_shield_ban_ctx_t   *ctx;
@@ -2738,6 +2741,48 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
     }
 
     slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
+    format = slcf->status_format;
+    if (ngx_http_shield_query_format(&r->args, &format) != NGX_OK) {
+        return NGX_HTTP_BAD_REQUEST;
+    }
+    openmetrics = 0;
+    if (format == NGX_HTTP_SHIELD_STATUS_PROMETHEUS) {
+        om_q = plain_q = 0;
+        items = 0;
+        accept_bytes = 0;
+        part = &r->headers_in.headers.part;
+        headers = part->elts;
+        for (n = 0; /* void */; n++) {
+            if (n >= part->nelts) {
+                if (part->next == NULL) {
+                    break;
+                }
+                part = part->next;
+                headers = part->elts;
+                n = 0;
+            }
+            if (headers[n].key.len != 6
+                || ngx_strncasecmp(headers[n].key.data,
+                                   (u_char *) "Accept", 6) != 0)
+            {
+                continue;
+            }
+            if (headers[n].value.len
+                > NGX_SHIELD_NEGOTIATE_BYTES - accept_bytes)
+            {
+                om_q = 0;
+                break;
+            }
+            accept_bytes += headers[n].value.len;
+            if (ngx_http_shield_accept(&headers[n].value, &items,
+                                        &om_q, &plain_q) != NGX_OK)
+            {
+                om_q = 0;
+                break;
+            }
+        }
+        openmetrics = om_q > 0 && om_q >= plain_q;
+    }
     ctx = slcf->status_zone->data;
 
     /* Stock nginx initializes or reuses the shared zone in the master before
@@ -2754,17 +2799,22 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    if (slcf->status_format == NGX_HTTP_SHIELD_STATUS_PROMETHEUS) {
+    if (format == NGX_HTTP_SHIELD_STATUS_PROMETHEUS) {
         if (ngx_http_shield_status_prometheus(r->pool,
                                              &slcf->status_zone->shm.name,
                                              &snapshot,
-                                             &body) != NGX_OK)
+                                             &body, openmetrics) != NGX_OK)
         {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        ngx_str_set(&r->headers_out.content_type,
-                    "application/openmetrics-text; version=1.0.0; "
-                    "charset=utf-8");
+        if (openmetrics) {
+            ngx_str_set(&r->headers_out.content_type,
+                        "application/openmetrics-text; version=1.0.0; "
+                        "charset=utf-8");
+        } else {
+            ngx_str_set(&r->headers_out.content_type,
+                        "text/plain; version=0.0.4; charset=utf-8");
+        }
     } else {
         if (snapshot.banned != 0) {
             if (ngx_http_shield_status_snapshot_alloc(r->pool,
@@ -2806,6 +2856,15 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
 
     buf = body.data;
     p = buf + body.len;
+
+    vary = ngx_list_push(&r->headers_out.headers);
+    if (vary == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    vary->hash = 1;
+    vary->next = NULL;
+    ngx_str_set(&vary->key, "Vary");
+    ngx_str_set(&vary->value, "Accept");
 
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = p - buf;

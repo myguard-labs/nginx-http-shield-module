@@ -1,5 +1,10 @@
 Changes with the next minor release
 
+    *) Allow ?format=json|prometheus to override the status format. Metrics
+       now default to Prometheus 0.0.4; OpenMetrics 1.0 requires an explicit
+       acceptable application/openmetrics-text Accept header. Successful
+       status responses include Vary: Accept. JSON remains the default.
+
     *) Split category detections by detect and block mode in status output.
 
     *) Add inspected-request, active-ban refusal, eviction and allocation-failure

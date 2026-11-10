@@ -176,7 +176,7 @@ http {
 | `shield_ban_zone` | http | — | Define a shared-memory zone `name:size` (e.g. `shield:10m`) for the ban list. See [Repeat-offender banning](#repeat-offender-banning). |
 | `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. Optional `key=peer\|forwarded` and repeatable `trusted=<addr\|CIDR>` — see [Banning behind a proxy](#banning-behind-a-proxy). |
 | `shield_ban_status` | location | — | `<zone>` — serve a status report for that ban zone: per-category hit totals, blocked/ban counts, and the current ban list. See [Status endpoint](#status-endpoint). |
-| `shield_ban_status_format` | location | `json` | `json` or `prometheus` — select JSON or OpenMetrics 1.0 output. Inherited by nested locations. |
+| `shield_ban_status_format` | location | `json` | `json` or `prometheus` — select JSON or negotiated metrics output. Inherited by nested locations. |
 
 ### Repeat-offender banning
 
@@ -349,8 +349,30 @@ location /shield-metrics {
 }
 ```
 
-The response uses OpenMetrics 1.0 (`application/openmetrics-text;
-version=1.0.0; charset=utf-8`) and ends with `# EOF`. It exposes
+`?format=json` or `?format=prometheus` overrides the directive for one request.
+Names and values are case-sensitive raw query bytes; empty, invalid or duplicate
+`format` arguments return 400. Unrelated arguments are ignored. Query strings
+over 8192 bytes return 400. JSON remains the default and ignores `Accept`.
+
+Metrics use Prometheus 0.0.4 (`text/plain; version=0.0.4; charset=utf-8`) unless
+`Accept` explicitly includes `application/openmetrics-text` with a valid positive
+`q` value at least as high as `text/plain` (OpenMetrics wins ties). Wildcards do
+not opt into OpenMetrics. OpenMetrics 1.0 responses use
+`application/openmetrics-text; version=1.0.0; charset=utf-8` and end with `# EOF`;
+0.0.4 responses omit that marker. Successful JSON, GET and HEAD responses include
+`Vary: Accept`.
+
+Negotiation accepts media types and parameter names without case sensitivity,
+optional whitespace, quoted media parameters, `version=1.0.0` for OpenMetrics,
+`version=0.0.4` for text, and `charset=utf-8`. Unknown or unsupported media
+parameters exclude that representation. Quality values have at most three
+decimal places and range from 0 to 1; quoted or duplicate `q` values are invalid.
+Malformed Accept values fall back to 0.0.4, as do values exceeding 8192 combined
+bytes, 32 media ranges or 16 parameters per range. Repeated Accept fields share
+these budgets and use the highest quality for each supported media type.
+Valid parameter extensions following `q` are ignored.
+
+Both metrics formats expose
 `shield_hits_total{zone="shield",category="sqli"}` for every category, including
 zeroes, `shield_detections_total{zone,category,mode}` for both `detect` and
 `block`, `shield_source_hits_total{zone,category,source}` for each fixed source,
@@ -362,8 +384,9 @@ and `shield_banned_clients`, each labeled by `zone`. It also exposes
 JSON fields above. The first four additions are counters; the byte families are
 gauges. The first three original families are
 counters; the last two are gauges. Counter `HELP` and `TYPE` declarations use
-the family name without `_total`, as required by OpenMetrics. Zone label values
-escape quotes, backslashes and line feeds. Source labels match the detection log;
+the family name without `_total` for OpenMetrics and with it for 0.0.4. Zone
+label values escape quotes, backslashes and line feeds. Source labels match
+the detection log;
 query-string detections use `uri` because the request target is scanned together.
 
 `shield_banned_clients` counts only unexpired bans; `shield_zone_nodes` also

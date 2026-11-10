@@ -76,7 +76,8 @@ STATUS_BIN="$SCRIPT_DIR/status_unit"
 ATOMIC_BIN="$SCRIPT_DIR/atomic_width_unit"
 CONFIG_BIN="$SCRIPT_DIR/atomic_config_unit"
 BODY_BIN="$SCRIPT_DIR/body_unit"
-trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1" "$BODY_BIN"' EXIT
+NEGOTIATE_BIN="$SCRIPT_DIR/negotiate_unit"
+trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1" "$BODY_BIN" "$NEGOTIATE_BIN"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -86,6 +87,14 @@ trap 'exit 143' TERM
     -o "$STATUS_BIN" \
     "$SCRIPT_DIR/status_unit.c" "$NGX_SRC/src/core/ngx_string.c"
 "$STATUS_BIN"
+python3 "$REPO_ROOT/ci/tests/test_module_dependencies.py" "$NGX_SRC/objs/Makefile"
+# Exercise the bounded status-only query and Accept parser.
+# shellcheck disable=SC2086
+"$CC" -g -O0 -Wall -Wextra -Wno-unused-parameter $EXTRA_CFLAGS $NGX_INCS \
+    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -o "$NEGOTIATE_BIN" \
+    "$SCRIPT_DIR/negotiate_unit.c" "$NGX_SRC/src/core/ngx_string.c"
+"$NEGOTIATE_BIN"
 # Exercise nginx's Windows macro and LONG32 returns on this host.
 # shellcheck disable=SC2086
 "$CC" -g -O0 -Wall -Wextra -Werror $EXTRA_CFLAGS $NGX_INCS \

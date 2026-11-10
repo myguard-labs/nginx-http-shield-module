@@ -60,7 +60,7 @@ render_metrics(ngx_pool_t *pool, ngx_str_t *zone, uint64_t *hits,
     for (ngx_uint_t i = 0; i < NGX_HTTP_SHIELD_BODY_REASONS; i++) {
         snapshot.body_uninspected[i] = extra_value;
     }
-    return ngx_http_shield_status_prometheus(pool, zone, &snapshot, body);
+    return ngx_http_shield_status_prometheus(pool, zone, &snapshot, body, 1);
 }
 
 static int fail_alloc;
@@ -252,6 +252,51 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
         APPEND("},\"banned\":[]}");
     }
 #undef APPEND
+    if (prometheus == 2) {
+        static const char *counters[] = {
+            "shield_hits", "shield_blocked", "shield_bans", "shield_requests",
+            "shield_ban_refusals", "shield_zone_evictions",
+            "shield_zone_alloc_failures", "shield_detections",
+            "shield_source_hits", "shield_body_uninspected"
+        };
+        char projected[65536], *line, *next, *name_end;
+        size_t offset, length, prefix, j;
+
+        /* Project the independent literal OM golden, never the production
+         * descriptor table, to 0.0.4 metadata and framing. */
+        offset = 0;
+        for (line = expected; *line; line = next + 1) {
+            next = strchr(line, '\n');
+            assert(next != NULL);
+            if (strncmp(line, "# EOF\n", 6) == 0) { break; }
+            length = (size_t) (next + 1 - line);
+            prefix = strncmp(line, "# HELP ", 7) == 0 ? 7
+                     : strncmp(line, "# TYPE ", 7) == 0 ? 7 : 0;
+            name_end = prefix ? strchr(line + prefix, ' ') : NULL;
+            for (j = 0; name_end != NULL
+                        && j < sizeof(counters) / sizeof(counters[0]); j++)
+            {
+                if ((size_t) (name_end - line) == prefix + strlen(counters[j])
+                    && memcmp(line + prefix, counters[j],
+                              strlen(counters[j])) == 0)
+                {
+                    size_t before = (size_t) (name_end - line);
+                    assert(offset + length + 6 < sizeof(projected));
+                    memcpy(projected + offset, line, before);
+                    memcpy(projected + offset + before, "_total", 6);
+                    offset += before + 6;
+                    line = name_end;
+                    length -= before;
+                    break;
+                }
+            }
+            assert(offset + length < sizeof(projected));
+            memcpy(projected + offset, line, length);
+            offset += length;
+        }
+        memcpy(expected, projected, offset);
+        used = offset;
+    }
     assert(body->len == used);
     assert(memcmp(body->data, expected, used) == 0);
 }
@@ -315,7 +360,7 @@ main(void)
                         "\"encoding\":88,\"error\":99}") != NULL);
     free(text);
     free(allocation);
-    assert(ngx_http_shield_status_prometheus(NULL, &zone, &snapshot, &body) == NGX_OK);
+    assert(ngx_http_shield_status_prometheus(NULL, &zone, &snapshot, &body, 1) == NGX_OK);
     text = malloc(body.len + 1);
     assert(text != NULL);
     memcpy(text, body.data, body.len);
@@ -332,6 +377,21 @@ main(void)
     free(text);
     free(allocation);
     allocations = 0;
+
+    /* Prometheus metadata uses sample names; OpenMetrics keeps family names
+     * and EOF. These assertions do not read the production descriptor table. */
+    assert(ngx_http_shield_status_prometheus(NULL, &zone, &snapshot, &body, 0)
+           == NGX_OK);
+    text = malloc(body.len + 1);
+    assert(text != NULL);
+    memcpy(text, body.data, body.len);
+    text[body.len] = '\0';
+    assert(strstr(text, "# HELP shield_hits_total ") != NULL);
+    assert(strstr(text, "# TYPE shield_hits_total counter\n") != NULL);
+    assert(strstr(text, "# TYPE shield_zone_nodes gauge\n") != NULL);
+    assert(strstr(text, "# EOF") == NULL);
+    free(text);
+    free(allocation);
 
     /* Exact bytes for zero and maximum values, with escaping in both formats. */
     ngx_memzero(&snapshot, sizeof(snapshot));
@@ -362,6 +422,35 @@ main(void)
                UINT64_MAX, (ngx_uint_t) -1, (ngx_uint_t) -1, &body) == NGX_OK);
     check_golden(&body, 1, 1);
     free(allocation);
+    /* The same maximum snapshot must fit the larger 0.0.4 metadata too. */
+    for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+        for (ngx_uint_t j = 0; j < NGX_HTTP_SHIELD_SOURCE_COUNT; j++) {
+            snapshot.source_hits[i][j] = UINT64_MAX;
+        }
+    }
+    snapshot.banned = (ngx_uint_t) -1;
+    assert(ngx_http_shield_status_prometheus(NULL, &zone, &snapshot, &body, 0)
+           == NGX_OK);
+    check_golden(&body, 2, 1);
+    free(allocation);
+    {
+        u_char long_label[4096];
+        ngx_str_t long_zone;
+        const char tail[] = "reason=\"error\"} 18446744073709551615\n";
+
+        /* Every label byte expands; numeric widths and the final sample are
+         * maximal, so neither escaping nor counters leave hidden slack. */
+        memset(long_label, '\\', sizeof(long_label));
+        long_zone.data = long_label;
+        long_zone.len = sizeof(long_label);
+        assert(ngx_http_shield_status_prometheus(NULL, &long_zone, &snapshot,
+                                                &body, 0) == NGX_OK);
+        assert(body.data + body.len < (u_char *) allocation + allocation_size);
+        assert(body.len >= sizeof(tail) - 1);
+        assert(memcmp(body.data + body.len - (sizeof(tail) - 1), tail,
+                      sizeof(tail) - 1) == 0);
+        free(allocation);
+    }
     extra_value = 0;
     ngx_memzero(hits, sizeof(hits));
     allocations = 0;
