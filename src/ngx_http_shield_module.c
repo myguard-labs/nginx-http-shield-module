@@ -71,6 +71,8 @@ typedef char ngx_http_shield_counters_cover_categories[
 typedef struct {
     ngx_http_shield_automata_t  automata;
     ngx_uint_t                 metric_zones;
+    ngx_shm_zone_t            *stats_zone;
+    ngx_array_t               *ban_references; /* ban/probe kind validation */
 } ngx_http_shield_main_conf_t;
 
 
@@ -177,6 +179,12 @@ static void ngx_http_shield_ban_record(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf);
 static ngx_int_t ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone,
     void *data);
+static char *ngx_http_shield_stats_zone(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static char *ngx_http_shield_ban_reference(ngx_conf_t *cf,
+    ngx_shm_zone_t *zone);
+static char *ngx_http_shield_zone_marker(ngx_conf_t *cf,
+    ngx_http_shield_ban_ctx_t *ctx);
 static char *ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 #ifdef NGX_TEST_HARNESS
@@ -244,7 +252,44 @@ ngx_http_shield_count_request(ngx_http_request_t *r,
     bit = refused ? 2 : 1;
     if (!(state & bit)) {
         *v = ngx_http_shield_request_marks[state | bit];
-        ngx_http_shield_ban_count_request(ctx, refused);
+        if (ctx->stats_only) {
+            ngx_atomic_t *counter;
+            counter = refused ? &ctx->stats->ban_refused
+                              : &ctx->stats->inspected;
+            (void) ngx_atomic_fetch_add(counter, 1);
+        } else {
+            ngx_http_shield_ban_count_request(ctx, refused);
+        }
+    }
+}
+
+
+static void
+ngx_http_shield_stats_hit(ngx_http_shield_ban_ctx_t *ctx,
+    ngx_http_shield_hit_t *hit, ngx_uint_t blocked)
+{
+    ngx_uint_t i;
+    ngx_atomic_t *counter;
+
+    if (hit->cat < NGX_HTTP_SHIELD_BAN_NCOUNTERS) {
+        counter = &ctx->stats->cat_hits[hit->cat];
+        (void) ngx_atomic_fetch_add(counter, 1);
+        counter = blocked ? &ctx->stats->cat_block[hit->cat]
+                          : &ctx->stats->cat_detect[hit->cat];
+        (void) ngx_atomic_fetch_add(counter, 1);
+        for (i = 0; hit->source != NULL && i < NGX_HTTP_SHIELD_SOURCE_COUNT;
+             i++)
+        {
+            if (ngx_strcmp(hit->source, ngx_http_shield_source_name(i)) == 0) {
+                counter = &ctx->stats->source_hits[hit->cat][i];
+                (void) ngx_atomic_fetch_add(counter, 1);
+                break;
+            }
+        }
+    }
+    if (blocked) {
+        counter = &ctx->stats->blocked;
+        (void) ngx_atomic_fetch_add(counter, 1);
     }
 }
 
@@ -290,6 +335,13 @@ static ngx_command_t  ngx_http_shield_commands[] = {
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_http_shield_log,
       NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("shield_stats_zone"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2,
+      ngx_http_shield_stats_zone,
+      NGX_HTTP_MAIN_CONF_OFFSET,
       0,
       NULL },
 
@@ -375,6 +427,16 @@ ngx_module_t  ngx_http_shield_module = {
 
 /* ---- phase handler ----------------------------------------------------- */
 
+static ngx_http_shield_ban_ctx_t *
+ngx_http_shield_stats_ctx(ngx_http_request_t *r)
+{
+    ngx_http_shield_main_conf_t *smcf;
+
+    smcf = ngx_http_get_module_main_conf(r, ngx_http_shield_module);
+    return smcf->stats_zone != NULL ? smcf->stats_zone->data : NULL;
+}
+
+
 static ngx_int_t
 ngx_http_shield_handler(ngx_http_request_t *r)
 {
@@ -408,6 +470,10 @@ ngx_http_shield_handler(ngx_http_request_t *r)
     if (slcf->ban_zone != NULL && ngx_http_shield_ban_is_banned(r, slcf)) {
         ban_ctx = slcf->ban_zone->data;
         ngx_http_shield_count_request(r, ban_ctx, 1);
+        ban_ctx = ngx_http_shield_stats_ctx(r);
+        if (ban_ctx != NULL) {
+            ngx_http_shield_count_request(r, ban_ctx, 1);
+        }
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
                       "shield: banned request from %V, status=%ui",
                       &r->connection->addr_text, slcf->status);
@@ -416,6 +482,11 @@ ngx_http_shield_handler(ngx_http_request_t *r)
 
     if (slcf->ban_zone != NULL) {
         ban_ctx = slcf->ban_zone->data;
+        ngx_http_shield_count_request(r, ban_ctx, 0);
+    }
+
+    ban_ctx = ngx_http_shield_stats_ctx(r);
+    if (ban_ctx != NULL) {
         ngx_http_shield_count_request(r, ban_ctx, 0);
     }
 
@@ -500,6 +571,14 @@ static ngx_int_t
 ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
     ngx_http_shield_hit_t *hit)
 {
+    ngx_http_shield_ban_ctx_t *stats;
+
+    stats = ngx_http_shield_stats_ctx(r);
+    if (stats != NULL) {
+        ngx_http_shield_stats_hit(stats, hit,
+                                  slcf->mode == NGX_HTTP_SHIELD_BLOCK);
+    }
+
     /* Count this hit toward a ban. Done for BOTH block and detect modes: a
      * detect-mode deployment still wants to escalate a persistent attacker to a
      * hard ban. Records under the shm lock; a triggered ban takes effect on the
@@ -507,10 +586,8 @@ ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
     if (slcf->ban_zone != NULL) {
         ngx_http_shield_ban_record(r, slcf);
 
-        /* Count the hit for shield_ban_status. Same zone, so this rides the ban
-         * zone's existence: without shield_ban there is no shared memory to
-         * count into, and per-category totals are unavailable. Counted for
-         * detect mode too -- `blocked` distinguishes the two. */
+        /* Keep the existing per-ban-zone counters independent of the optional
+         * global stats zone. Counted in detect mode too. */
         ngx_http_shield_ban_count(r, slcf, hit);
     }
 
@@ -1453,10 +1530,10 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
     ngx_buf_t                  *b;
     ngx_list_part_t            *part;
     ngx_table_elt_t            *h;
-    ngx_http_shield_ban_ctx_t  *ctx;
+    ngx_http_shield_ban_ctx_t  *ctx, *stats;
     ngx_atomic_t               *counter;
     ngx_http_variable_value_t  *mark;
-    ngx_uint_t                  state;
+    ngx_uint_t                  state, zone;
 
     if (ngx_http_shield_collect_body(r, slcf->max_body, &body) != NGX_OK) {
         /* Allocation or temp-file read failure: the body was not scanned. */
@@ -1482,11 +1559,8 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
                                 hit);
 
 account:
-    if (slcf->ban_zone == NULL) {
-        return rc;
-    }
-    ctx = slcf->ban_zone->data;
-    if (ctx->sh == NULL) {
+    stats = ngx_http_shield_stats_ctx(r);
+    if (slcf->ban_zone == NULL && stats == NULL) {
         return rc;
     }
     if (rc == NGX_ERROR) {
@@ -1565,14 +1639,24 @@ account:
     return rc;
 
 count:
-    mark = &r->main->variables[ctx->request_index];
-    state = ngx_http_shield_mark_state(mark);
-    if (state & 4) {
-        return rc;
+    for (zone = 0; zone < 2; zone++) {
+        ctx = zone == 0 ? stats
+                       : (slcf->ban_zone != NULL ? slcf->ban_zone->data : NULL);
+        if (ctx == NULL || (ctx->stats_only ? ctx->stats == NULL
+                                           : ctx->sh == NULL))
+        {
+            continue;
+        }
+        mark = &r->main->variables[ctx->request_index];
+        state = ngx_http_shield_mark_state(mark);
+        if (state & 4) {
+            continue;
+        }
+        *mark = ngx_http_shield_request_marks[state | 4];
+        counter = ctx->stats_only ? &ctx->stats->body_uninspected[reason]
+                                 : &ctx->sh->body_uninspected[reason];
+        (void) ngx_atomic_fetch_add(counter, 1);
     }
-    *mark = ngx_http_shield_request_marks[state | 4];
-    counter = &ctx->sh->body_uninspected[reason];
-    (void) ngx_atomic_fetch_add(counter, 1);
     return rc;
 }
 
@@ -2083,6 +2167,13 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ctx = shm_zone->data;
 
+    if (octx && octx->stats_only != ctx->stats_only) {
+        ngx_log_error(NGX_LOG_EMERG, shm_zone->shm.log, 0,
+                      "shield zone \"%V\" cannot change kind on reload",
+                      &shm_zone->shm.name);
+        return NGX_ERROR;
+    }
+
     if (octx) {
         /* Reload: inherit the existing shared segment. */
         ctx->sh = octx->sh;
@@ -2163,11 +2254,6 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_shm_zone_t             *shm_zone;
     ngx_http_shield_ban_ctx_t  *ctx;
 
-    ngx_http_variable_t        *variable;
-    ngx_http_shield_main_conf_t *smcf;
-    u_char marker_name[sizeof("__shield_metric_zone_") - 1 + NGX_INT_T_LEN];
-    ngx_str_t marker;
-
     if (ngx_http_shield_ban_atomic_required(cf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -2218,6 +2304,25 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    if (ngx_http_shield_zone_marker(cf, ctx) != NGX_CONF_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    shm_zone->init = ngx_http_shield_ban_init_zone;
+    shm_zone->data = ctx;
+
+    return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_http_shield_zone_marker(ngx_conf_t *cf, ngx_http_shield_ban_ctx_t *ctx)
+{
+    ngx_http_variable_t        *variable;
+    ngx_http_shield_main_conf_t *smcf;
+    u_char marker_name[sizeof("__shield_metric_zone_") - 1 + NGX_INT_T_LEN];
+    ngx_str_t marker;
+
     /* Reserve one non-changeable, non-hashed slot per zone. It adds only
      * sizeof(ngx_http_variable_value_t) bytes to core's existing per-request
      * allocation and is never reset when r->ctx is cleared on a redirect. */
@@ -2242,9 +2347,108 @@ ngx_http_shield_ban_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
     smcf->metric_zones++;
 
-    shm_zone->init = ngx_http_shield_ban_init_zone;
-    shm_zone->data = ctx;
+    return NGX_CONF_OK;
+}
 
+
+static ngx_int_t
+ngx_http_shield_stats_init_zone(ngx_shm_zone_t *zone, void *data)
+{
+    ngx_http_shield_ban_ctx_t *old = data;
+    ngx_http_shield_ban_ctx_t *ctx = zone->data;
+
+    if (old != NULL) {
+        if (!old->stats_only) {
+            ngx_log_error(NGX_LOG_EMERG, zone->shm.log, 0,
+                          "shield zone \"%V\" cannot change kind on reload",
+                          &zone->shm.name);
+            return NGX_ERROR;
+        }
+        ctx->stats = old->stats;
+        ctx->shpool = old->shpool;
+        return NGX_OK;
+    }
+    ctx->shpool = (ngx_slab_pool_t *) zone->shm.addr;
+    if (zone->shm.exists) {
+        ctx->stats = ctx->shpool->data;
+        return NGX_OK;
+    }
+    ctx->stats = ngx_slab_calloc(ctx->shpool, sizeof(*ctx->stats));
+    if (ctx->stats == NULL) {
+        return NGX_ERROR;
+    }
+    ctx->shpool->data = ctx->stats;
+    return NGX_OK;
+}
+
+
+static char *
+ngx_http_shield_stats_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_shield_main_conf_t *smcf = conf;
+    ngx_http_shield_ban_ctx_t   *ctx;
+    ngx_str_t                 *value = cf->args->elts;
+    ngx_shm_zone_t            *zone;
+    ssize_t                    size;
+
+#if !(NGX_HAVE_ATOMIC_OPS)
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                      "shield_stats_zone requires native atomic operations");
+    return NGX_CONF_ERROR;
+#endif
+    if (smcf->stats_zone != NULL) {
+        return "is duplicate";
+    }
+    size = ngx_parse_size(&value[2]);
+    if (value[1].len == 0 || size == NGX_ERROR
+        || size < (ssize_t) (8 * ngx_pagesize))
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                          "invalid shield_stats_zone name or size "
+                          "(minimum 8 pages)");
+        return NGX_CONF_ERROR;
+    }
+    zone = ngx_shared_memory_add(cf, &value[1], size, &ngx_http_shield_module);
+    if (zone == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    if (zone->data != NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                          "shield zone \"%V\" is already defined", &value[1]);
+        return NGX_CONF_ERROR;
+    }
+    ctx = ngx_pcalloc(cf->pool, sizeof(*ctx));
+    if (ctx == NULL || ngx_http_shield_zone_marker(cf, ctx) != NGX_CONF_OK) {
+        return NGX_CONF_ERROR;
+    }
+    ctx->stats_only = 1;
+    zone->data = ctx;
+    zone->init = ngx_http_shield_stats_init_zone;
+    smcf->stats_zone = zone;
+    return NGX_CONF_OK;
+}
+
+
+/* Delay kind checks until postconfiguration so references may precede zones. */
+static char *
+ngx_http_shield_ban_reference(ngx_conf_t *cf, ngx_shm_zone_t *zone)
+{
+    ngx_http_shield_main_conf_t *smcf;
+    ngx_shm_zone_t            **reference;
+
+    smcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_shield_module);
+    if (smcf->ban_references == NULL) {
+        smcf->ban_references = ngx_array_create(cf->pool, 1,
+                                               sizeof(ngx_shm_zone_t *));
+        if (smcf->ban_references == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+    reference = ngx_array_push(smcf->ban_references);
+    if (reference == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    *reference = zone;
     return NGX_CONF_OK;
 }
 
@@ -2287,6 +2491,9 @@ ngx_http_shield_probe(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    if (ngx_http_shield_ban_reference(cf, slcf->probe_zone) != NGX_CONF_OK) {
+        return NGX_CONF_ERROR;
+    }
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_http_shield_probe_handler;
 
@@ -2548,6 +2755,9 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    if (ngx_http_shield_ban_reference(cf, shm_zone) != NGX_CONF_OK) {
+        return NGX_CONF_ERROR;
+    }
     slcf->ban_zone = shm_zone;
     slcf->ban_count = (ngx_uint_t) n;
     slcf->ban_window = window;
@@ -2580,7 +2790,7 @@ ngx_http_shield_ban(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  * invite trusting it as if it were access control.
  *
  * The zone is attached with size 0, nginx's "bind to an already-declared zone"
- * form; declaring it stays shield_ban_zone's job.
+ * form; shield_ban_zone or shield_stats_zone declares the storage.
  */
 static char *
 ngx_http_shield_ban_status(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
@@ -2620,6 +2830,37 @@ ngx_http_shield_status_snapshot(ngx_http_shield_ban_ctx_t *ctx,
     ngx_int_t    copy_rc, rc;
     ngx_uint_t   banned, nodes;
     ngx_queue_t *q;
+
+    if (ctx->stats_only) {
+        ngx_uint_t i, j;
+        for (i = 0; i < NGX_HTTP_SHIELD_BAN_NCOUNTERS; i++) {
+            snapshot->cat_hits[i] =
+                ngx_http_shield_ban_counter_value(&ctx->stats->cat_hits[i]);
+            snapshot->cat_detect[i] =
+                ngx_http_shield_ban_counter_value(&ctx->stats->cat_detect[i]);
+            snapshot->cat_block[i] =
+                ngx_http_shield_ban_counter_value(&ctx->stats->cat_block[i]);
+            for (j = 0; j < NGX_HTTP_SHIELD_SOURCE_COUNT; j++) {
+                snapshot->source_hits[i][j] = ngx_http_shield_ban_counter_value(
+                                               &ctx->stats->source_hits[i][j]);
+            }
+        }
+        snapshot->blocked =
+            ngx_http_shield_ban_counter_value(&ctx->stats->blocked);
+        snapshot->inspected =
+            ngx_http_shield_ban_counter_value(&ctx->stats->inspected);
+        snapshot->ban_refused =
+            ngx_http_shield_ban_counter_value(&ctx->stats->ban_refused);
+        for (i = 0; i < NGX_HTTP_SHIELD_BODY_REASONS; i++) {
+            snapshot->body_uninspected[i] =
+                ngx_http_shield_ban_counter_value(
+                    &ctx->stats->body_uninspected[i]);
+        }
+        ngx_shmtx_lock(&ctx->shpool->mutex);
+        rc = ngx_http_shield_status_slab_usage(ctx->shpool, snapshot);
+        ngx_shmtx_unlock(&ctx->shpool->mutex);
+        return rc;
+    }
 
     rc = NGX_OK;
     banned = 0;
@@ -2788,7 +3029,9 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
     /* Stock nginx initializes or reuses the shared zone in the master before
      * workers serve requests and rejects a failed candidate cycle. Keep these
      * pointer checks defensive; return unavailable if state is absent. */
-    if (ctx == NULL || ctx->sh == NULL || ctx->shpool == NULL) {
+    if (ctx == NULL || ctx->shpool == NULL
+        || (ctx->stats_only ? ctx->stats == NULL : ctx->sh == NULL))
+    {
         return NGX_HTTP_SERVICE_UNAVAILABLE;
     }
 
@@ -2905,6 +3148,20 @@ ngx_http_shield_init(ngx_conf_t *cf)
                                                ngx_http_shield_module);
     if (smcf == NULL) {
         return NGX_ERROR;
+    }
+
+    if (smcf->ban_references != NULL) {
+        ngx_uint_t i;
+        ngx_shm_zone_t **zones = smcf->ban_references->elts;
+        for (i = 0; i < smcf->ban_references->nelts; i++) {
+            ngx_http_shield_ban_ctx_t *ctx = zones[i]->data;
+            if (ctx != NULL && ctx->stats_only) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                  "shield_ban/probe requires a ban zone: %V",
+                                  &zones[i]->shm.name);
+                return NGX_ERROR;
+            }
+        }
     }
 
     /* Build both automatons once, here, from the compiled-in tables. Failure

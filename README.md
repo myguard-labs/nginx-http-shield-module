@@ -173,9 +173,10 @@ http {
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus the structural checks `httpoxy`, `range_dos`, `ctrl_char` and `dotfile`). A child block that sets `shield_skip` **replaces** the inherited list wholesale (masks do not merge); a child that omits it inherits the parent's. An empty child cannot clear an inherited skip — to un-skip, re-state the categories you still want disabled. |
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
+| `shield_stats_zone` | http | — | `<name> <size>`; see below. |
 | `shield_ban_zone` | http | — | Define a shared-memory zone `name:size` (e.g. `shield:10m`) for the ban list. See [Repeat-offender banning](#repeat-offender-banning). |
 | `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. Optional `key=peer\|forwarded` and repeatable `trusted=<addr\|CIDR>` — see [Banning behind a proxy](#banning-behind-a-proxy). |
-| `shield_ban_status` | location | — | `<zone>` — serve a status report for that ban zone: per-category hit totals, blocked/ban counts, and the current ban list. See [Status endpoint](#status-endpoint). |
+| `shield_ban_status` | location | — | Serve a ban or stats zone. |
 | `shield_ban_status_format` | location | `json` | `json` or `prometheus` — select JSON or negotiated metrics output. Inherited by nested locations. |
 
 ### Repeat-offender banning
@@ -279,6 +280,40 @@ it rewrites the connection address, and the default `key=peer` then picks up the
 result with no shield configuration at all.
 
 ### Status endpoint
+
+For block-only deployments, configure one optional counters-only zone in
+`http {}` and reference it from the same status endpoint:
+
+```nginx
+shield_stats_zone metrics 32k;
+server {
+    shield block;
+    location / { proxy_pass http://backend; }
+    location = /metrics {
+        shield off;
+        shield_ban_status metrics;
+        shield_ban_status_format prometheus;
+        allow 127.0.0.1;
+        deny all;
+    }
+}
+```
+
+The zone counts all shield-enabled locations in the HTTP configuration. With
+ban zones present, each zone keeps its own counters; the global stats zone counts
+each request once even when it visits multiple ban zones. `shield off` requests
+are excluded. It requires native atomics and at least 8 system pages (32k on a
+4k-page host). Duplicate stats declarations, name collisions, using a stats zone
+with `shield_ban` or the test probe, and changing a zone's kind while keeping its
+size on reload are configuration errors. A reload with the same kind and size
+retains counters. Changing the size creates fresh storage and resets counters;
+that fresh storage may use either kind. Stats storage contains
+no client addresses or ban nodes and performs no per-request allocation or mutex
+operation. Its counters wrap at native atomic width. Scrapes read counters
+independently, so concurrent updates need not produce cross-counter equality.
+Existing metric names and labels are shared with ban zones; ban-specific counters,
+node counts and the JSON ban list are zero/empty, while used/size describe the
+actual shared slab. Do not sum global and per-ban-zone request counts together.
 
 `shield_ban_status <zone>;` serves a JSON report for a ban zone:
 

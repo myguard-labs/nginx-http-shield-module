@@ -165,10 +165,26 @@ typedef struct {
 #endif
 } ngx_http_shield_ban_shctx_t;
 
+/* Counters-only zones never contain client nodes or the ban shared layout.
+ * Every access, including scrape reads, uses native atomic operations. */
+typedef struct {
+    ngx_atomic_t cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    ngx_atomic_t cat_detect[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    ngx_atomic_t cat_block[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    ngx_atomic_t source_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS]
+                            [NGX_HTTP_SHIELD_SOURCE_COUNT];
+    ngx_atomic_t blocked;
+    ngx_atomic_t inspected;
+    ngx_atomic_t ban_refused;
+    ngx_atomic_t body_uninspected[NGX_HTTP_SHIELD_BODY_REASONS];
+} ngx_http_shield_stats_shctx_t;
+
 typedef struct {
     ngx_http_shield_ban_shctx_t *sh;
     ngx_slab_pool_t             *shpool;
     ngx_int_t                   request_index; /* cycle-owned indexed marker */
+    ngx_flag_t                  stats_only; /* cycle-owned zone kind */
+    ngx_http_shield_stats_shctx_t *stats;
 } ngx_http_shield_ban_ctx_t;
 
 

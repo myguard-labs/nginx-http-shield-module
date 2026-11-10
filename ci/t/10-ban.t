@@ -660,3 +660,16 @@ duplicate "__shield_metric_zone_0" variable
 --- must_die
 --- error_log
 shield metric marker variable is reserved
+
+=== TEST 30: counters-only storage cannot be used as a ban zone
+--- http_config
+    shield_stats_zone stats30 32k;
+--- config
+    location /t {
+        shield block;
+        shield_ban zone=stats30 count=2 window=60s bantime=30s;
+        empty_gif;
+    }
+--- must_die
+--- error_log
+shield_ban/probe requires a ban zone

@@ -62,6 +62,12 @@ main(void)
         assert(last_error != NULL);
         assert(strcmp(last_error,
                       "shield_ban_zone requires native atomic operations") == 0);
+        zone_values[0] = (ngx_str_t) ngx_string("shield_stats_zone");
+        last_error = NULL;
+        assert(ngx_http_shield_stats_zone(&cf, NULL, NULL) == NGX_CONF_ERROR);
+        assert(last_error != NULL);
+        assert(strcmp(last_error,
+                      "shield_stats_zone requires native atomic operations") == 0);
         args.elts = values;
     }
 #endif
