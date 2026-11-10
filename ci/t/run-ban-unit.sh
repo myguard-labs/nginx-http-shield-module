@@ -85,9 +85,10 @@ trap 'exit 143' TERM
     -o "$STATUS_BIN" \
     "$SCRIPT_DIR/status_unit.c" "$NGX_SRC/src/core/ngx_string.c"
 "$STATUS_BIN"
-# Emulate Windows LONG32 atomic returns with 64-bit snapshots on this host.
+# Exercise nginx's Windows macro and LONG32 returns on this host.
 # shellcheck disable=SC2086
-"$CC" -g -O0 -Wall -Wextra $EXTRA_CFLAGS $NGX_INCS \
+"$CC" -g -O0 -Wall -Wextra -Werror $EXTRA_CFLAGS $NGX_INCS \
+    -DNGX_WINDOWS_ATOMIC_HEADER=\"$NGX_SRC/src/os/win32/ngx_atomic.h\" \
     -o "$ATOMIC_BIN" "$SCRIPT_DIR/atomic_width_unit.c"
 "$ATOMIC_BIN"
 # Include the real module's config callbacks, discarding unrelated sections.
@@ -98,7 +99,18 @@ case "$("$CC" --version)" in
     *clang*) CONFIG_GLOBAL_FLAGS="-mllvm -asan-globals=0" ;;
     *) CONFIG_GLOBAL_FLAGS="--param=asan-globals=0" ;;
 esac
+# GCC expands the driver's --coverage after explicit -fno-* flags. Remove
+# only that shorthand; retain sanitizer/strict flags and override gcov below.
+CONFIG_EXTRA_CFLAGS=""
+for config_flag in $EXTRA_CFLAGS; do
+    case "$config_flag" in
+        --coverage | -coverage) ;;
+        *) CONFIG_EXTRA_CFLAGS="$CONFIG_EXTRA_CFLAGS $config_flag" ;;
+    esac
+done
 for capability in 1 0; do
+    CONFIG_PROFILE="$CONFIG_BIN-$capability-atomic_config_unit"
+    rm -f "$CONFIG_PROFILE.gcda" "$CONFIG_PROFILE.gcno"
     CONFIG_CAP_FLAGS=""
     if [ "$capability" = 0 ]; then
         # Select nginx's actual Unix fallback backend on this x64 test host.
@@ -106,12 +118,21 @@ for capability in 1 0; do
             -DNGX_DARWIN_ATOMIC=0 -U__amd64__ -U__amd64"
     fi
     # shellcheck disable=SC2086
+    # This counterfactual whole-module TU uses O2 and a different atomic
+    # backend. Its discarded functions produce gcov line mappings absent
+    # from the O0 native daemon. Keep its behavior/sanitizer checks, but only
+    # the daemon and existing direct-call units populate target coverage.
     "$CC" -g -O2 -Wall -Wextra -Wno-unused-parameter \
         -ffunction-sections -fdata-sections -Wl,--gc-sections \
-        $EXTRA_CFLAGS $CONFIG_GLOBAL_FLAGS $CONFIG_CAP_FLAGS $NGX_INCS \
+        $CONFIG_EXTRA_CFLAGS -fno-profile-arcs -fno-test-coverage \
+        $CONFIG_GLOBAL_FLAGS $CONFIG_CAP_FLAGS $NGX_INCS \
         -I"$NGX_SRC/src/http" -I"$NGX_SRC/src/http/modules" \
         -DEXPECT_ATOMICS="$capability" \
         -o "$CONFIG_BIN-$capability" "$SCRIPT_DIR/atomic_config_unit.c"
     "$CONFIG_BIN-$capability"
+    if [ -e "$CONFIG_PROFILE.gcda" ] || [ -e "$CONFIG_PROFILE.gcno" ]; then
+        echo "ERROR: config harness polluted native daemon coverage" >&2
+        exit 1
+    fi
 done
 python3 "$REPO_ROOT/ci/tests/test_status_runner.py"

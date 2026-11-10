@@ -650,3 +650,13 @@ invalid shield_ban trusted address
 --- must_die
 --- error_log
 duplicate "__shield_metric_zone_0" variable
+
+=== TEST 32: a predeclared mutable marker is rejected before zone ownership
+--- http_config
+    map $uri $__shield_metric_zone_0 { default 0; }
+    shield_ban_zone marker32:1m;
+--- config
+    location /t { empty_gif; }
+--- must_die
+--- error_log
+shield metric marker variable is reserved

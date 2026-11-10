@@ -1958,14 +1958,10 @@ ngx_http_shield_ban_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     ctx = shm_zone->data;
 
     if (octx) {
-        /* LCOV_EXCL_START -- reload/existing-segment inherit: needs a config
-         * reload or a pre-existing shm segment, neither of which a single
-         * Test::Nginx start produces. */
         /* Reload: inherit the existing shared segment. */
         ctx->sh = octx->sh;
         ctx->shpool = octx->shpool;
         return NGX_OK;
-        /* LCOV_EXCL_STOP */
     }
 
     ctx->shpool = (ngx_slab_pool_t *) shm_zone->shm.addr;

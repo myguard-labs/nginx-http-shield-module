@@ -155,8 +155,11 @@ static ngx_inline void
 ngx_http_shield_ban_count_request(ngx_http_shield_ban_ctx_t *ctx,
     ngx_uint_t refused)
 {
-    (void) ngx_atomic_fetch_add(refused ? &ctx->sh->ban_refused
-                                      : &ctx->sh->inspected, 1);
+    ngx_atomic_t *counter;
+
+    /* Windows' macro casts an unparenthesized pointer argument. */
+    counter = refused ? &ctx->sh->ban_refused : &ctx->sh->inspected;
+    (void) ngx_atomic_fetch_add(counter, 1);
 }
 
 

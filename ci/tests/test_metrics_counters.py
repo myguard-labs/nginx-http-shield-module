@@ -24,7 +24,9 @@ from pathlib import Path
 
 
 @contextmanager
-def server(binary: Path, module: Path | None, *, workers: int = 4):
+def server(
+    binary: Path, module: Path | None, *, workers: int = 4, check_reload: bool = False
+):
     """Own one foreground master, its workers and its temporary prefix."""
     with tempfile.TemporaryDirectory(prefix="shield-metrics-") as directory:
         root = Path(directory)
@@ -61,6 +63,7 @@ http {{
         shield block;
         shield_ban zone=redirects count=99999 window=60s bantime=30s;
         location /off-index/ {{ shield off; }}
+        location = /reload-ready {{ shield off; return 200 "before"; }}
         location = /off-index/index.html {{ shield block; }}
         location /hidden/ {{ index .env; }}
         location /named {{ error_page 405 = @named; empty_gif; }}
@@ -137,6 +140,8 @@ http {{
                             raise TimeoutError("nginx did not start") from None
                         time.sleep(0.02)
                 yield port
+                if check_reload:
+                    reload_controls(port, process, root)
             finally:
                 if process.poll() is None:
                     process.send_signal(signal.SIGQUIT)
@@ -270,6 +275,53 @@ def redirect_controls(port: int) -> None:
     )
 
 
+def reload_controls(port: int, process: subprocess.Popen, root: Path) -> None:
+    """Preserve zone totals while a new cycle assigns different marker slots."""
+    paths = ("/json", "/redirect-json", "/second-json", "/pressure-json")
+    before = {path: snapshot(port, path) for path in paths}
+    assert request(port, "/reload-ready") == (200, b"before")
+    config = root / "nginx.conf"
+    text = config.read_text()
+    second = "    shield_ban_zone second:1m;\n"
+    assert text.count(second) == 1
+    text = text.replace(second, "").replace(
+        "    shield_ban_zone main:1m;", second + "    shield_ban_zone main:1m;"
+    )
+    config.write_text(text.replace('return 200 "before";', 'return 200 "after";'))
+    process.send_signal(signal.SIGHUP)
+    deadline = time.monotonic() + 10
+    while True:
+        if request(port, "/reload-ready") == (200, b"after"):
+            break
+        assert time.monotonic() < deadline, (root / "error.log").read_text()
+        time.sleep(0.02)
+    for path in paths:
+        after = snapshot(port, path)
+        for field in (
+            "inspected",
+            "ban_refused",
+            "blocked",
+            "bans",
+            "evictions",
+            "alloc_failures",
+            "nodes",
+            "used",
+            "size",
+        ):
+            assert after[field] == before[path][field], (path, field, before, after)
+    assert request(port, "/t")[0] == 403
+    main_zone = snapshot(port)
+    assert main_zone["inspected"] == before["/json"]["inspected"]
+    assert main_zone["ban_refused"] == before["/json"]["ban_refused"] + 1
+    assert request(port, "/off-index/")[0] == 200
+    assert request(port, "/ab/", method="POST")[0] == 200
+    first = snapshot(port, "/redirect-json")
+    second_zone = snapshot(port, "/second-json")
+    assert first["inspected"] == before["/redirect-json"]["inspected"] + 2
+    assert second_zone["inspected"] == before["/second-json"]["inspected"] + 1
+    print("reload: counters, active ban and reassigned per-zone markers preserved")
+
+
 def pressure_controls(port: int) -> None:
     """Force an allocation error, exhaust real slab pages, and reclaim nodes."""
     # The real hook injects the allocator error without altering vendor code.
@@ -344,7 +396,9 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     if not args.benchmark_only:
         with server(
-            args.nginx.resolve(), args.module.resolve() if args.module else None
+            args.nginx.resolve(),
+            args.module.resolve() if args.module else None,
+            check_reload=True,
         ) as port:
             controls(port, args.output)
     if args.baseline_module:

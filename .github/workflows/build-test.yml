@@ -1,4 +1,4 @@
-# sync-sha: e909426f15448bedf3e8ef5edc627a2c17330e2a992e31b915c15b6d99e4f056
+# sync-sha: 4d96b11e5d916036c44dd795c915d7cc1956a67f7fbab4d829459c8829a1cae3
 name: Build and Test
 
 env:
@@ -568,7 +568,20 @@ jobs:
       # object under ci/t/, and the scan-core harness's object under
       # ci/tests/unit/.
       - name: Collect and gate module coverage
-        run: bash ci/tools/coverage.sh
+        run: |
+          set -o pipefail
+          bash ci/tools/coverage.sh 2>&1 | tee coverage-report.txt
+
+      - name: Preserve module coverage diagnostics
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: module-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            cov.info
+            cov-mod.info
+            coverage-report.txt
+          retention-days: 14
 
   runtime-tests:
     name: Runtime (live server)
