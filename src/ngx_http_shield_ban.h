@@ -75,6 +75,8 @@ typedef struct {
      * operator graphing them expects). Written under the slab mutex like
      * everything else here. */
     uint64_t           cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    uint64_t           cat_detect[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    uint64_t           cat_block[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
 
     /* Totals that are not per-category: requests blocked, and bans armed. */
     uint64_t           blocked;   /* requests denied by shield (any cat) */

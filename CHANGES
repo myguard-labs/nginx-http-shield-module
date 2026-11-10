@@ -1,5 +1,7 @@
 Changes with the next minor release
 
+    *) Split category detections by detect and block mode in status output.
+
     *) Add inspected-request, active-ban refusal, eviction and allocation-failure
        counters, plus reserved and total ban-zone byte gauges, to JSON and
        OpenMetrics status output.

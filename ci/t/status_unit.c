@@ -41,6 +41,10 @@ render_metrics(ngx_pool_t *pool, ngx_str_t *zone, uint64_t *hits,
     ngx_memzero(&snapshot, sizeof(snapshot));
     ngx_memcpy(snapshot.cat_hits, hits,
                NGX_HTTP_SHIELD_CAT_N * sizeof(uint64_t));
+    ngx_memcpy(snapshot.cat_detect, hits,
+               NGX_HTTP_SHIELD_CAT_N * sizeof(uint64_t));
+    ngx_memcpy(snapshot.cat_block, hits,
+               NGX_HTTP_SHIELD_CAT_N * sizeof(uint64_t));
     snapshot.blocked = blocked;
     snapshot.bans = bans;
     snapshot.nodes = nodes;
@@ -118,7 +122,7 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
         "sensitive_file", "webshell", "ssrf_meta", "nosql", "ssti",
         "exploit_path", "ctrl_char", "dotfile"
     };
-    char expected[8192];
+    char expected[16384];
     size_t used = 0, i;
     int n;
 #define APPEND(...) do { \
@@ -171,6 +175,14 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
                        i < 4 ? "_total" : "",
                        maximum ? "18446744073709551615" : "0");
             }
+        APPEND("# HELP shield_detections Shield detections by category and mode.\n"
+               "# TYPE shield_detections counter\n");
+        for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
+            APPEND("shield_detections_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",mode=\"detect\"} %s\n",
+                   cats[i], maximum ? "18446744073709551615" : "0");
+            APPEND("shield_detections_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",mode=\"block\"} %s\n",
+                   cats[i], maximum ? "18446744073709551615" : "0");
+        }
             APPEND("# EOF\n");
         }
     } else {
@@ -191,6 +203,13 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
         }
         for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
             APPEND("%s\"%s\":%s", i ? "," : "", cats[i],
+                   maximum ? "18446744073709551615" : "0");
+        }
+        APPEND("},\"detections\":{");
+        for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
+            APPEND("%s\"%s\":{\"detect\":%s,\"block\":%s}",
+                   i ? "," : "", cats[i],
+                   maximum ? "18446744073709551615" : "0",
                    maximum ? "18446744073709551615" : "0");
         }
         APPEND("},\"banned\":[]}");
@@ -286,6 +305,7 @@ main(void)
     extra_value = UINT64_MAX;
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
         snapshot.cat_hits[i] = hits[i] = UINT64_MAX;
+        snapshot.cat_detect[i] = snapshot.cat_block[i] = UINT64_MAX;
     }
     assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body) == NGX_OK);
     check_golden(&body, 0, 1);
@@ -327,7 +347,8 @@ main(void)
 
     /* A large admissible size reaches the allocator; overflow is rejected. */
     limit = ((NGX_MAX_SIZE_T_VALUE - 2048)
-                / (NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS) - 128) / 2;
+                / (3 * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+                - 128) / 2;
     zone.len = limit - 1024;
     fail_alloc = 1;
     assert(render_metrics(NULL, &zone, hits,

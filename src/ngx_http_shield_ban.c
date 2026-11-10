@@ -167,6 +167,8 @@ ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh)
      * start at whatever the segment last held and shield_status would report
      * garbage totals on a fresh zone. */
     ngx_memzero(sh->cat_hits, sizeof(sh->cat_hits));
+    ngx_memzero(sh->cat_detect, sizeof(sh->cat_detect));
+    ngx_memzero(sh->cat_block, sizeof(sh->cat_block));
     sh->blocked = 0;
     sh->bans = 0;
     sh->inspected = 0;
@@ -188,6 +190,11 @@ ngx_http_shield_ban_count_hit(ngx_http_shield_ban_ctx_t *ctx, ngx_uint_t cat,
      * (this runs only on a hit, not on every request). */
     if (cat < NGX_HTTP_SHIELD_BAN_NCOUNTERS) {
         ctx->sh->cat_hits[cat]++;
+        if (blocked) {
+            ctx->sh->cat_block[cat]++;
+        } else {
+            ctx->sh->cat_detect[cat]++;
+        }
     }
 
     if (blocked) {

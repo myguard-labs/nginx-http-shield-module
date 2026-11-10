@@ -23,6 +23,8 @@ typedef struct {
 
 typedef struct {
     uint64_t                       cat_hits[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    uint64_t                       cat_detect[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
+    uint64_t                       cat_block[NGX_HTTP_SHIELD_BAN_NCOUNTERS];
     uint64_t                       blocked;
     uint64_t                       bans;
     uint64_t                       inspected;
@@ -75,7 +77,9 @@ ngx_http_shield_status_metrics[] = {
                       "Shield zone bytes reserved including slab overhead.",
                       0, used),
     NGX_SHIELD_METRIC("size", "shield_zone_size_bytes",
-                      "Shield zone size in bytes.", 0, size)
+                      "Shield zone size in bytes.", 0, size),
+    { NULL, "shield_detections",
+      "Shield detections by category and mode.", 1, 0 }
 #undef NGX_SHIELD_METRIC
 };
 
@@ -316,6 +320,17 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
         }
     }
 
+    NGX_SHIELD_STATUS_ADD_LITERAL("},\"detections\":{");
+    for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+        len = ngx_strlen(ngx_http_shield_cat_name(i));
+        if (ngx_http_shield_status_size_add(&size, len) != NGX_OK
+            || ngx_http_shield_status_size_add(&size,
+                   1 + sizeof("\"\":{\"detect\":,\"block\":}") - 1
+                   + 2 * NGX_INT64_LEN) != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+    }
     NGX_SHIELD_STATUS_ADD_LITERAL("},\"banned\":[");
 
     entry_size = 1 + sizeof("{\"addr\":\"") - 1 + NGX_INET6_ADDRSTRLEN
@@ -358,6 +373,12 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
                          snapshot->cat_hits[i]);
     }
 
+    p = ngx_slprintf(p, last, "},\"detections\":{");
+    for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+        p = ngx_slprintf(p, last, "%s\"%s\":{\"detect\":%uL,\"block\":%uL}",
+                         i == 0 ? "" : ",", ngx_http_shield_cat_name(i),
+                         snapshot->cat_detect[i], snapshot->cat_block[i]);
+    }
     p = ngx_slprintf(p, last, "},\"banned\":[");
 
     for (i = 0; i < snapshot->banned; i++) {
@@ -407,20 +428,23 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
      * scratch label. Quotes, backslashes and line feeds each expand to 2 bytes.
      * Guard multiplication before allocating, even for huge config tokens. */
     if (zone->len > ((NGX_MAX_SIZE_T_VALUE - 2048)
-                    / (NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+                    / (3 * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
                     - 128) / 2)
     {
         return NGX_ERROR;
     }
 
-    size = 2048 + (NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+    size = 2048 + (3 * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
                   * (128 + 2 * zone->len);
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
         len = ngx_strlen(ngx_http_shield_cat_name(i));
         if (len > NGX_MAX_SIZE_T_VALUE - size) {
             return NGX_ERROR;
         }
-        size += len;
+        if (len > (NGX_MAX_SIZE_T_VALUE - size) / 3) {
+            return NGX_ERROR;
+        }
+        size += 3 * len;
     }
 
     buf = ngx_pnalloc(pool, size);
@@ -466,6 +490,19 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
                     "%s_total{zone=\"%V\",category=\"%s\"} %uL\n",
                     metric->family, &label, ngx_http_shield_cat_name(j),
                     snapshot->cat_hits[j]);
+            }
+            continue;
+        }
+        if (i == NGX_SHIELD_STATUS_METRICS - 1) {
+            for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
+                p = ngx_slprintf(p, last,
+                    "%s_total{zone=\"%V\",category=\"%s\","
+                    "mode=\"detect\"} %uL\n"
+                    "%s_total{zone=\"%V\",category=\"%s\","
+                    "mode=\"block\"} %uL\n",
+                    metric->family, &label, ngx_http_shield_cat_name(j),
+                    snapshot->cat_detect[j], metric->family, &label,
+                    ngx_http_shield_cat_name(j), snapshot->cat_block[j]);
             }
             continue;
         }
