@@ -2494,8 +2494,9 @@ ngx_http_shield_ban_status_handler(ngx_http_request_t *r)
     slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
     ctx = slcf->status_zone->data;
 
-    /* A worker that has not yet run the zone's init callback (a request racing
-     * a reload) has no state to report. Say so rather than dereferencing. */
+    /* Stock nginx initializes or reuses the shared zone in the master before
+     * workers serve requests and rejects a failed candidate cycle. Keep these
+     * pointer checks defensive; return unavailable if state is absent. */
     if (ctx == NULL || ctx->sh == NULL || ctx->shpool == NULL) {
         return NGX_HTTP_SERVICE_UNAVAILABLE;
     }
