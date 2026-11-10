@@ -149,6 +149,16 @@ int main(void)
     buf.file_last = 5;
     assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_DECLINED);
     assert(shared.body_uninspected[NGX_HTTP_SHIELD_BODY_TOO_LARGE] == 2);
+
+    /* A missing zone or detached shared state must never count or crash. */
+    ngx_memzero(&mark, sizeof(mark));
+    fail_alloc = 1;
+    conf.ban_zone = NULL;
+    assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_ERROR);
+    conf.ban_zone = &zone;
+    ctx.sh = NULL;
+    assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_ERROR);
+    assert(shared.body_uninspected[NGX_HTTP_SHIELD_BODY_ERROR] == 3);
     puts("body_unit: errors, boundaries and once-per-zone accounting passed");
     return 0;
 }

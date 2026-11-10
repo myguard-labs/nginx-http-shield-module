@@ -137,12 +137,25 @@ for capability in 1 0; do
     fi
 done
 # Use the real body inspection path with deterministic allocation failure.
+# Match the daemon's O0 coverage mappings so lcov can merge the unit profile.
+BODY_PROFILE="$BODY_BIN-body_unit.gcda"
+case " $EXTRA_CFLAGS " in
+    *" --coverage "* | *" -coverage "*) rm -f "$BODY_PROFILE" ;;
+esac
 # shellcheck disable=SC2086
-"$CC" -g -O2 -Wall -Wextra -Wno-unused-parameter \
+"$CC" -g -O0 -Wall -Wextra -Wno-unused-parameter \
     -ffunction-sections -fdata-sections -Wl,--gc-sections \
-    $CONFIG_EXTRA_CFLAGS -fno-profile-arcs -fno-test-coverage \
+    $EXTRA_CFLAGS \
     $CONFIG_GLOBAL_FLAGS $NGX_INCS \
     -I"$NGX_SRC/src/http" -I"$NGX_SRC/src/http/modules" \
     -o "$BODY_BIN" "$SCRIPT_DIR/body_unit.c" "$NGX_SRC/src/core/ngx_string.c"
 "$BODY_BIN"
+case " $EXTRA_CFLAGS " in
+    *" --coverage "* | *" -coverage "*)
+        if [ ! -s "$BODY_PROFILE" ]; then
+            echo "ERROR: body harness did not produce coverage data" >&2
+            exit 1
+        fi
+        ;;
+esac
 python3 "$REPO_ROOT/ci/tests/test_status_runner.py"
