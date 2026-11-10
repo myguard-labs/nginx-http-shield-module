@@ -45,6 +45,11 @@ render_metrics(ngx_pool_t *pool, ngx_str_t *zone, uint64_t *hits,
                NGX_HTTP_SHIELD_CAT_N * sizeof(uint64_t));
     ngx_memcpy(snapshot.cat_block, hits,
                NGX_HTTP_SHIELD_CAT_N * sizeof(uint64_t));
+    for (ngx_uint_t i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
+        for (ngx_uint_t j = 0; j < NGX_HTTP_SHIELD_SOURCE_COUNT; j++) {
+            snapshot.source_hits[i][j] = hits[i];
+        }
+    }
     snapshot.blocked = blocked;
     snapshot.bans = bans;
     snapshot.nodes = nodes;
@@ -122,7 +127,7 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
         "sensitive_file", "webshell", "ssrf_meta", "nosql", "ssti",
         "exploit_path", "ctrl_char", "dotfile"
     };
-    char expected[16384];
+    char expected[65536];
     size_t used = 0, i;
     int n;
 #define APPEND(...) do { \
@@ -183,6 +188,22 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
             APPEND("shield_detections_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",mode=\"block\"} %s\n",
                    cats[i], maximum ? "18446744073709551615" : "0");
         }
+            APPEND("# HELP shield_source_hits Shield signature hits by category and source.\n"
+                   "# TYPE shield_source_hits counter\n");
+            {
+                static const char *sources[] = {
+                    "uri", "header", "range", "user-agent", "referer",
+                    "content-type", "body"
+                };
+                size_t j;
+                for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
+                    for (j = 0; j < sizeof(sources) / sizeof(sources[0]); j++) {
+                        APPEND("shield_source_hits_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",source=\"%s\"} %s\n",
+                               cats[i], sources[j],
+                               maximum ? "18446744073709551615" : "0");
+                    }
+                }
+            }
             APPEND("# EOF\n");
         }
     } else {
@@ -347,7 +368,8 @@ main(void)
 
     /* A large admissible size reaches the allocator; overflow is rejected. */
     limit = ((NGX_MAX_SIZE_T_VALUE - 2048)
-                / (3 * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+                / ((3 + NGX_HTTP_SHIELD_SOURCE_COUNT) * NGX_HTTP_SHIELD_CAT_N
+                   + NGX_SHIELD_STATUS_METRICS)
                 - 128) / 2;
     zone.len = limit - 1024;
     fail_alloc = 1;

@@ -745,7 +745,7 @@ ngx_http_shield_check_httpoxy(ngx_http_request_t *r,
         {
             hit->category = NGX_HTTP_SHIELD_NAME_HTTPOXY;
             hit->cat = NGX_HTTP_SHIELD_CAT_HTTPOXY;
-            hit->source = "header";
+            hit->source = NGX_HTTP_SHIELD_SOURCE_HEADER;
             return NGX_OK;
         }
     }
@@ -781,7 +781,7 @@ ngx_http_shield_check_range(ngx_http_request_t *r,
     if (ranges > NGX_HTTP_SHIELD_MAX_RANGES) {
         hit->category = NGX_HTTP_SHIELD_NAME_RANGE_DOS;
         hit->cat = NGX_HTTP_SHIELD_CAT_RANGE_DOS;
-        hit->source = "range";
+        hit->source = NGX_HTTP_SHIELD_SOURCE_RANGE;
         return NGX_OK;
     }
 
@@ -835,7 +835,7 @@ ngx_http_shield_check_ctrl_char(ngx_http_request_t *r,
 
         hit->category = NGX_HTTP_SHIELD_NAME_CTRL_CHAR;
         hit->cat = NGX_HTTP_SHIELD_CAT_CTRL_CHAR;
-        hit->source = "uri";
+        hit->source = NGX_HTTP_SHIELD_SOURCE_URI;
         return NGX_OK;
     }
 
@@ -935,7 +935,7 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
 
             hit->category = NGX_HTTP_SHIELD_NAME_DOTFILE;
             hit->cat = NGX_HTTP_SHIELD_CAT_DOTFILE;
-            hit->source = "uri";
+            hit->source = NGX_HTTP_SHIELD_SOURCE_URI;
             return NGX_OK;
         }
 
@@ -1010,7 +1010,8 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
         size_t   path_len;
 
         rc = ngx_http_shield_scan_r(
-                 r, r->unparsed_uri.data, r->unparsed_uri.len, "uri",
+                 r, r->unparsed_uri.data, r->unparsed_uri.len,
+                 NGX_HTTP_SHIELD_SOURCE_URI,
                  slcf->skip | ngx_http_shield_no_query_mask(), hit);
         if (rc != NGX_DECLINED) {
             return rc;
@@ -1028,7 +1029,8 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
             && (~slcf->skip & ngx_http_shield_no_query_mask()) != 0)
         {
             rc = ngx_http_shield_scan_r(
-                     r, r->unparsed_uri.data, path_len, "uri",
+                     r, r->unparsed_uri.data, path_len,
+                     NGX_HTTP_SHIELD_SOURCE_URI,
                      slcf->skip | ~ngx_http_shield_no_query_mask(), hit);
             if (rc != NGX_DECLINED) {
                 return rc;
@@ -1065,7 +1067,7 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
             continue;
         }
 
-        source = "header";
+        source = NGX_HTTP_SHIELD_SOURCE_HEADER;
         allowed = generic_allowed;
         header_skip = slcf->skip | ~allowed;
 
@@ -1082,19 +1084,19 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
         if (ngx_http_shield_header_name_is(&header[i], "User-Agent",
                                            sizeof("User-Agent") - 1))
         {
-            source = "user-agent";
+            source = NGX_HTTP_SHIELD_SOURCE_USER_AGENT;
             header_skip = slcf->skip;
 
         } else if (ngx_http_shield_header_name_is(&header[i], "Referer",
                                                   sizeof("Referer") - 1))
         {
-            source = "referer";
+            source = NGX_HTTP_SHIELD_SOURCE_REFERER;
             header_skip = slcf->skip;
 
         } else if (ngx_http_shield_header_name_is(&header[i], "Content-Type",
                                                   sizeof("Content-Type") - 1))
         {
-            source = "content-type";
+            source = NGX_HTTP_SHIELD_SOURCE_CONTENT_TYPE;
             /* Multipart boundaries are opaque random strings. Keep the
              * header-borne exploit categories (especially Struts OGNL) but do
              * not run five-byte gadget/webshell names over boundary entropy. */
@@ -1445,7 +1447,8 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
 
     /* Fold the body-unsafe categories into the skip mask for this scan only.
      * They still match at full strength in the request target and headers. */
-    return ngx_http_shield_scan_r(r, body.data, body.len, "body",
+    return ngx_http_shield_scan_r(r, body.data, body.len,
+                                  NGX_HTTP_SHIELD_SOURCE_BODY,
                                   slcf->skip
                                       | ngx_http_shield_no_body_mask(),
                                   hit);
@@ -1939,7 +1942,8 @@ ngx_http_shield_ban_count(ngx_http_request_t *r,
 
     ngx_shmtx_lock(&ctx->shpool->mutex);
     ngx_http_shield_ban_count_hit(ctx, hit->cat,
-                                  slcf->mode == NGX_HTTP_SHIELD_BLOCK);
+                                  slcf->mode == NGX_HTTP_SHIELD_BLOCK,
+                                  hit->source);
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 }
 
@@ -2504,6 +2508,8 @@ ngx_http_shield_status_snapshot(ngx_http_shield_ban_ctx_t *ctx,
     now = ngx_time();
     ngx_memcpy(snapshot->cat_hits, ctx->sh->cat_hits,
                sizeof(snapshot->cat_hits));
+    ngx_memcpy(snapshot->source_hits, ctx->sh->source_hits,
+               sizeof(snapshot->source_hits));
     ngx_memcpy(snapshot->cat_detect, ctx->sh->cat_detect,
                sizeof(snapshot->cat_detect));
     ngx_memcpy(snapshot->cat_block, ctx->sh->cat_block,

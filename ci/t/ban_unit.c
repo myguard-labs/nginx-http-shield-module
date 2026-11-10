@@ -919,18 +919,25 @@ test_mode_counters(void)
     ctx_reset();
     OK(g_sh.cat_detect[0] == 0 && g_sh.cat_block[last] == 0,
        "mode counters initialized");
-    ngx_http_shield_ban_count_hit(&g_ctx, 0, 0);
-    ngx_http_shield_ban_count_hit(&g_ctx, 0, 1);
-    ngx_http_shield_ban_count_hit(&g_ctx, last, 1);
-    ngx_http_shield_ban_count_hit(&g_ctx, last + 1, 0);
-    ngx_http_shield_ban_count_hit(&g_ctx, last + 1, 1);
+    ngx_http_shield_ban_count_hit(&g_ctx, 0, 0, NGX_HTTP_SHIELD_SOURCE_URI);
+    ngx_http_shield_ban_count_hit(&g_ctx, 0, 1, NGX_HTTP_SHIELD_SOURCE_URI);
+    ngx_http_shield_ban_count_hit(&g_ctx, last, 1, NGX_HTTP_SHIELD_SOURCE_URI);
+    ngx_http_shield_ban_count_hit(&g_ctx, last + 1, 0, NGX_HTTP_SHIELD_SOURCE_URI);
+    ngx_http_shield_ban_count_hit(&g_ctx, last + 1, 1, NGX_HTTP_SHIELD_SOURCE_URI);
     OK(g_sh.cat_hits[0] == 2 && g_sh.cat_detect[0] == 1
        && g_sh.cat_block[0] == 1, "mode counters split hits");
     OK(g_sh.cat_hits[last] == 1 && g_sh.cat_block[last] == 1
        && g_sh.cat_detect[last] == 0, "last category counted");
     OK(g_sh.blocked == 3, "invalid category preserves blocked semantics");
+    OK(g_sh.source_hits[0][0] == 2 && g_sh.source_hits[last][0] == 1,
+       "source hits counted by category");
+    ngx_http_shield_ban_count_hit(&g_ctx, 0, 0, "unknown");
+    ngx_http_shield_ban_count_hit(&g_ctx, 0, 0, NULL);
+    OK(g_sh.source_hits[0][0] == 2, "unknown source does not create a series");
+    OK(ngx_http_shield_source_name(NGX_HTTP_SHIELD_SOURCE_COUNT) == NULL,
+       "out of range source rejected");
     g_sh.cat_detect[0] = UINT64_MAX;
-    ngx_http_shield_ban_count_hit(&g_ctx, 0, 0);
+    ngx_http_shield_ban_count_hit(&g_ctx, 0, 0, NGX_HTTP_SHIELD_SOURCE_URI);
     OK(g_sh.cat_detect[0] == 0 && g_sh.cat_block[0] == 1,
        "mode counters wrap independently");
 }
