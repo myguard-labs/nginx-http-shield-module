@@ -201,13 +201,28 @@ static ngx_conf_enum_t  ngx_http_shield_status_formats[] = {
 };
 
 
-/* Four immutable states in a private indexed variable per configured zone.
+/* Eight immutable states in a private indexed variable per configured zone.
  * Core allocates the slots with its existing request-variable array. Unlike
  * r->ctx, that array survives internal and named redirects. */
 static ngx_http_variable_value_t ngx_http_shield_request_marks[] = {
     ngx_http_variable("0"), ngx_http_variable("1"),
-    ngx_http_variable("2"), ngx_http_variable("3")
+    ngx_http_variable("2"), ngx_http_variable("3"),
+    ngx_http_variable("4"), ngx_http_variable("5"),
+    ngx_http_variable("6"), ngx_http_variable("7")
 };
+
+static ngx_uint_t
+ngx_http_shield_mark_state(ngx_http_variable_value_t *v)
+{
+    ngx_uint_t i;
+
+    for (i = 1; i < 8; i++) {
+        if (v->data == ngx_http_shield_request_marks[i].data) {
+            return i;
+        }
+    }
+    return 0;
+}
 
 
 static ngx_int_t
@@ -227,9 +242,7 @@ ngx_http_shield_count_request(ngx_http_request_t *r,
     ngx_http_variable_value_t *v;
 
     v = &r->main->variables[ctx->request_index];
-    state = v->data == ngx_http_shield_request_marks[1].data ? 1
-          : v->data == ngx_http_shield_request_marks[2].data ? 2
-          : v->data == ngx_http_shield_request_marks[3].data ? 3 : 0;
+    state = ngx_http_shield_mark_state(v);
     bit = refused ? 2 : 1;
     if (!(state & bit)) {
         *v = ngx_http_shield_request_marks[state | bit];
@@ -1434,24 +1447,135 @@ static ngx_int_t
 ngx_http_shield_inspect_body(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
 {
-    ngx_str_t  body;
+    ngx_str_t                   body;
+    ngx_int_t                   rc;
+    ngx_uint_t                  reason, i, too_large, has_body;
+    size_t                      remaining, len, start, end;
+    ngx_chain_t                *cl;
+    ngx_buf_t                  *b;
+    ngx_list_part_t            *part;
+    ngx_table_elt_t            *h;
+    ngx_http_shield_ban_ctx_t  *ctx;
+    ngx_atomic_t               *counter;
+    ngx_http_variable_value_t  *mark;
+    ngx_uint_t                  state;
 
     if (ngx_http_shield_collect_body(r, slcf->max_body, &body) != NGX_OK) {
         /* Allocation or temp-file read failure: the body was not scanned. */
-        return NGX_ERROR;
+        rc = NGX_ERROR;
+        goto account;
     }
 
     if (body.len == 0) {
-        return NGX_DECLINED;
+        rc = NGX_DECLINED;
+        if (slcf->max_body != 0 || r->request_body == NULL
+            || r->request_body->bufs == NULL)
+        {
+            return rc;
+        }
+        goto account;
     }
 
     /* Fold the body-unsafe categories into the skip mask for this scan only.
      * They still match at full strength in the request target and headers. */
-    return ngx_http_shield_scan_r(r, body.data, body.len,
-                                  NGX_HTTP_SHIELD_SOURCE_BODY,
-                                  slcf->skip
-                                      | ngx_http_shield_no_body_mask(),
-                                  hit);
+    rc = ngx_http_shield_scan_r(r, body.data, body.len,
+                                NGX_HTTP_SHIELD_SOURCE_BODY,
+                                slcf->skip | ngx_http_shield_no_body_mask(),
+                                hit);
+
+account:
+    if (slcf->ban_zone == NULL) {
+        return rc;
+    }
+    ctx = slcf->ban_zone->data;
+    if (ctx->sh == NULL) {
+        return rc;
+    }
+    if (rc == NGX_ERROR) {
+        reason = NGX_HTTP_SHIELD_BODY_ERROR;
+        goto count;
+    }
+
+    remaining = slcf->max_body;
+    too_large = 0;
+    has_body = 0;
+    for (cl = r->request_body->bufs; cl != NULL; cl = cl->next) {
+        b = cl->buf;
+        if (ngx_buf_in_memory(b)) {
+            len = (size_t) (b->last - b->pos);
+        } else if (b->in_file && b->file != NULL) {
+            len = (size_t) (b->file_last - b->file_pos);
+        } else {
+            continue;
+        }
+        if (len != 0) {
+            has_body = 1;
+        }
+        if (len > remaining) {
+            too_large = 1;
+            break;
+        }
+        remaining -= len;
+    }
+    if (!has_body) {
+        return rc;
+    }
+
+    /* Encoded bytes are still scanned as before, but do not cover the decoded
+     * representation. Only a single identity value needs no decoding. */
+    part = &r->headers_in.headers.part;
+    h = part->elts;
+    for (i = 0; /* entire header list */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            h = part->elts;
+            i = 0;
+        }
+        if (!h[i].hash || !ngx_http_shield_header_name_is(&h[i],
+                "Content-Encoding", sizeof("Content-Encoding") - 1))
+        {
+            continue;
+        }
+        start = 0;
+        end = h[i].value.len;
+        while (start < end && (h[i].value.data[start] == ' '
+                               || h[i].value.data[start] == '\t'))
+        {
+            start++;
+        }
+        while (end > start && (h[i].value.data[end - 1] == ' '
+                               || h[i].value.data[end - 1] == '\t'))
+        {
+            end--;
+        }
+        if (end - start != sizeof("identity") - 1
+            || ngx_strncasecmp(h[i].value.data + start, (u_char *) "identity",
+                               sizeof("identity") - 1) != 0)
+        {
+            reason = NGX_HTTP_SHIELD_BODY_ENCODING;
+            goto count;
+        }
+    }
+
+    if (too_large) {
+        reason = NGX_HTTP_SHIELD_BODY_TOO_LARGE;
+        goto count;
+    }
+    return rc;
+
+count:
+    mark = &r->main->variables[ctx->request_index];
+    state = ngx_http_shield_mark_state(mark);
+    if (state & 4) {
+        return rc;
+    }
+    *mark = ngx_http_shield_request_marks[state | 4];
+    counter = &ctx->sh->body_uninspected[reason];
+    (void) ngx_atomic_fetch_add(counter, 1);
+    return rc;
 }
 
 
@@ -2520,6 +2644,14 @@ ngx_http_shield_status_snapshot(ngx_http_shield_ban_ctx_t *ctx,
         ngx_http_shield_ban_counter_value(&ctx->sh->inspected);
     snapshot->ban_refused =
         ngx_http_shield_ban_counter_value(&ctx->sh->ban_refused);
+    {
+        ngx_uint_t i;
+        for (i = 0; i < NGX_HTTP_SHIELD_BODY_REASONS; i++) {
+            snapshot->body_uninspected[i] =
+                ngx_http_shield_ban_counter_value(
+                    &ctx->sh->body_uninspected[i]);
+        }
+    }
     snapshot->evictions = ctx->sh->evictions;
     snapshot->alloc_failures = ctx->sh->alloc_failures;
     if (ngx_http_shield_status_slab_usage(ctx->shpool, snapshot) != NGX_OK) {

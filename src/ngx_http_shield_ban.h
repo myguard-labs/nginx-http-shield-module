@@ -74,6 +74,11 @@ typedef struct {
 #define NGX_HTTP_SHIELD_SOURCE_BODY         "body"
 #define NGX_HTTP_SHIELD_SOURCE_COUNT        7
 
+#define NGX_HTTP_SHIELD_BODY_TOO_LARGE  0
+#define NGX_HTTP_SHIELD_BODY_ENCODING   1
+#define NGX_HTTP_SHIELD_BODY_ERROR      2
+#define NGX_HTTP_SHIELD_BODY_REASONS    3
+
 static ngx_inline const char *
 ngx_http_shield_source_name(ngx_uint_t source)
 {
@@ -112,6 +117,7 @@ typedef struct {
      * native atomics need no slab mutex. They wrap at native atomic width. */
     ngx_atomic_t       inspected;
     ngx_atomic_t       ban_refused;
+    ngx_atomic_t       body_uninspected[NGX_HTTP_SHIELD_BODY_REASONS];
 
     /* Protected by shpool->mutex, together with node allocation/reclamation. */
     uint64_t           evictions;

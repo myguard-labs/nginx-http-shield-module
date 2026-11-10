@@ -294,6 +294,7 @@ location /shield-status {
 {"zone":"shield","nodes":1,"blocked":2,"bans":1,
  "inspected":100,"ban_refused":5,"evictions":0,"alloc_failures":0,
  "used":40960,"size":1048576,
+ "body_uninspected":{"too_large":0,"encoding":0,"error":0},
  "categories":{"sqli":1,"xss":0,"httpoxy":1,"dotfile":0, "...":0},
  "detections":{"sqli":{"detect":0,"block":1}, "...":{}},
  "banned":[{"addr":"203.0.113.10","hits":0,"expires":3417}]}
@@ -318,6 +319,13 @@ location /shield-status {
   without a ban zone remains available.
 - `evictions` counts reclaimed stale ban nodes; `alloc_failures` counts dropped
   node allocations after reclamation. Successful allocations do not increment it.
+- `body_uninspected` counts bodies with incomplete inspection in the zone,
+  including a scanned prefix of a body larger than `shield_max_body` and raw
+  bytes with a non-identity Content-Encoding. Collection or scan failures use
+  `error`; otherwise `encoding` takes precedence over `too_large`. A request
+  increments at most one reason per zone, including across internal redirects.
+  OpenMetrics exposes the same values as `shield_body_uninspected_total` with
+  a bounded `reason` label. Encoded bodies retain their existing raw-byte scan.
 - `used` is reserved zone memory in bytes, including slab metadata and partially
   occupied pages; only wholly free slab pages are subtracted. `size` is the
   mapped zone size. Both gauges are sampled together under the slab mutex.

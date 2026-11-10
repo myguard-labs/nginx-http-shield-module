@@ -75,7 +75,8 @@ echo "==> Running ban_unit ..."
 STATUS_BIN="$SCRIPT_DIR/status_unit"
 ATOMIC_BIN="$SCRIPT_DIR/atomic_width_unit"
 CONFIG_BIN="$SCRIPT_DIR/atomic_config_unit"
-trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1"' EXIT
+BODY_BIN="$SCRIPT_DIR/body_unit"
+trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1" "$BODY_BIN"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -135,4 +136,26 @@ for capability in 1 0; do
         exit 1
     fi
 done
+# Use the real body inspection path with deterministic allocation failure.
+# Match the daemon's O0 coverage mappings so lcov can merge the unit profile.
+BODY_PROFILE="$BODY_BIN-body_unit.gcda"
+case " $EXTRA_CFLAGS " in
+    *" --coverage "* | *" -coverage "*) rm -f "$BODY_PROFILE" ;;
+esac
+# shellcheck disable=SC2086
+"$CC" -g -O0 -Wall -Wextra -Wno-unused-parameter \
+    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    $EXTRA_CFLAGS \
+    $CONFIG_GLOBAL_FLAGS $NGX_INCS \
+    -I"$NGX_SRC/src/http" -I"$NGX_SRC/src/http/modules" \
+    -o "$BODY_BIN" "$SCRIPT_DIR/body_unit.c" "$NGX_SRC/src/core/ngx_string.c"
+"$BODY_BIN"
+case " $EXTRA_CFLAGS " in
+    *" --coverage "* | *" -coverage "*)
+        if [ ! -s "$BODY_PROFILE" ]; then
+            echo "ERROR: body harness did not produce coverage data" >&2
+            exit 1
+        fi
+        ;;
+esac
 python3 "$REPO_ROOT/ci/tests/test_status_runner.py"

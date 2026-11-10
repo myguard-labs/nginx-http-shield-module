@@ -57,6 +57,9 @@ render_metrics(ngx_pool_t *pool, ngx_str_t *zone, uint64_t *hits,
     snapshot.inspected = snapshot.ban_refused = extra_value;
     snapshot.evictions = snapshot.alloc_failures = extra_value;
     snapshot.used = snapshot.size = extra_value;
+    for (ngx_uint_t i = 0; i < NGX_HTTP_SHIELD_BODY_REASONS; i++) {
+        snapshot.body_uninspected[i] = extra_value;
+    }
     return ngx_http_shield_status_prometheus(pool, zone, &snapshot, body);
 }
 
@@ -204,6 +207,15 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
                     }
                 }
             }
+            APPEND("# HELP shield_body_uninspected Shield bodies with incomplete inspection by reason.\n"
+                   "# TYPE shield_body_uninspected counter\n");
+            {
+                static const char *reasons[] = { "too_large", "encoding", "error" };
+                for (i = 0; i < 3; i++) {
+                    APPEND("shield_body_uninspected_total{zone=\"quote\\\"slash\\\\line\\n\",reason=\"%s\"} %s\n",
+                           reasons[i], maximum ? "18446744073709551615" : "0");
+                }
+            }
             APPEND("# EOF\n");
         }
     } else {
@@ -220,6 +232,10 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
                 APPEND(",\"%s\":%s", keys[i],
                        maximum ? "18446744073709551615" : "0");
             }
+            APPEND(",\"body_uninspected\":{\"too_large\":%s,\"encoding\":%s,\"error\":%s}",
+                   maximum ? "18446744073709551615" : "0",
+                   maximum ? "18446744073709551615" : "0",
+                   maximum ? "18446744073709551615" : "0");
             APPEND(",\"categories\":{");
         }
         for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
@@ -284,6 +300,9 @@ main(void)
     snapshot.alloc_failures = 44;
     snapshot.used = 55;
     snapshot.size = 66;
+    snapshot.body_uninspected[0] = 77;
+    snapshot.body_uninspected[1] = 88;
+    snapshot.body_uninspected[2] = 99;
     assert(ngx_http_shield_status_json(NULL, &zone, &snapshot, &body) == NGX_OK);
     text = malloc(body.len + 1);
     assert(text != NULL);
@@ -292,6 +311,8 @@ main(void)
     assert(strstr(text, "\"inspected\":11,\"ban_refused\":22,"
                         "\"evictions\":33,\"alloc_failures\":44,"
                         "\"used\":55,\"size\":66") != NULL);
+    assert(strstr(text, "\"body_uninspected\":{\"too_large\":77,"
+                        "\"encoding\":88,\"error\":99}") != NULL);
     free(text);
     free(allocation);
     assert(ngx_http_shield_status_prometheus(NULL, &zone, &snapshot, &body) == NGX_OK);
@@ -305,6 +326,9 @@ main(void)
     assert(strstr(text, "shield_zone_alloc_failures_total{zone=\"quote\\\"slash\\\\line\\n\"} 44\n") != NULL);
     assert(strstr(text, "shield_zone_used_bytes{zone=\"quote\\\"slash\\\\line\\n\"} 55\n") != NULL);
     assert(strstr(text, "shield_zone_size_bytes{zone=\"quote\\\"slash\\\\line\\n\"} 66\n") != NULL);
+    assert(strstr(text, "reason=\"too_large\"} 77\n") != NULL);
+    assert(strstr(text, "reason=\"encoding\"} 88\n") != NULL);
+    assert(strstr(text, "reason=\"error\"} 99\n") != NULL);
     free(text);
     free(allocation);
     allocations = 0;
@@ -323,6 +347,9 @@ main(void)
     snapshot.inspected = snapshot.ban_refused = UINT64_MAX;
     snapshot.evictions = snapshot.alloc_failures = UINT64_MAX;
     snapshot.used = snapshot.size = UINT64_MAX;
+    for (i = 0; i < NGX_HTTP_SHIELD_BODY_REASONS; i++) {
+        snapshot.body_uninspected[i] = UINT64_MAX;
+    }
     extra_value = UINT64_MAX;
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
         snapshot.cat_hits[i] = hits[i] = UINT64_MAX;
@@ -369,7 +396,7 @@ main(void)
     /* A large admissible size reaches the allocator; overflow is rejected. */
     limit = ((NGX_MAX_SIZE_T_VALUE - 2048)
                 / ((3 + NGX_HTTP_SHIELD_SOURCE_COUNT) * NGX_HTTP_SHIELD_CAT_N
-                   + NGX_SHIELD_STATUS_METRICS)
+                   + NGX_SHIELD_STATUS_METRICS + 2)
                 - 128) / 2;
     zone.len = limit - 1024;
     fail_alloc = 1;
