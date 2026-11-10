@@ -31,6 +31,8 @@ typedef struct {
     uint64_t                       bans;
     uint64_t                       inspected;
     uint64_t                       ban_refused;
+    uint64_t                       body_uninspected
+                                       [NGX_HTTP_SHIELD_BODY_REASONS];
     uint64_t                       evictions;
     uint64_t                       alloc_failures;
     uint64_t                       used;
@@ -83,7 +85,9 @@ ngx_http_shield_status_metrics[] = {
     { NULL, "shield_detections",
       "Shield detections by category and mode.", 1, 0 },
     { NULL, "shield_source_hits",
-      "Shield signature hits by category and source.", 1, 0 }
+      "Shield signature hits by category and source.", 1, 0 },
+    { NULL, "shield_body_uninspected",
+      "Shield bodies with incomplete inspection by reason.", 1, 0 }
 #undef NGX_SHIELD_METRIC
 };
 
@@ -312,6 +316,11 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
             return NGX_ERROR;
         }
     }
+    NGX_SHIELD_STATUS_ADD_LITERAL(
+        ",\"body_uninspected\":{\"too_large\":,\"encoding\":,\"error\":}");
+    if (ngx_http_shield_status_size_add(&size, 3 * NGX_INT64_LEN) != NGX_OK) {
+        return NGX_ERROR;
+    }
     NGX_SHIELD_STATUS_ADD_LITERAL(",\"categories\":{");
 
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
@@ -368,6 +377,12 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
         p = ngx_slprintf(p, last, ",\"%s\":%uL",
                          ngx_http_shield_status_metrics[index].json_key, value);
     }
+    p = ngx_slprintf(p, last,
+                     ",\"body_uninspected\":{\"too_large\":%uL,"
+                     "\"encoding\":%uL,\"error\":%uL}",
+                     snapshot->body_uninspected[0],
+                     snapshot->body_uninspected[1],
+                     snapshot->body_uninspected[2]);
     p = ngx_slprintf(p, last, ",\"categories\":{");
 
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
@@ -433,14 +448,14 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
      * Guard multiplication before allocating, even for huge config tokens. */
     if (zone->len > ((NGX_MAX_SIZE_T_VALUE - 2048)
                     / ((3 + NGX_HTTP_SHIELD_SOURCE_COUNT)
-                       * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS)
+                       * NGX_HTTP_SHIELD_CAT_N + NGX_SHIELD_STATUS_METRICS + 2)
                     - 128) / 2)
     {
         return NGX_ERROR;
     }
 
     size = 2048 + ((3 + NGX_HTTP_SHIELD_SOURCE_COUNT) * NGX_HTTP_SHIELD_CAT_N
-                       + NGX_SHIELD_STATUS_METRICS)
+                       + NGX_SHIELD_STATUS_METRICS + 2)
                   * (128 + 2 * zone->len);
     for (i = 0; i < NGX_HTTP_SHIELD_CAT_N; i++) {
         len = ngx_strlen(ngx_http_shield_cat_name(i));
@@ -501,7 +516,7 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
             }
             continue;
         }
-        if (i == NGX_SHIELD_STATUS_METRICS - 2) {
+        if (i == NGX_SHIELD_STATUS_METRICS - 3) {
             for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
                 p = ngx_slprintf(p, last,
                     "%s_total{zone=\"%V\",category=\"%s\","
@@ -514,7 +529,7 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
             }
             continue;
         }
-        if (i == NGX_SHIELD_STATUS_METRICS - 1) {
+        if (i == NGX_SHIELD_STATUS_METRICS - 2) {
             ngx_uint_t source;
 
             for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
@@ -528,6 +543,17 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
                         ngx_http_shield_source_name(source),
                         snapshot->source_hits[j][source]);
                 }
+            }
+            continue;
+        }
+        if (i == NGX_SHIELD_STATUS_METRICS - 1) {
+            static const char *reasons[] = { "too_large", "encoding", "error" };
+
+            for (j = 0; j < NGX_HTTP_SHIELD_BODY_REASONS; j++) {
+                p = ngx_slprintf(p, last,
+                    "%s_total{zone=\"%V\",reason=\"%s\"} %uL\n",
+                    metric->family, &label, reasons[j],
+                    snapshot->body_uninspected[j]);
             }
             continue;
         }

@@ -174,6 +174,9 @@ ngx_http_shield_ban_shctx_init(ngx_http_shield_ban_shctx_t *sh)
     sh->bans = 0;
     sh->inspected = 0;
     sh->ban_refused = 0;
+    sh->body_uninspected[NGX_HTTP_SHIELD_BODY_TOO_LARGE] = 0;
+    sh->body_uninspected[NGX_HTTP_SHIELD_BODY_ENCODING] = 0;
+    sh->body_uninspected[NGX_HTTP_SHIELD_BODY_ERROR] = 0;
     sh->evictions = 0;
     sh->alloc_failures = 0;
 }

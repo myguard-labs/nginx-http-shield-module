@@ -44,7 +44,7 @@ __DATA__
 --- request eval
 ["GET /default", "GET /explicit"]
 --- response_body_like eval
-[(qr/^\{"zone":"metrics1","nodes":0,"blocked":0,"bans":0,"inspected":0,"ban_refused":0,"evictions":0,"alloc_failures":0,"used":\d+,"size":1048576,"categories":\{.*\},"detections":\{.*\},"banned":\[\]\}$/) x 2]
+[(qr/^\{"zone":"metrics1","nodes":0,"blocked":0,"bans":0,"inspected":0,"ban_refused":0,"evictions":0,"alloc_failures":0,"used":\d+,"size":1048576,"body_uninspected":\{"too_large":0,"encoding":0,"error":0\},"categories":\{.*\},"detections":\{.*\},"banned":\[\]\}$/) x 2]
 --- response_headers eval
 ["Content-Type: application/json", "Content-Type: application/json"]
 --- error_code eval
@@ -104,6 +104,9 @@ my $expected = "# HELP shield_hits Shield signature hits by category.\n"
 . "# HELP shield_source_hits Shield signature hits by category and source.\n"
 . "# TYPE shield_source_hits counter\n"
 . CORE::join('', map { my $cat = $_; map { "shield_source_hits_total{zone=\"metrics2\",category=\"$cat\",source=\"$_\"} 0\n" } qw(uri header range user-agent referer content-type body) } @cats)
+. "# HELP shield_body_uninspected Shield bodies with incomplete inspection by reason.\n"
+. "# TYPE shield_body_uninspected counter\n"
+. CORE::join('', map { "shield_body_uninspected_total{zone=\"metrics2\",reason=\"$_\"} 0\n" } qw(too_large encoding error))
 . "# EOF\n";
 my $pattern = quotemeta($expected);
 $pattern =~ s/USED/[1-9][0-9]*/;
@@ -331,3 +334,124 @@ GET /status
 --- response_headers
 Content-Type: application/json
 --- error_code: 200
+
+=== TEST 19: exact body cap is complete; one byte more counts once
+--- http_config
+    shield_ban_zone body19:1m;
+--- config
+    location /t {
+        shield block;
+        shield_max_body 4;
+        shield_ban zone=body19 count=9 window=60s bantime=30s;
+        empty_gif;
+    }
+    location /metrics { shield_ban_status body19; }
+--- request eval
+["POST /t\nabcd", "GET /metrics", "POST /t\nabcde", "GET /metrics"]
+--- response_body_like eval
+[qr/./, qr/"body_uninspected":\{"too_large":0,"encoding":0,"error":0\}/,
+ qr/./, qr/"body_uninspected":\{"too_large":1,"encoding":0,"error":0\}/]
+--- error_code eval
+[405, 200, 405, 200]
+
+=== TEST 20: unsupported encoding takes precedence over oversized body
+--- http_config
+    shield_ban_zone body20:1m;
+--- config
+    location /t {
+        shield block;
+        shield_max_body 4;
+        shield_ban zone=body20 count=9 window=60s bantime=30s;
+        empty_gif;
+    }
+    location /metrics { shield_ban_status body20; }
+--- more_headers
+Content-Encoding: gzip
+--- request eval
+["POST /t\nabcde", "GET /metrics"]
+--- response_body_like eval
+[qr/./, qr/"body_uninspected":\{"too_large":0,"encoding":1,"error":0\}/]
+--- error_code eval
+[405, 200]
+
+=== TEST 21: identity encoding is complete at the cap
+--- http_config
+    shield_ban_zone body21:1m;
+--- config
+    location /t {
+        shield block;
+        shield_max_body 4;
+        shield_ban zone=body21 count=9 window=60s bantime=30s;
+        empty_gif;
+    }
+    location /metrics { shield_ban_status body21; }
+--- more_headers
+Content-Encoding: Identity
+--- request eval
+["POST /t\nabcd", "GET /metrics"]
+--- response_body_like eval
+[qr/./, qr/"body_uninspected":\{"too_large":0,"encoding":0,"error":0\}/]
+--- error_code eval
+[405, 200]
+
+=== TEST 22: duplicate encodings include an unsupported value
+--- http_config
+    shield_ban_zone body22:1m;
+--- config
+    location /t {
+        shield block;
+        shield_ban zone=body22 count=9 window=60s bantime=30s;
+        empty_gif;
+    }
+    location /metrics { shield_ban_status body22; }
+--- more_headers
+Content-Encoding: identity
+Content-Encoding: gzip
+--- request eval
+["POST /t\nabcd", "GET /metrics"]
+--- response_body_like eval
+[qr/./, qr/"body_uninspected":\{"too_large":0,"encoding":1,"error":0\}/]
+--- error_code eval
+[405, 200]
+
+=== TEST 23: named redirect does not count the same body twice
+--- http_config
+    shield_ban_zone body23:1m;
+--- config
+    shield block;
+    shield_max_body 4;
+    shield_ban zone=body23 count=9 window=60s bantime=30s;
+    location /t { error_page 405 = @again; empty_gif; }
+    location @again { empty_gif; }
+    location /metrics { shield off; shield_ban_status body23; }
+--- request eval
+["POST /t\nabcde", "GET /metrics"]
+--- response_body_like eval
+[qr/./, qr/"body_uninspected":\{"too_large":1,"encoding":0,"error":0\}/]
+--- error_code eval
+[405, 200]
+
+=== TEST 24: redirect counts incomplete inspection in each distinct zone
+--- http_config
+    shield_ban_zone body24a:1m;
+    shield_ban_zone body24b:1m;
+--- config
+    shield block;
+    shield_max_body 4;
+    location /t {
+        shield_ban zone=body24a count=9 window=60s bantime=30s;
+        error_page 405 = @again;
+        empty_gif;
+    }
+    location @again {
+        shield_ban zone=body24b count=9 window=60s bantime=30s;
+        empty_gif;
+    }
+    location /a { shield off; shield_ban_status body24a; }
+    location /b { shield off; shield_ban_status body24b; }
+--- request eval
+["POST /t\nabcde", "GET /a", "GET /b"]
+--- response_body_like eval
+[qr/./, (qr/"body_uninspected":\{"too_large":1,"encoding":0,"error":0\}/) x 2]
+--- error_code eval
+[405, 200, 200]

@@ -75,7 +75,8 @@ echo "==> Running ban_unit ..."
 STATUS_BIN="$SCRIPT_DIR/status_unit"
 ATOMIC_BIN="$SCRIPT_DIR/atomic_width_unit"
 CONFIG_BIN="$SCRIPT_DIR/atomic_config_unit"
-trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1"' EXIT
+BODY_BIN="$SCRIPT_DIR/body_unit"
+trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1" "$BODY_BIN"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -135,4 +136,13 @@ for capability in 1 0; do
         exit 1
     fi
 done
+# Use the real body inspection path with deterministic allocation failure.
+# shellcheck disable=SC2086
+"$CC" -g -O2 -Wall -Wextra -Wno-unused-parameter \
+    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    $CONFIG_EXTRA_CFLAGS -fno-profile-arcs -fno-test-coverage \
+    $CONFIG_GLOBAL_FLAGS $NGX_INCS \
+    -I"$NGX_SRC/src/http" -I"$NGX_SRC/src/http/modules" \
+    -o "$BODY_BIN" "$SCRIPT_DIR/body_unit.c" "$NGX_SRC/src/core/ngx_string.c"
+"$BODY_BIN"
 python3 "$REPO_ROOT/ci/tests/test_status_runner.py"
