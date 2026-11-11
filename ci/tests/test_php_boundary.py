@@ -334,6 +334,40 @@ class PhpBoundaryTests(unittest.TestCase):
                 query=long_query,
             )
 
+    def test_newline_route_boundaries(self):
+        with fixture() as (port, backend, html):
+            for target in (
+                "/health.php%0A",
+                "/health.php%0a?ok=1",
+                "/index.php%0A",
+                "/index.php%0a?q=1",
+            ):
+                with self.subTest(target=target):
+                    before = len(backend.requests)
+                    self.assertEqual(fetch(port, target)[0], 404, target)
+                    self.assertEqual(len(backend.requests), before, target)
+            for target, suffix in (
+                ("/index.php/", "/"),
+                ("/index.php/%0A", "/\n"),
+                ("/index.php/path%0A", "/path\n"),
+                ("/index.php/a%0Ab", "/a\nb"),
+                ("/index.php/a%0D%0Ab.php", "/a\r\nb.php"),
+            ):
+                with self.subTest(target=target):
+                    values = self.assert_dispatch(
+                        port, target, html / "app/index.php", suffix
+                    )
+                    self.assertEqual(values["SCRIPT_NAME"], "/index.php")
+                    self.assertEqual(values["REQUEST_URI"], target)
+            self.assert_dispatch(port, "/health.php", html / "app/health.php")
+            self.assert_dispatch(port, "/index.php", html / "app/index.php")
+            self.assert_dispatch(
+                port,
+                "/health.php?ok=%0A",
+                html / "app/health.php",
+                query="ok=%0A",
+            )
+
     def test_post_body(self):
         with fixture(disable_body=DISABLE_BODY) as (port, backend, html):
             for body in (b"", b"data", bytes(range(256)) * 300):

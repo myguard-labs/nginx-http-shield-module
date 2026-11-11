@@ -28,6 +28,11 @@ Adapt this example only when all these conditions describe the site:
   `.php`; `/health.php/anything` is not a route. nginx's normalized current URI
   drives selection. Percent escapes are decoded once by nginx, never again by
   this recipe. Query strings and request bodies do not select a script.
+  Exact routes use PCRE's `\z` end anchor, so a decoded terminal newline cannot
+  extend `/index.php` or `/health.php`. The broader PHP location deliberately
+  catches these undeclared forms and rejects them before ordinary-route
+  fallback. Once `/index.php/` starts PATH_INFO, the complete normalized suffix
+  is preserved, including decoded newlines.
 - `/` and missing ordinary application routes go to `/index.php`. Existing
   public files are static; public directories use `index.html`. `/uploads/`
   and `/media/` expose public data via aliases; `/cache/` has no public alias.
