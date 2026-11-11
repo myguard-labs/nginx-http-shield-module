@@ -1,4 +1,4 @@
-# sync-sha: ca075ac214e941d280db8497ce50e96367d54a1764ed9e2daa424739ab74b735
+# sync-sha: 2b32c7a2b4ecdd64fe8614b88c18ea44700f352e31e9d1ca39ed919efb5c4da3
 name: Build and Test
 
 env:
@@ -59,6 +59,9 @@ jobs:
             src/ngx_http_shield_ban.c \
             src/ngx_shield_probe_hooks.c
           git diff --check
+
+      - name: Check configuration-test sanitizer scope
+        run: python3 -m unittest discover -s ci/tests -p test_config_environment.py
 
       - name: Validate monitoring kit
         run: |
@@ -475,6 +478,8 @@ jobs:
           fi
           python3 ci/tests/test_metrics_counters.py --nginx "$binary" \
             "${module[@]}" --output "$PWD/.build/metrics-counters"
+          python3 ci/tests/test_cve_controls.py --nginx "$binary" \
+            "${module[@]}" --output "$PWD/.build/cve-controls"
 
   coverage:
     name: C line coverage
@@ -549,6 +554,9 @@ jobs:
           python3 ci/tests/test_metrics_counters.py \
             --nginx "$PWD/.build/nginx-${NGINX_VERSION}-coverage/objs/nginx" \
             --output "$PWD/.build/metrics-counters-coverage"
+          python3 ci/tests/test_cve_controls.py \
+            --nginx "$PWD/.build/nginx-${NGINX_VERSION}-coverage/objs/nginx" \
+            --output "$PWD/.build/cve-controls-coverage"
 
       # The ban state engine's multi-node / eviction / window-slide / expiry
       # paths are unreachable from Test::Nginx (single loopback client, no clock

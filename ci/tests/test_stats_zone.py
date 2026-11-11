@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -123,6 +124,20 @@ def server(
                 assert "runtime error:" not in logs, logs
 
 
+def config_test_environment() -> dict[str, str]:
+    """Only nginx -t children skip its intentionally retained cycle-pool leaks.
+
+    nginx returns before cycle cleanup in config-test mode. Keep address/UB
+    checks and the parent's live-server LeakSanitizer policy unchanged.
+    """
+    environment = os.environ.copy()
+    existing = environment.get("ASAN_OPTIONS", "")
+    environment["ASAN_OPTIONS"] = ":".join(
+        option for option in (existing, "detect_leaks=0") if option
+    )
+    return environment
+
+
 def config_controls(binary: Path, module: Path | None) -> None:
     """Observe positive minimum/forward binding and explicit rejected contracts."""
     minimum = 8 * os.sysconf("SC_PAGE_SIZE")
@@ -181,6 +196,7 @@ def config_controls(binary: Path, module: Path | None) -> None:
                 capture_output=True,
                 text=True,
                 check=False,
+                env=config_test_environment(),
             )
             assert (result.returncode == 0) == valid, (number, result.stderr)
             if not valid:
@@ -197,7 +213,10 @@ def reload(
     rejected: bool = False,
 ) -> None:
     """Prove reload completion via a new worker response or a fresh error."""
-    previous = (root / "error.log").stat().st_size
+    old_logs = (root / "error.log").read_text()
+    previous = len(old_logs)
+    old_workers = set(re.findall(r"start worker process (\d+)", old_logs))
+    old_workers.difference_update(re.findall(r"worker process (\d+) exited", old_logs))
     (root / "nginx.conf").write_text(text)
     process.send_signal(signal.SIGHUP)
     deadline = time.monotonic() + 10
@@ -208,7 +227,22 @@ def reload(
                 assert request(port, "/ready") == (200, b"before")
                 return
         elif request(port, "/ready") == (200, b"after"):
-            return
+            # A new worker can respond while old workers still accept requests.
+            # Resized zones differ between generations: drain the old set
+            # before asserting exact counters in the new shared storage.
+            fresh_logs = (root / "error.log").read_text()[previous:]
+            marker = re.search(r"(?m): reconfiguring$", fresh_logs)
+            if marker is None:
+                assert time.monotonic() < deadline, fresh_logs
+                time.sleep(0.02)
+                continue
+            before_reconfigure = fresh_logs[: marker.start()]
+            old_workers.update(
+                re.findall(r"start worker process (\d+)", before_reconfigure)
+            )
+            exited = set(re.findall(r"worker process (\d+) exited", fresh_logs))
+            if old_workers <= exited:
+                return
         assert time.monotonic() < deadline, (root / "error.log").read_text()
         time.sleep(0.02)
 

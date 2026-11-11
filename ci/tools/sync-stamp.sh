@@ -35,13 +35,23 @@
 # they are a much wider surface carrying this module's own name, paths and
 # thresholds throughout, so they drift from the skeleton by design and a stamp
 # on them would report drift that is the intended state.
+# --check-tree <dir> inspects an explicit materialized selection read-only.
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
-
+# An explicit inspection tree lets staged/selected-file gates reuse this
+# algorithm without a nested Git repository or inherited hook Git variables.
+CHECK_ROOT=""
 MODE=stamp
 case "${1:-}" in
     --check) MODE=check ;;
+    --check-tree)
+        if [ "$#" -ne 2 ] || [ ! -d "${2:-}" ] || [ -L "${2:-}" ]; then
+            echo "sync-stamp: --check-tree requires a regular directory" >&2
+            exit 2
+        fi
+        CHECK_ROOT="$2"
+        MODE=check
+        ;;
     --list) MODE=list ;;
     # Anchor to the end of the header block, not a line number: any edit to the
     # comments above would otherwise silently truncate this output.
@@ -55,6 +65,12 @@ case "${1:-}" in
         exit 2
         ;;
 esac
+
+if [ -n "$CHECK_ROOT" ]; then
+    cd -- "$CHECK_ROOT"
+else
+    cd "$(git rev-parse --show-toplevel)"
+fi
 
 # NUL-delimited: paths with spaces must not split. -print0/-d '' throughout.
 #
@@ -202,11 +218,12 @@ if ! targets >"$raw_list"; then
 fi
 
 targets_list=()
-mapfile -t -d '' targets_list < <(LC_ALL=C sort -z -- "$raw_list")
+LC_ALL=C sort -z -o "$raw_list" -- "$raw_list"
+while IFS= read -r -d '' target; do targets_list+=("$target"); done <"$raw_list"
 
 rc=0
 count=0
-for f in "${targets_list[@]}"; do
+for f in ${targets_list[@]+"${targets_list[@]}"}; do
     count=$((count + 1))
     want="$(content_sha "$f")"
     have="$(stamp_of "$f")"
@@ -241,6 +258,11 @@ for f in "${targets_list[@]}"; do
             ;;
     esac
 done
+
+if [ "$count" -eq 0 ] && [ -n "$CHECK_ROOT" ]; then
+    echo "sync-stamp: selected files contain no stamp targets"
+    exit 0
+fi
 
 if [ "$count" -eq 0 ]; then
     # A selector that matches nothing must not report success -- that is how a

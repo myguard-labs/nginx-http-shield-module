@@ -201,6 +201,11 @@ case_ 0 "lint-ci-coverage is dispatched by run-all.sh" \
     bash -c 'ci/linter/run-all.sh --list | grep -q lint-ci-coverage.sh'
 case_ 0 "lint-ci-runners is dispatched by run-all.sh" \
     bash -c 'ci/linter/run-all.sh --list | grep -q lint-ci-runners.sh'
+case_ 0 "lint-sync-stamp is dispatched by run-all.sh" \
+    bash -c 'ci/linter/run-all.sh --list | grep -q lint-sync-stamp.sh'
+
+case_ 0 "stamp gate dispatch, staged bytes and selection controls" \
+    bash ci/tests/test_sync_stamp_gate.sh
 
 case_ 0 "CI policy coverage and runner controls" python3 ci/tests/test_ci_policy.py
 case_ 0 "flawfinder gate failure controls" bash ci/tests/test_flawfinder_gate.sh

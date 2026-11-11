@@ -29,6 +29,7 @@
 
 #include "ngx_http_shield_patterns.h"
 #include "ngx_http_shield_scan.h"
+#include "ngx_http_shield_cve.h"
 #include "ngx_http_shield_ban.h"
 #include "ngx_http_shield_negotiate.h"
 #include "ngx_shield_probe_hooks.h"
@@ -78,6 +79,7 @@ typedef struct {
 
 typedef struct {
     ngx_uint_t   mode;        /* OFF / DETECT / BLOCK                        */
+    ngx_uint_t   cve;         /* opt-in application policies                */
     ngx_flag_t   body;        /* inspect request body                       */
     size_t       max_body;    /* bytes of body scanned                      */
     ngx_uint_t   status;      /* status returned in BLOCK mode              */
@@ -149,6 +151,8 @@ static void *ngx_http_shield_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_shield_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent,
     void *child);
+static char *ngx_http_shield_cve(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 static char *ngx_http_shield_mode(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_shield_status(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -299,6 +303,13 @@ static ngx_command_t  ngx_http_shield_commands[] = {
     { ngx_string("shield"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_http_shield_mode,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("shield_cve"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      ngx_http_shield_cve,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -1036,6 +1047,168 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
 
 /* ---- pre-body inspection (request target + headers) -------------------- */
 
+/* Policies use existing categories, sources and action/accounting paths. */
+static ngx_int_t
+ngx_http_shield_cve_hit(ngx_uint_t cat, uint64_t skip, const char *source,
+    ngx_http_shield_hit_t *hit)
+{
+    if (cat >= NGX_HTTP_SHIELD_CAT_N || (skip & ((uint64_t) 1 << cat))) {
+        return NGX_DECLINED;
+    }
+    hit->cat = cat;
+    hit->category = cat == NGX_HTTP_SHIELD_CAT_DESERIAL ? "deserial"
+                    : cat == NGX_HTTP_SHIELD_CAT_JAVA_EVAL ? "java_eval"
+                    : cat == NGX_HTTP_SHIELD_CAT_PHP_RCE ? "php_rce"
+                    : "exploit_path";
+    hit->source = source;
+    return NGX_OK;
+}
+
+
+static ngx_uint_t
+ngx_http_shield_cve_flags(ngx_http_shield_loc_conf_t *slcf)
+{
+    ngx_uint_t  flags;
+
+    flags = slcf->cve;
+    if (slcf->skip & ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_DESERIAL)) {
+        flags &= ~(NGX_SHIELD_CVE_CRAFT|NGX_SHIELD_CVE_JSON);
+    }
+    if (slcf->skip & ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_JAVA_EVAL)) {
+        flags &= ~NGX_SHIELD_CVE_GEO;
+    }
+    return flags;
+}
+
+
+/* One additional request-pool buffer, only for enabled query/body policies.
+ * Percent decoding and lowercasing do not grow it. JSON is decoded from the
+ * original bytes, never from the percent-decoded view and never recursively. */
+static ngx_int_t
+ngx_http_shield_cve_scan(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_str_t *input, ngx_uint_t body,
+    ngx_http_shield_hit_t *hit)
+{
+    u_char      *src, *dst, *scratch;
+    ngx_str_t    view;
+    ngx_uint_t   cat, flags;
+    size_t       i;
+    ngx_int_t    rc;
+
+    flags = ngx_http_shield_cve_flags(slcf);
+    flags &= body ? NGX_SHIELD_CVE_BODY
+                  : (NGX_SHIELD_CVE_PHP|NGX_SHIELD_CVE_GEO);
+    if (!flags || !input->len) {
+        return NGX_DECLINED;
+    }
+    scratch = ngx_pnalloc(r->pool, input->len);
+    if (scratch == NULL) {
+        return NGX_ERROR;
+    }
+    src = input->data;
+    dst = scratch;
+    ngx_unescape_uri(&dst, &src, input->len, 0);
+    view.data = scratch;
+    view.len = dst - scratch;
+    for (i = 0; i < view.len; i++) {
+        scratch[i] = scratch[i] == '+' ? ' ' : ngx_tolower(scratch[i]);
+    }
+    if (!body && (flags & NGX_SHIELD_CVE_PHP)
+        && ngx_http_shield_cve_php(&view))
+    {
+        rc = ngx_http_shield_cve_hit(NGX_HTTP_SHIELD_CAT_PHP_RCE,
+                  slcf->skip, NGX_HTTP_SHIELD_SOURCE_URI, hit);
+        if (rc != NGX_DECLINED) {
+            return rc;
+        }
+    }
+    cat = ngx_http_shield_cve_body_match(&view,
+                                        flags & ~NGX_SHIELD_CVE_JSON);
+    rc = ngx_http_shield_cve_hit(cat, slcf->skip,
+                  body ? NGX_HTTP_SHIELD_SOURCE_BODY
+                       : NGX_HTTP_SHIELD_SOURCE_URI, hit);
+    if (rc != NGX_DECLINED || !body) {
+        return rc;
+    }
+
+    /* Collect metadata before inspecting either view. Duplicate Content-Type
+     * fields must not multiply body work. Different multipart boundaries are
+     * ambiguous across consumers and fail closed instead of picking one. */
+    {
+        ngx_list_part_t  *part;
+        ngx_table_elt_t  *h;
+        ngx_uint_t       json;
+        u_char           boundary_data[70], candidate_data[70];
+        ngx_str_t        boundary, candidate;
+
+        json = 0;
+        boundary.data = boundary_data;
+        boundary.len = 0;
+        candidate.data = candidate_data;
+        candidate.len = 0;
+        part = &r->headers_in.headers.part;
+        h = part->elts;
+        for (i = 0; /* all field instances, no body rescans */; i++) {
+            if (i >= part->nelts) {
+                if (part->next == NULL) {
+                    break;
+                }
+                part = part->next;
+                h = part->elts;
+                i = 0;
+            }
+            if (!h[i].hash || !ngx_http_shield_header_name_is(&h[i],
+                    "Content-Type", sizeof("Content-Type") - 1))
+            {
+                continue;
+            }
+            if (ngx_http_shield_content_type_is(&h[i].value,
+                    "application/json", sizeof("application/json") - 1)
+                || ngx_http_shield_content_type_suffix(&h[i].value,
+                    "+json", sizeof("+json") - 1))
+            {
+                json = 1;
+            }
+            if (!ngx_http_shield_content_type_is(&h[i].value,
+                    "multipart/form-data", sizeof("multipart/form-data") - 1))
+            {
+                continue;
+            }
+            if (ngx_http_shield_cve_boundary(&h[i].value, &candidate) != NGX_OK
+                || (boundary.len
+                    && (boundary.len != candidate.len
+                        || ngx_memcmp(boundary.data, candidate.data,
+                                      boundary.len) != 0)))
+            {
+                return NGX_ERROR;
+            }
+            if (!boundary.len) {
+                ngx_memcpy(boundary.data, candidate.data, candidate.len);
+                boundary.len = candidate.len;
+            }
+        }
+        if (json) {
+            view.len = ngx_http_shield_cve_json(scratch, input->data,
+                                               input->len);
+            cat = ngx_http_shield_cve_body_match(&view, flags);
+            rc = ngx_http_shield_cve_hit(cat, slcf->skip,
+                                       NGX_HTTP_SHIELD_SOURCE_BODY, hit);
+            if (rc != NGX_DECLINED) {
+                return rc;
+            }
+        }
+        if (boundary.len) {
+            view.len = ngx_http_shield_cve_multipart(scratch, input->data,
+                                                    input->len, &boundary);
+            cat = ngx_http_shield_cve_body_match(&view, flags);
+            return ngx_http_shield_cve_hit(cat, slcf->skip,
+                                          NGX_HTTP_SHIELD_SOURCE_BODY, hit);
+        }
+    }
+    return NGX_DECLINED;
+}
+
+
 static ngx_int_t
 ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
@@ -1065,6 +1238,11 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
 
     if (ngx_http_shield_check_dotfile(r, slcf, hit) == NGX_OK) {
         return NGX_OK;
+    }
+
+    rc = ngx_http_shield_cve_scan(r, slcf, &r->args, 0, hit);
+    if (rc != NGX_DECLINED) {
+        return rc;
     }
 
     /* Request target as sent by the client (path + query, still encoded).
@@ -1151,7 +1329,25 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
             i = 0;
         }
 
-        if (header[i].hash == 0 || header[i].value.len == 0) {
+        if (header[i].hash == 0) {
+            continue;
+        }
+        if (((slcf->cve & NGX_SHIELD_CVE_NEXT)
+             && ngx_http_shield_header_name_is(&header[i],
+                    "x-middleware-subrequest",
+                    sizeof("x-middleware-subrequest") - 1))
+            || ((slcf->cve & NGX_SHIELD_CVE_TOMCAT)
+                && r->method == NGX_HTTP_PUT
+                && ngx_http_shield_header_name_is(&header[i],
+                    "Content-Range", sizeof("Content-Range") - 1)))
+        {
+            rc = ngx_http_shield_cve_hit(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH,
+                         slcf->skip, NGX_HTTP_SHIELD_SOURCE_HEADER, hit);
+            if (rc != NGX_DECLINED) {
+                return rc;
+            }
+        }
+        if (header[i].value.len == 0) {
             continue;
         }
 
@@ -1557,6 +1753,9 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
                                 NGX_HTTP_SHIELD_SOURCE_BODY,
                                 slcf->skip | ngx_http_shield_no_body_mask(),
                                 hit);
+    if (rc == NGX_DECLINED) {
+        rc = ngx_http_shield_cve_scan(r, slcf, &body, 1, hit);
+    }
 
 account:
     stats = ngx_http_shield_stats_ctx(r);
@@ -1676,6 +1875,7 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     }
 
     slcf->mode = NGX_CONF_UNSET_UINT;
+    slcf->cve = NGX_CONF_UNSET_UINT;
     slcf->body = NGX_CONF_UNSET;
     slcf->max_body = NGX_CONF_UNSET_SIZE;
     slcf->status = NGX_CONF_UNSET_UINT;
@@ -1707,6 +1907,7 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_shield_loc_conf_t  *conf = child;
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode, NGX_HTTP_SHIELD_OFF);
+    ngx_conf_merge_uint_value(conf->cve, prev->cve, 0);
     ngx_conf_merge_value(conf->body, prev->body, 1);
     /* 8k, not 64k. Scan cost is linear in the buffer -- the Aho-Corasick pass
      * is O(bytes), independent of the signature count -- so a body is still a
@@ -1770,6 +1971,53 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         }
     }
 
+    return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_http_shield_cve(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_shield_loc_conf_t  *slcf = conf;
+    ngx_str_t                  *value;
+    ngx_uint_t                  i, j, flags;
+    static ngx_conf_bitmask_t   profiles[] = {
+        { ngx_string("php_cgi"), NGX_SHIELD_CVE_PHP },
+        { ngx_string("craft_cms"), NGX_SHIELD_CVE_CRAFT },
+        { ngx_string("geoserver"), NGX_SHIELD_CVE_GEO },
+        { ngx_string("nextjs_middleware"), NGX_SHIELD_CVE_NEXT },
+        { ngx_string("tomcat_put"), NGX_SHIELD_CVE_TOMCAT },
+        { ngx_string("json_escapes"), NGX_SHIELD_CVE_JSON },
+        { ngx_null_string, 0 }
+    };
+
+    if (slcf->cve != NGX_CONF_UNSET_UINT) {
+        return "is duplicate";
+    }
+    value = cf->args->elts;
+    if (cf->args->nelts == 2 && ngx_strcmp(value[1].data, "off") == 0) {
+        slcf->cve = 0;
+        return NGX_CONF_OK;
+    }
+    flags = 0;
+    for (i = 1; i < cf->args->nelts; i++) {
+        for (j = 0; profiles[j].name.len; j++) {
+            if (value[i].len == profiles[j].name.len
+                && ngx_strncmp(value[i].data, profiles[j].name.data,
+                               value[i].len) == 0)
+            {
+                break;
+            }
+        }
+        if (!profiles[j].name.len || (flags & profiles[j].mask)) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid or duplicate shield_cve profile %V",
+                               &value[i]);
+            return NGX_CONF_ERROR;
+        }
+        flags |= profiles[j].mask;
+    }
+    slcf->cve = flags;
     return NGX_CONF_OK;
 }
 
