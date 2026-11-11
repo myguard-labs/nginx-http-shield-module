@@ -92,7 +92,12 @@ http {{
         location /json/ {{ shield_cve json_escapes; empty_gif; }}
         location /next/ {{ shield_cve nextjs_middleware; empty_gif; }}
         location /put/ {{ shield_cve tomcat_put; empty_gif; }}
-        location /php/ {{ shield_cve php_cgi; empty_gif; }}
+        location /php/ {{
+            shield_cve php_cgi;
+            fastcgi_param PHP_VALUE "memory_limit=128M";
+            fastcgi_param PHP_ADMIN_VALUE "display_errors=0";
+            empty_gif;
+        }}
     }}
 }}
 """
@@ -149,26 +154,126 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                     time.sleep(0.02)
 
                 def check(
-                    name, path, expected, *, body=None, headers=None, method=None
+                    name,
+                    path,
+                    expected,
+                    *,
+                    body=None,
+                    headers=None,
+                    method=None,
+                    hit=None,
                 ):
                     verb = method or ("POST" if body is not None else "GET")
                     log = root / "hits.jsonl"
                     before = len(log.read_text().splitlines()) if log.exists() else 0
                     actual = request(port, path, headers, verb, body)[0]
                     assert actual == expected, (name, actual, expected)
-                    if name in EXPECTED_HITS:
+                    expected_hit = hit or EXPECTED_HITS.get(name)
+                    if expected_hit:
                         records = [
                             json.loads(line)
                             for line in log.read_text().splitlines()[before:]
                         ]
                         assert len(records) == 1, (name, records)
                         observed = (records[0]["cat"], records[0]["src"])
-                        assert observed == EXPECTED_HITS[name], (
+                        assert observed == expected_hit, (
                             name,
                             "category/source",
                             observed,
                         )
-                    results.append({"case": name, "status": actual})
+                    elif hit is False:
+                        after = len(log.read_text().splitlines()) if log.exists() else 0
+                        assert after == before, (name, "unexpected hit")
+                    results.append(
+                        {"case": name, "status": actual, "hit": expected_hit}
+                    )
+
+                # Scanner observations only: no PHP/CGI backend or payload execution.
+                upload = (
+                    '--fixture\r\nContent-Disposition: form-data; name="file"; '
+                    'filename="note.txt"\r\nContent-Type: text/plain\r\n\r\n'
+                    "ordinary upload\r\n--fixture--\r\n"
+                )
+                php_cases: tuple[
+                    tuple[str, str, int, tuple[str, str] | bool, dict], ...
+                ] = (
+                    # name, target, status, hit category/source, request options
+                    ("P1 indexed query", "/php/?top-40", 200, False, {}),
+                    (
+                        "P1 option signature",
+                        "/php/?-d+auto_prepend_file",
+                        403,
+                        ("php_rce", "uri"),
+                        {},
+                    ),
+                    (
+                        "P2 soft hyphen option",
+                        "/php/?%ADd+note",
+                        403,
+                        ("php_rce", "uri"),
+                        {},
+                    ),
+                    ("P2 encoded text", "/php/?q=soft%ADhyphen", 200, False, {}),
+                    ("P3 encoded quote text", "/php/?q=%22hello%22", 200, False, {}),
+                    (
+                        "P4 custom redirect header",
+                        "/php/",
+                        200,
+                        False,
+                        {"headers": {"Redirect-Status": "200"}},
+                    ),
+                    ("P7 encoded markup text", "/php/?q=%3Carticle%3E", 200, False, {}),
+                    ("P9 ordinary path info", "/php/index.php/notes", 200, False, {}),
+                    (
+                        "P9 encoded control",
+                        "/php/index.php/%0Atext",
+                        200,
+                        False,
+                        {},
+                    ),
+                    (
+                        "P10 proxy header",
+                        "/php/",
+                        403,
+                        ("httpoxy", "header"),
+                        {"headers": {"Proxy": "example.invalid"}},
+                    ),
+                    (
+                        "P10 custom proxy note",
+                        "/php/",
+                        200,
+                        False,
+                        {"headers": {"X-Proxy-Note": "ordinary"}},
+                    ),
+                    (
+                        "P11 inert function shape",
+                        "/php/",
+                        403,
+                        ("shellshock", "header"),
+                        {"headers": {"X-Note": "() { :;}"}},
+                    ),
+                    (
+                        "P11 ordinary function text",
+                        "/php/",
+                        200,
+                        False,
+                        {"headers": {"X-Note": "function() { return 1; }"}},
+                    ),
+                    (
+                        "ordinary upload with trusted overrides",
+                        "/php/",
+                        405,
+                        False,
+                        {
+                            "body": upload,
+                            "headers": {
+                                "Content-Type": "multipart/form-data; boundary=fixture"
+                            },
+                        },
+                    ),
+                )
+                for name, path, status, hit, options in php_cases:
+                    check(name, path, status, hit=hit, **options)
 
                 for prefix in ("enabled", "enabled/inherit"):
                     check("PHP query prefix", f"/{prefix}/?%ADd+foo", 403)
