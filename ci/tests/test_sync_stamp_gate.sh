@@ -75,4 +75,5 @@ git add .github/workflows
 printf '# sync-sha: 0000000000000000000000000000000000000000000000000000000000000000\nname: unicode\n' >.github/workflows/café.yml
 git add .github/workflows/café.yml
 expect 1 'STALE stamp' env LINT_MODE=all ci/linter/lint-sync-stamp.sh
+expect 1 'STALE stamp' env LINT_MODE=all ci/linter/lint-sync-stamp.sh ./.github/workflows/café.yml
 echo 'stamp gate: dispatch, failure propagation, staged bytes and selection passed'

@@ -24,8 +24,10 @@ elif [ "${LINT_MODE:-all}" = staged ]; then
 else
     git ls-files -z >"$snapshot/paths"
 fi
-mapfile -t -d '' CANDIDATES <"$snapshot/paths"
-for file in "${CANDIDATES[@]}"; do
+CANDIDATES=()
+while IFS= read -r -d '' file; do CANDIDATES+=("$file"); done <"$snapshot/paths"
+for file in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
+    while [[ "$file" == ./* ]]; do file="${file#./}"; done
     case "$file" in
         .github/*)
             if [ "${LINT_MODE:-all}" = staged ] || [ -f "$file" ]; then
@@ -34,7 +36,7 @@ for file in "${CANDIDATES[@]}"; do
             ;;
     esac
 done
-[ "${#FILES[@]}" -gt 0 ] || {
+[ -n "${FILES[*]-}" ] || {
     echo "lint-sync-stamp: no CI content changes"
     exit 0
 }
@@ -45,7 +47,7 @@ if [ "${LINT_MODE:-all}" = staged ]; then
 else
     cp "$root/ci/tools/sync-stamp.sh" "$snapshot/ci/tools/sync-stamp.sh"
 fi
-for file in "${FILES[@]}"; do
+for file in ${FILES[@]+"${FILES[@]}"}; do
     case "$file" in
         *'/../'* | *$'\n'*) die "unsafe CI path" ;;
         .github/*) ;;

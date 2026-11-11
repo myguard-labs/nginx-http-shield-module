@@ -61,12 +61,16 @@ class ReloadReadiness(unittest.TestCase):
             log.write_text("start worker process 11\nstart worker process 12\n")
             process = Mock()
             process.send_signal.side_effect = lambda _: log.write_text(
-                log.read_text() + "worker process 11 exited with code 0\n"
+                log.read_text()
+                + "start worker process 13\nreconfiguring\nworker process 11 exited with code 0\n"
             )
 
-            def drain(_):
+            drains = iter((12, 13))
+
+            def drain(_) -> None:
                 log.write_text(
-                    log.read_text() + "worker process 12 exited with code 0\n"
+                    log.read_text()
+                    + f"worker process {next(drains)} exited with code 0\n"
                 )
 
             with (
@@ -74,7 +78,7 @@ class ReloadReadiness(unittest.TestCase):
                 patch("test_stats_zone.time.sleep", side_effect=drain) as sleep,
             ):
                 reload(1, process, root, "new config")
-                sleep.assert_called_once()
+                self.assertEqual(sleep.call_count, 2)
             self.assertEqual((root / "nginx.conf").read_text(), "new config")
 
 

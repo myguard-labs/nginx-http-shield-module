@@ -218,11 +218,12 @@ if ! targets >"$raw_list"; then
 fi
 
 targets_list=()
-mapfile -t -d '' targets_list < <(LC_ALL=C sort -z -- "$raw_list")
+LC_ALL=C sort -z -o "$raw_list" -- "$raw_list"
+while IFS= read -r -d '' target; do targets_list+=("$target"); done <"$raw_list"
 
 rc=0
 count=0
-for f in "${targets_list[@]}"; do
+for f in ${targets_list[@]+"${targets_list[@]}"}; do
     count=$((count + 1))
     want="$(content_sha "$f")"
     have="$(stamp_of "$f")"
