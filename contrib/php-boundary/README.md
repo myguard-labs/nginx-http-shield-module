@@ -42,7 +42,9 @@ Adapt this example only when all these conditions describe the site:
   duplicate parameters, `fastcgi_split_path_info`, request-driven script
   overrides or later rewrites after the include. `params.conf` is the complete
   parameter list at that location; do not combine it with `fastcgi_params` or
-  `fastcgi.conf`. Add application-specific parameters there only after review.
+  `fastcgi.conf`. Local `fastcgi_param` directives replace the inherited list;
+  carry all site-required parameters and policies into this file on adaptation.
+  Add application-specific parameters there only after review.
 - The `shield_php_*` variables belong exclusively to these maps. Do not assign
   them with `set`, use their names for captures, or consume routing maps before
   location rewrites complete. The maps are `volatile` so an internal redirect
@@ -116,6 +118,23 @@ mapping rejected uploads to the front controller changes rejection behavior.
 A named FastCGI handler that retains an unapproved URI must reject it; including
 `dispatch.conf` does not silently turn that URI into an approved entrypoint.
 
+Request headers retain nginx's normal FastCGI forwarding semantics. For example,
+a client `Proxy` header becomes `HTTP_PROXY`. This script boundary does not
+impose an httpoxy policy or remove legitimate application headers. Keep HTTP
+clients patched and review existing header policies when replacing a parameter
+list. If the site's explicit contract forbids using that header in PHP, carry
+its mitigation into the local `params.conf`:
+
+```nginx
+fastcgi_param HTTP_PROXY "";
+```
+
+nginx then omits `HTTP_PROXY`, including its automatic header-derived value.
+This is an optional site policy: applications that
+legitimately consume `Proxy` must retain their intended semantics instead. An
+inherited empty parameter is not preserved merely by adding this recipe's local
+parameter list.
+
 Before deployment run `nginx -t` (or `angie -t`) against the complete adapted
 configuration. Inspect `nginx -T` locally for all FastCGI handlers and duplicate
 parameter includes; its output can contain secrets, so do not publish it.
@@ -161,7 +180,8 @@ python3 ci/tests/test_php_boundary.py --nginx /path/to/nginx --output .build/php
 ```
 
 The test loads copies of these files in an isolated prefix and records every
-FastCGI parameter pair without executing PHP. It checks entrypoints, POST and
+FastCGI parameter pair and STDIN bytes without executing PHP. It checks
+entrypoints, POST and
 query preservation, PATH_INFO, normalized escapes, URI case, static aliases,
 filesystem case, tree boundaries, root/alias generated filenames, rewrite,
 named/error redirects, bad encoding and invalid include placement. Test-only
@@ -176,8 +196,18 @@ python3 ci/tests/test_php_boundary.py --nginx /path/to/nginx \
     --disable-guards -k test_final_script
 ```
 
-That command must exit nonzero with `forbidden backend dispatch`. Restore normal
-options and the suite must pass. CI runs the normal suite against its pinned
+That command must exit nonzero with `forbidden backend dispatch`. A separate
+body-preservation control injects an inherited `fastcgi_pass_request_body off`:
+
+```sh
+python3 ci/tests/test_php_boundary.py --nginx /path/to/nginx \
+    --disable-body -k test_post_body
+```
+
+This must fail with `FastCGI STDIN differs` for nonempty POST bodies even though
+the forwarded `CONTENT_LENGTH` is correct. Empty, short and binary bodies spanning
+multiple FastCGI records are covered. Restore normal options and the suite must
+pass. CI runs the normal suite against its pinned
 nginx and Angie debug builds; no PHP runtime is required.
 
 Reference semantics: [nginx map](https://nginx.org/en/docs/http/ngx_http_map_module.html)

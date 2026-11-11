@@ -5,6 +5,7 @@
 
 Usage: python3 ci/tests/test_php_boundary.py --nginx /path/to/nginx
        [--output /path/to/evidence] [--disable-guards] [-k test_final_script]
+       [--disable-body] [-k test_post_body]
 The disabled-guards invocation intentionally fails the protection assertion.
 No PHP is executed. Every allowed response is the recorded FastCGI PARAMS.
 """
@@ -30,6 +31,7 @@ RECIPE = Path(__file__).resolve().parents[2] / "contrib/php-boundary"
 BINARY = Path("nginx")
 OUTPUT: Path | None = None
 DISABLE_GUARDS = False
+DISABLE_BODY = False
 
 
 def read_exact(stream, length):
@@ -73,6 +75,7 @@ class Recorder(socketserver.StreamRequestHandler):
     def handle(self):
         self.connection.settimeout(5)
         encoded = bytearray()
+        body = bytearray()
         while True:
             header = read_exact(self.rfile, 8)
             version, kind, request_id, size, padding, _ = struct.unpack(
@@ -84,10 +87,13 @@ class Recorder(socketserver.StreamRequestHandler):
             read_exact(self.rfile, padding)
             if kind == 4:
                 encoded.extend(payload)
+            if kind == 5:
+                body.extend(payload)
             if kind == 5 and not size:
                 pairs = parameters(encoded)
                 with self.server.lock:
                     self.server.requests.append(pairs)
+                    self.server.bodies.append(bytes(body))
                 response = b"Content-Type: application/json\r\n\r\n"
                 response += json.dumps(pairs).encode()
                 self.wfile.write(record(6, request_id, response))
@@ -102,13 +108,14 @@ class Backend(socketserver.ThreadingTCPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Recorder)
         self.requests = []
+        self.bodies = []
         self.lock = threading.Lock()
 
 
-def fetch(port, target, method="GET", body=None):
+def fetch(port, target, method="GET", body=None, headers=None):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        connection.request(method, target, body=body)
+        connection.request(method, target, body=body, headers=headers or {})
         response = connection.getresponse()
         return response.status, response.read()
     finally:
@@ -116,7 +123,9 @@ def fetch(port, target, method="GET", body=None):
 
 
 @contextmanager
-def fixture(*, disable_guards=False, invalid=None):
+def fixture(
+    *, disable_guards=False, disable_body=False, clear_proxy=False, invalid=None
+):
     """Render copies of the shipped files; only test routes extend their maps."""
     with tempfile.TemporaryDirectory(prefix="shield-php-") as directory:
         root = Path(directory)
@@ -181,6 +190,9 @@ def fixture(*, disable_guards=False, invalid=None):
                 )
                 + "\n"
             )
+        if clear_proxy:
+            params = copied / "params.conf"
+            params.write_text(params.read_text() + 'fastcgi_param HTTP_PROXY "";\n')
         with Backend() as backend:
             thread = threading.Thread(target=backend.serve_forever)
             thread.start()
@@ -219,6 +231,11 @@ http {{
     }}
 }}
 """
+                if disable_body:
+                    config = config.replace(
+                        "access_log off;",
+                        "access_log off;\nfastcgi_pass_request_body off;",
+                    )
                 if invalid == "missing-maps":
                     config = config.replace(f"include {copied}/maps.conf;", "")
                 elif invalid == "wrong-context":
@@ -268,6 +285,10 @@ http {{
                             (OUTPUT / case / "requests.json").write_text(
                                 json.dumps(backend.requests, indent=2) + "\n"
                             )
+                            (OUTPUT / case / "stdin.json").write_text(
+                                json.dumps([body.hex() for body in backend.bodies])
+                                + "\n"
+                            )
             finally:
                 backend.shutdown()
                 thread.join(timeout=10)
@@ -305,19 +326,6 @@ class PhpBoundaryTests(unittest.TestCase):
             self.assert_dispatch(
                 port, "/health.php?ok=1", html / "app/health.php", query="ok=1"
             )
-            values = self.assert_dispatch(
-                port,
-                "/index.php/post?q=1",
-                html / "app/index.php",
-                "/post",
-                "q=1",
-                method="POST",
-                body=b"data",
-            )
-            self.assertEqual(values["REQUEST_METHOD"], "POST")
-            self.assertEqual(values["CONTENT_LENGTH"], "4")
-            self.assertEqual(values["SCRIPT_NAME"], "/index.php")
-            self.assertEqual(values["REQUEST_URI"], "/index.php/post?q=1")
             long_query = "q=" + "a" * 260
             self.assert_dispatch(
                 port,
@@ -325,6 +333,47 @@ class PhpBoundaryTests(unittest.TestCase):
                 html / "app/index.php",
                 query=long_query,
             )
+
+    def test_post_body(self):
+        with fixture(disable_body=DISABLE_BODY) as (port, backend, html):
+            for body in (b"", b"data", bytes(range(256)) * 300):
+                with self.subTest(length=len(body)):
+                    values = self.assert_dispatch(
+                        port,
+                        "/index.php/post?q=1",
+                        html / "app/index.php",
+                        "/post",
+                        "q=1",
+                        method="POST",
+                        body=body,
+                    )
+                    self.assertEqual(values["REQUEST_METHOD"], "POST")
+                    self.assertEqual(values["CONTENT_LENGTH"], str(len(body)))
+                    self.assertEqual(values["SCRIPT_NAME"], "/index.php")
+                    self.assertEqual(values["REQUEST_URI"], "/index.php/post?q=1")
+                    self.assertEqual(backend.bodies[-1], body, "FastCGI STDIN differs")
+
+    def test_proxy_header_contract(self):
+        # Default header semantics and an explicitly chosen site policy differ.
+        for clear_proxy in (False, True):
+            with (
+                self.subTest(clear_proxy=clear_proxy),
+                fixture(clear_proxy=clear_proxy) as (port, _, html),
+            ):
+                values = self.assert_dispatch(
+                    port,
+                    "/index.php",
+                    html / "app/index.php",
+                    headers={
+                        "Proxy": "application-value",
+                        "X-Ordinary": "ordinary-value",
+                    },
+                )
+                if clear_proxy:
+                    self.assertNotIn("HTTP_PROXY", values)
+                else:
+                    self.assertEqual(values["HTTP_PROXY"], "application-value")
+                self.assertEqual(values["HTTP_X_ORDINARY"], "ordinary-value")
 
     def test_final_script(self):
         with fixture(disable_guards=DISABLE_GUARDS) as (port, backend, _):
@@ -420,8 +469,10 @@ if __name__ == "__main__":
     parser.add_argument("--nginx", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--disable-guards", action="store_true")
+    parser.add_argument("--disable-body", action="store_true")
     args, remaining = parser.parse_known_args()
     BINARY = args.nginx.resolve(strict=True)
     OUTPUT = args.output.resolve() if args.output else None
     DISABLE_GUARDS = args.disable_guards
+    DISABLE_BODY = args.disable_body
     unittest.main(argv=[__file__, *remaining])
