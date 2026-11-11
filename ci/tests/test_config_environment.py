@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from test_stats_zone import config_controls, config_test_environment
+from test_stats_zone import config_controls, config_test_environment, reload
 
 
 class ConfigEnvironmentTests(unittest.TestCase):
@@ -50,6 +51,31 @@ class ConfigEnvironmentTests(unittest.TestCase):
             self.assertEqual(
                 os.environ["ASAN_OPTIONS"], "halt_on_error=1:detect_leaks=1"
             )
+
+
+class ReloadReadiness(unittest.TestCase):
+    def test_waits_for_every_old_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "error.log"
+            log.write_text("start worker process 11\nstart worker process 12\n")
+            process = Mock()
+            process.send_signal.side_effect = lambda _: log.write_text(
+                log.read_text() + "worker process 11 exited with code 0\n"
+            )
+
+            def drain(_):
+                log.write_text(
+                    log.read_text() + "worker process 12 exited with code 0\n"
+                )
+
+            with (
+                patch("test_stats_zone.request", return_value=(200, b"after")),
+                patch("test_stats_zone.time.sleep", side_effect=drain) as sleep,
+            ):
+                reload(1, process, root, "new config")
+                sleep.assert_called_once()
+            self.assertEqual((root / "nginx.conf").read_text(), "new config")
 
 
 if __name__ == "__main__":

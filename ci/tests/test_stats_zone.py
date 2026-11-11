@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -212,7 +213,10 @@ def reload(
     rejected: bool = False,
 ) -> None:
     """Prove reload completion via a new worker response or a fresh error."""
-    previous = (root / "error.log").stat().st_size
+    old_logs = (root / "error.log").read_text()
+    previous = len(old_logs)
+    old_workers = set(re.findall(r"start worker process (\d+)", old_logs))
+    old_workers.difference_update(re.findall(r"worker process (\d+) exited", old_logs))
     (root / "nginx.conf").write_text(text)
     process.send_signal(signal.SIGHUP)
     deadline = time.monotonic() + 10
@@ -223,7 +227,13 @@ def reload(
                 assert request(port, "/ready") == (200, b"before")
                 return
         elif request(port, "/ready") == (200, b"after"):
-            return
+            # A new worker can respond while old workers still accept requests.
+            # Resized zones differ between generations: drain the old set
+            # before asserting exact counters in the new shared storage.
+            fresh_logs = (root / "error.log").read_text()[previous:]
+            exited = set(re.findall(r"worker process (\d+) exited", fresh_logs))
+            if old_workers <= exited:
+                return
         assert time.monotonic() < deadline, (root / "error.log").read_text()
         time.sleep(0.02)
 
