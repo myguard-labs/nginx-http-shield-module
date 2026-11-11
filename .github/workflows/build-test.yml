@@ -1,4 +1,4 @@
-# sync-sha: 2b32c7a2b4ecdd64fe8614b88c18ea44700f352e31e9d1ca39ed919efb5c4da3
+# sync-sha: 1b197d75a2d4bd369bc1874139fe0767f865095df31efe64134e9a63d18f2885
 name: Build and Test
 
 env:
@@ -480,6 +480,18 @@ jobs:
             "${module[@]}" --output "$PWD/.build/metrics-counters"
           python3 ci/tests/test_cve_controls.py --nginx "$binary" \
             "${module[@]}" --output "$PWD/.build/cve-controls"
+
+      - name: Check native PHP execution boundaries
+        if: matrix.mode == 'debug'
+        env:
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
+          MATRIX_MODE: ${{ matrix.mode }}
+        run: |
+          build="$PWD/.build/${MATRIX_FLAVOR}-${VER}-${MATRIX_MODE}/objs"
+          binary="$build/nginx"
+          [ -x "$binary" ] || binary="$build/angie"
+          python3 ci/tests/test_php_boundary.py --nginx "$binary" \
+            --output "$PWD/.build/php-boundary"
 
   coverage:
     name: C line coverage

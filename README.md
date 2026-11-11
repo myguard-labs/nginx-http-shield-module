@@ -38,6 +38,15 @@ affects [backends that decompress incoming request bodies](https://github.com/do
 Shield does not decompress those bodies or inspect responses. Remediate affected
 runtimes and dependencies upstream; these signatures do not make them safe.
 
+## PHP execution boundaries
+
+The optional [native PHP boundary recipe](contrib/php-boundary/README.md)
+restricts FastCGI dispatch to declared absolute PHP entrypoints and excludes
+explicit upload/cache/media filesystem trees. It includes front-controller and
+public static-file routing, an exact installation contract, and live
+nginx/Angie tests with a recording FastCGI backend. Operators must adapt and
+verify the whole recipe; Shield does not change application configuration.
+
 ## What it blocks
 
 30 categories contain 644 standalone signatures and six AND rules with 12
