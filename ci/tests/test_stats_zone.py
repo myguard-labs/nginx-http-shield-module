@@ -231,11 +231,12 @@ def reload(
             # Resized zones differ between generations: drain the old set
             # before asserting exact counters in the new shared storage.
             fresh_logs = (root / "error.log").read_text()[previous:]
-            if "reconfiguring" not in fresh_logs:
+            marker = re.search(r"(?m): reconfiguring$", fresh_logs)
+            if marker is None:
                 assert time.monotonic() < deadline, fresh_logs
                 time.sleep(0.02)
                 continue
-            before_reconfigure = fresh_logs.split("reconfiguring", 1)[0]
+            before_reconfigure = fresh_logs[: marker.start()]
             old_workers.update(
                 re.findall(r"start worker process (\d+)", before_reconfigure)
             )

@@ -62,7 +62,7 @@ class ReloadReadiness(unittest.TestCase):
             process = Mock()
             process.send_signal.side_effect = lambda _: log.write_text(
                 log.read_text()
-                + "start worker process 13\nreconfiguring\nworker process 11 exited with code 0\n"
+                + "signal 1 (SIGHUP) received, reconfiguring\nstart worker process 13\nmaster: reconfiguring\nworker process 11 exited with code 0\n"
             )
 
             drains = iter((12, 13))
