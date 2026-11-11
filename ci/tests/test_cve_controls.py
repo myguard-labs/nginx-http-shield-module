@@ -39,6 +39,18 @@ CRAFT26 = (
 FLIGHT = r'{"value":"$1:\u005f_proto__:\u0074hen"}'
 GEO = "<GetFeature><PropertyName>java.lang.Thread.sleep(0)</PropertyName></GetFeature>"
 JSON_HEADER = {"Content-Type": "application/json"}
+EXPECTED_HITS = {
+    "PHP query prefix": ("php_rce", "uri"),
+    "UTF8 option prefix": ("php_rce", "uri"),
+    "Craft 2025 JSON": ("deserial", "body"),
+    "Craft 2026 form": ("deserial", "body"),
+    "GeoServer XML": ("java_eval", "body"),
+    "GeoServer query": ("java_eval", "uri"),
+    "Flight escapes": ("deserial", "body"),
+    "Next internal header": ("exploit_path", "header"),
+    "Next empty header": ("exploit_path", "header"),
+    "Tomcat partial PUT": ("exploit_path", "header"),
+}
 
 
 def configuration(root: Path, port: int, module: Path | None) -> str:
@@ -140,8 +152,22 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                     name, path, expected, *, body=None, headers=None, method=None
                 ):
                     verb = method or ("POST" if body is not None else "GET")
+                    log = root / "hits.jsonl"
+                    before = len(log.read_text().splitlines()) if log.exists() else 0
                     actual = request(port, path, headers, verb, body)[0]
                     assert actual == expected, (name, actual, expected)
+                    if name in EXPECTED_HITS:
+                        records = [
+                            json.loads(line)
+                            for line in log.read_text().splitlines()[before:]
+                        ]
+                        assert len(records) == 1, (name, records)
+                        observed = (records[0]["cat"], records[0]["src"])
+                        assert observed == EXPECTED_HITS[name], (
+                            name,
+                            "category/source",
+                            observed,
+                        )
                     results.append({"case": name, "status": actual})
 
                 for prefix in ("enabled", "enabled/inherit"):
