@@ -7,17 +7,33 @@
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
-mapfile -t FILES < <(lint_files '^\.github/' "$@")
+root="$(repo_root)"
+cd "$root" || exit
+snapshot="$(mktemp -d "${TMPDIR:-/tmp}/lint-sync-stamp.XXXXXX")"
+trap 'rm -rf -- "$snapshot"' EXIT
+
+# The shared selector filters by worktree existence. In index mode a staged
+# file must be checked even if an unstaged deletion removed its worktree copy.
+FILES=()
+if [ "${LINT_MODE:-all}" = staged ]; then
+    if [ "$#" -gt 0 ]; then
+        printf '%s\0' "$@" >"$snapshot/paths"
+    else
+        git diff --cached --name-only --diff-filter=ACMR -z >"$snapshot/paths"
+    fi
+    mapfile -t -d '' CANDIDATES <"$snapshot/paths"
+    for file in "${CANDIDATES[@]}"; do
+        case "$file" in .github/*) FILES+=("$file") ;; esac
+    done
+else
+    mapfile -t FILES < <(lint_files '^\.github/' "$@")
+fi
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-sync-stamp: no CI content changes"
     exit 0
 }
 
-root="$(repo_root)"
-snapshot="$(mktemp -d "${TMPDIR:-/tmp}/lint-sync-stamp.XXXXXX")"
-trap 'rm -rf -- "$snapshot"' EXIT
 mkdir -p "$snapshot/.github/workflows" "$snapshot/ci/tools"
-git -C "$snapshot" init -q
 if [ "${LINT_MODE:-all}" = staged ]; then
     git show :ci/tools/sync-stamp.sh >"$snapshot/ci/tools/sync-stamp.sh"
 else
@@ -47,4 +63,4 @@ for file in "${FILES[@]}"; do
         cp -- "$file" "$snapshot/$file"
     fi
 done
-(cd "$snapshot" && bash ci/tools/sync-stamp.sh --check)
+(cd "$snapshot" && bash ci/tools/sync-stamp.sh --check-tree "$snapshot")

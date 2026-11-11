@@ -32,10 +32,32 @@ expect() {
     }
 }
 
+expect 2 'requires a regular directory' bash ci/tools/sync-stamp.sh --check-tree
+expect 2 'requires a regular directory' bash ci/tools/sync-stamp.sh --check-tree /dev/null
+ln -s "$fixture" "$fixture/link"
+expect 2 'requires a regular directory' bash ci/tools/sync-stamp.sh --check-tree "$fixture/link"
+expect 0 'current' bash ci/tools/sync-stamp.sh --check-tree "$fixture"
+
+printf '* @owner\n' >.github/CODEOWNERS
+printf 'version: 2\n' >.github/dependabot.yml
+git add .github/CODEOWNERS .github/dependabot.yml
+expect 0 'all linters clean' env LINT_ONLY=sync-stamp ci/linter/run-all.sh .github/CODEOWNERS .github/dependabot.yml
+expect 0 'selected files contain no stamp targets' env LINT_MODE=staged ci/linter/lint-sync-stamp.sh .github/CODEOWNERS .github/dependabot.yml
+
 # Worktree is fresh; staged content is stale. A worktree-only checker lies here.
 expect 1 'STALE stamp' env LINT_ONLY=sync-stamp ci/linter/run-all.sh --staged
+expect 1 'STALE stamp' env GIT_DIR="$fixture/.git" GIT_WORK_TREE="$fixture" \
+    GIT_INDEX_FILE="$fixture/.git/index" LINT_ONLY=sync-stamp ci/linter/run-all.sh --staged
 git add .github/workflows/p.yml
 expect 0 'all linters clean' env LINT_ONLY=sync-stamp ci/linter/run-all.sh --staged
+# Staged content must still be checked when its worktree copy is absent.
+printf '# sync-sha: 0000000000000000000000000000000000000000000000000000000000000000\nname: missing worktree\n' >.github/workflows/p.yml
+git add .github/workflows/p.yml
+rm .github/workflows/p.yml
+expect 1 'STALE stamp' env LINT_ONLY=sync-stamp ci/linter/run-all.sh --staged
+git show :.github/workflows/p.yml >.github/workflows/p.yml
+bash ci/tools/sync-stamp.sh >/dev/null
+git add .github/workflows/p.yml
 printf '# sync-sha: 0000000000000000000000000000000000000000000000000000000000000000\nname: untracked\n' >.github/workflows/untracked.yml
 expect 0 'all linters clean' env LINT_ONLY=sync-stamp ci/linter/run-all.sh --staged
 printf '# sync-sha: 0000000000000000000000000000000000000000000000000000000000000000\nname: unrelated\n' >.github/workflows/other.yml
