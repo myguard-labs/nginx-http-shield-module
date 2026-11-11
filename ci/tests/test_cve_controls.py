@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from test_metrics_counters import request
+from test_stats_zone import config_test_environment
 
 PROFILES = "php_cgi craft_cms geoserver nextjs_middleware tomcat_put json_escapes"
 CRAFT25 = json.dumps(
@@ -581,6 +582,7 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
             result = subprocess.run(
                 [str(binary), "-p", f"{root}/", "-c", "nginx.conf", "-t"],
                 check=False,
+                env=config_test_environment(),
                 capture_output=True,
                 text=True,
             )
@@ -596,6 +598,7 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
         result = subprocess.run(
             [str(binary), "-p", f"{root}/", "-c", "nginx.conf", "-t"],
             check=False,
+            env=config_test_environment(),
             capture_output=True,
             text=True,
         )

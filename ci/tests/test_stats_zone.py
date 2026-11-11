@@ -123,6 +123,20 @@ def server(
                 assert "runtime error:" not in logs, logs
 
 
+def config_test_environment() -> dict[str, str]:
+    """Only nginx -t children skip its intentionally retained cycle-pool leaks.
+
+    nginx returns before cycle cleanup in config-test mode. Keep address/UB
+    checks and the parent's live-server LeakSanitizer policy unchanged.
+    """
+    environment = os.environ.copy()
+    existing = environment.get("ASAN_OPTIONS", "")
+    environment["ASAN_OPTIONS"] = ":".join(
+        option for option in (existing, "detect_leaks=0") if option
+    )
+    return environment
+
+
 def config_controls(binary: Path, module: Path | None) -> None:
     """Observe positive minimum/forward binding and explicit rejected contracts."""
     minimum = 8 * os.sysconf("SC_PAGE_SIZE")
@@ -181,6 +195,7 @@ def config_controls(binary: Path, module: Path | None) -> None:
                 capture_output=True,
                 text=True,
                 check=False,
+                env=config_test_environment(),
             )
             assert (result.returncode == 0) == valid, (number, result.stderr)
             if not valid:
