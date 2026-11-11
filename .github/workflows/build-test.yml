@@ -475,6 +475,8 @@ jobs:
           fi
           python3 ci/tests/test_metrics_counters.py --nginx "$binary" \
             "${module[@]}" --output "$PWD/.build/metrics-counters"
+          python3 ci/tests/test_cve_controls.py --nginx "$binary" \
+            "${module[@]}" --output "$PWD/.build/cve-controls"
 
   coverage:
     name: C line coverage
@@ -549,6 +551,9 @@ jobs:
           python3 ci/tests/test_metrics_counters.py \
             --nginx "$PWD/.build/nginx-${NGINX_VERSION}-coverage/objs/nginx" \
             --output "$PWD/.build/metrics-counters-coverage"
+          python3 ci/tests/test_cve_controls.py \
+            --nginx "$PWD/.build/nginx-${NGINX_VERSION}-coverage/objs/nginx" \
+            --output "$PWD/.build/cve-controls-coverage"
 
       # The ban state engine's multi-node / eviction / window-slide / expiry
       # paths are unreachable from Test::Nginx (single loopback client, no clock

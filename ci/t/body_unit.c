@@ -7,6 +7,15 @@
 #include <ngx_http.h>
 #include <assert.h>
 
+static size_t cve_compares;
+static int cve_memcmp(const void *a, const void *b, size_t size)
+{
+    cve_compares++;
+    return memcmp(a, b, size);
+}
+#undef ngx_memcmp
+#define ngx_memcmp(a, b, n) cve_memcmp(a, b, n)
+
 static void *test_main_conf;
 #undef ngx_http_get_module_main_conf
 #define ngx_http_get_module_main_conf(r, module) test_main_conf
@@ -227,6 +236,58 @@ int main(void)
         hit.source = "unknown";
         ngx_http_shield_stats_hit(&stats_ctx, &hit, 0);
         assert(stats.source_hits[0][6] == 3);
+    }
+    /* Optional CVE scratch failure must stay an error, never a clean scan. */
+    {
+        ngx_str_t input = ngx_string("abcd");
+        ngx_int_t result;
+
+        conf.cve = NGX_SHIELD_CVE_CRAFT;
+        conf.skip = 0;
+        fail_alloc = 1;
+        assert(ngx_http_shield_cve_scan(&r, &conf, &input, 1, &hit)
+               == NGX_ERROR);
+        fail_alloc = 0;
+        assert(ngx_http_shield_cve_scan(&r, &conf, &input, 1, &hit)
+               == NGX_DECLINED);
+        conf.skip = (uint64_t) 1 << NGX_HTTP_SHIELD_CAT_DESERIAL;
+        alloc_calls = 0;
+        assert(ngx_http_shield_cve_scan(&r, &conf, &input, 1, &hit)
+               == NGX_DECLINED);
+        assert(alloc_calls == 0);
+        result = ngx_http_shield_cve_hit(NGX_HTTP_SHIELD_CAT_DESERIAL,
+                     conf.skip, NGX_HTTP_SHIELD_SOURCE_BODY, &hit);
+        assert(result == NGX_DECLINED);
+    }
+    /* Duplicate metadata must not multiply whole-body decoding/matching. */
+    {
+        ngx_table_elt_t types[64];
+        ngx_str_t input = ngx_string("\"abcdefghijklmnopqrstuvwxyz\"");
+        size_t once;
+        ngx_uint_t n;
+
+        ngx_memzero(types, sizeof(types));
+        for (n = 0; n < 64; n++) {
+            ngx_str_set(&types[n].key, "Content-Type");
+            ngx_str_set(&types[n].value, "application/json");
+            types[n].hash = 1;
+        }
+        r.headers_in.headers.part.elts = types;
+        r.headers_in.headers.part.nelts = 1;
+        r.headers_in.headers.part.next = NULL;
+        conf.cve = NGX_SHIELD_CVE_JSON;
+        conf.skip = 0;
+        fail_alloc = 0;
+        cve_compares = 0;
+        assert(ngx_http_shield_cve_scan(&r, &conf, &input, 1, &hit)
+               == NGX_DECLINED);
+        once = cve_compares;
+        assert(once > 0);
+        r.headers_in.headers.part.nelts = 64;
+        cve_compares = 0;
+        assert(ngx_http_shield_cve_scan(&r, &conf, &input, 1, &hit)
+               == NGX_DECLINED);
+        assert(cve_compares == once);
     }
     puts("body_unit: errors, boundaries and once-per-zone accounting passed");
     return 0;

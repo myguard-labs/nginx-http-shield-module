@@ -168,6 +168,7 @@ http {
 | Directive | Context | Default | Description |
 |-----------|---------|---------|-------------|
 | `shield` | http, server, location | `off` | `off` disables; `detect` logs only; `block` rejects. |
+| `shield_cve` | http, server, location | `off` | Opt-in application policies; see below. |
 | `shield_body` | http, server, location | `on` | Inspect the request body (text-shaped content types only). |
 | `shield_max_body` | http, server, location | `8k` | Maximum bytes scanned from the start of an eligible body. For larger bodies, the remainder is not inspected; this limit does not enforce upload size. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
@@ -178,6 +179,65 @@ http {
 | `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. Optional `key=peer\|forwarded` and repeatable `trusted=<addr\|CIDR>` — see [Banning behind a proxy](#banning-behind-a-proxy). |
 | `shield_ban_status` | location | — | Serve a ban or stats zone. |
 | `shield_ban_status_format` | location | `json` | `json` or `prometheus` — select JSON or negotiated metrics output. Inherited by nested locations. |
+
+### Application-specific CVE controls
+
+These optional policies inspect request forms associated with newer CVEs.
+Select them only on the corresponding application locations, initially with
+`shield detect`. They have compatibility costs and do not share the universal
+signature table's near-zero false-positive claim. All profiles default to off.
+
+```nginx
+location /craft/ {
+    shield block;
+    shield_cve craft_cms;
+    proxy_pass http://craft_backend;
+}
+location /next/ {
+    shield block;
+    shield_cve nextjs_middleware json_escapes;
+    proxy_pass http://next_backend;
+}
+```
+
+`shield_cve` accepts one or more names below, or `off` by itself. A child
+inherits the parent selection if omitted; an explicit selection replaces it,
+and `off` clears it. Duplicate directives, repeated names and unknown names
+are configuration errors. Profiles honor `shield off`, `detect`, configured
+block status, `shield_skip`, hit logs, counters and repeat-offender accounting.
+
+| Profile | Inspected form | Reported category |
+| --- | --- | --- |
+| `php_cgi` | Leading decoded soft-hyphen `d`, `n` or `c` option prefixes in the query, including the UTF-8 soft-hyphen form; CVE-2024-4577. Select only for PHP-CGI routes; locale and backend parsing still matter. | `php_rce` |
+| `craft_cms` | FnStream `__class` plus `_fn_close`, or PhpManager class plus `itemFile`, in inspected bodies. Covers these gadget forms from CVE-2025-32432 / Yii CVE-2024-58136 and the August 2026 Craft follow-up GHSA-9wcj-wqqh-cqvg. It does not ban transform endpoints or ordinary class keys. | `deserial` |
+| `geoserver` | Specific Java Runtime, ProcessBuilder, Thread.sleep and ScriptEngineManager references in query values or inspected bodies, including XML. These address selected XPath extension-function forms associated with CVE-2024-36401; ordinary XPath remains usable. | `java_eval` |
+| `nextjs_middleware` | Any external `x-middleware-subrequest` header, including empty values, regardless of case. Implements the CVE-2025-29927 workaround. Trusted internal requests needing the header must use a separately protected location/listener with this profile disabled. | `exploit_path` |
+| `tomcat_put` | PUT requests carrying any `Content-Range` header. Reduces exposure to CVE-2025-24813 when partial PUT is unnecessary; ordinary PUT and other methods remain allowed by this policy. | `exploit_path` |
+| `json_escapes` | The existing React2Shell Flight gadget suffixes after one JSON string-escape decoding pass, for JSON, `+json` and multipart form bodies. Addresses an encoding gap in the CVE-2025-55182 literal coverage. | `deserial` |
+
+Body policies require `shield_body on` and a scannable media type. Only the
+`shield_max_body` prefix is inspected; bytes after it remain uninspected.
+Craft JSON strings receive the same escape view, so escaped PHP namespace
+separators and ASCII Unicode escapes are visible. Form bodies receive one
+percent-decoding pass. JSON string tokens are inspected independently for
+Flight suffixes; tokens cannot join to manufacture a match. Multipart field contents are inspected independently using the declared
+boundary, so a malformed field cannot suppress later fields. Missing, duplicate
+or invalid boundary parameters, or conflicting boundaries across duplicate
+headers, fail inspection with a server error in block mode; detect mode logs
+the inspection error and preserves the response. Each view is scanned at most
+once regardless of the number of Content-Type headers. Complete
+JSON tokens before a malformed or truncated string remain inspected. This is an inspection
+view, not a complete JSON or multipart validator: it does not alter forwarded
+bytes, recursively decode string values, decompress bodies, inspect binary
+uploads, or enforce a request-size limit. Non-ASCII JSON code points cannot
+join the ASCII gadget tokens. JSON and percent-decoding views are separate.
+
+Coverage is for the listed forms, not complete protection for any CVE.
+Alternate gadgets, XML entity encodings, backend parsing differences and
+uninspected body data remain outside these checks. Patch affected applications
+and servers. These profiles do not mitigate nginx memory/TLS/HTTP framing
+vulnerabilities, React resource-exhaustion bugs, or the 2026 Next.js Windows
+RCE. See [sources and inert fixtures](ci/cve-controls.md).
 
 ### Repeat-offender banning
 
