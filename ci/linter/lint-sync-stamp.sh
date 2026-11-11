@@ -9,25 +9,31 @@
 
 root="$(repo_root)"
 cd "$root" || exit
+TMPDIR="$(realpath -e -- "${TMPDIR:-/tmp}")"
+export TMPDIR
 snapshot="$(mktemp -d "${TMPDIR:-/tmp}/lint-sync-stamp.XXXXXX")"
 trap 'rm -rf -- "$snapshot"' EXIT
 
 # The shared selector filters by worktree existence. In index mode a staged
 # file must be checked even if an unstaged deletion removed its worktree copy.
 FILES=()
-if [ "${LINT_MODE:-all}" = staged ]; then
-    if [ "$#" -gt 0 ]; then
-        printf '%s\0' "$@" >"$snapshot/paths"
-    else
-        git diff --cached --name-only --diff-filter=ACMR -z >"$snapshot/paths"
-    fi
-    mapfile -t -d '' CANDIDATES <"$snapshot/paths"
-    for file in "${CANDIDATES[@]}"; do
-        case "$file" in .github/*) FILES+=("$file") ;; esac
-    done
+if [ "$#" -gt 0 ]; then
+    printf '%s\0' "$@" >"$snapshot/paths"
+elif [ "${LINT_MODE:-all}" = staged ]; then
+    git diff --cached --name-only --diff-filter=ACMR -z >"$snapshot/paths"
 else
-    mapfile -t FILES < <(lint_files '^\.github/' "$@")
+    git ls-files -z >"$snapshot/paths"
 fi
+mapfile -t -d '' CANDIDATES <"$snapshot/paths"
+for file in "${CANDIDATES[@]}"; do
+    case "$file" in
+        .github/*)
+            if [ "${LINT_MODE:-all}" = staged ] || [ -f "$file" ]; then
+                FILES+=("$file")
+            fi
+            ;;
+    esac
+done
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-sync-stamp: no CI content changes"
     exit 0

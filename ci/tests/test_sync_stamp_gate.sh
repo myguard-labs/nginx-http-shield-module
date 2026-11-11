@@ -67,4 +67,12 @@ expect 1 'STALE stamp' env LINT_ONLY=sync-stamp ci/linter/run-all.sh --all
 printf 'name: changed after staging\n' >>.github/workflows/p.yml
 expect 0 'current' env LINT_MODE=staged ci/linter/lint-sync-stamp.sh .github/workflows/p.yml
 expect 1 'STALE stamp' env LINT_MODE=all ci/linter/lint-sync-stamp.sh .github/workflows/p.yml
+# Relative temporary roots must remain valid in the inspection subprocess.
+expect 0 'current' env TMPDIR=. LINT_MODE=staged ci/linter/lint-sync-stamp.sh .github/workflows/p.yml
+# Only the quoted non-ASCII tracked name is stale in this all-files check.
+bash ci/tools/sync-stamp.sh >/dev/null
+git add .github/workflows
+printf '# sync-sha: 0000000000000000000000000000000000000000000000000000000000000000\nname: unicode\n' >.github/workflows/café.yml
+git add .github/workflows/café.yml
+expect 1 'STALE stamp' env LINT_MODE=all ci/linter/lint-sync-stamp.sh
 echo 'stamp gate: dispatch, failure propagation, staged bytes and selection passed'
