@@ -100,6 +100,15 @@ What is **not** done: scanner-name blocking (User-Agent strings like `sqlmap`
 are trivially spoofed, so they are not matched — but payloads carried *inside*
 those headers, like Shellshock, are).
 
+## Private filesystem destinations
+
+For explicitly private files and trees, use the native
+[private destination recipe](contrib/private-destinations/README.md). Kernel
+permissions protect the actual file opened by nginx/Angie, including aliases,
+rewrites, internal redirects and symlink targets. It preserves declared public
+files and legitimate public symlinks under a separate worker/backend ownership
+contract; no Shield directive or automatic configuration change is involved.
+
 ## Install
 
 Build as a dynamic module against your nginx (or Angie) source:

@@ -4,6 +4,10 @@ Changes with the next minor release
        entrypoints, non-executable filesystem trees and recording FastCGI tests
        for nginx and Angie. No module runtime changes.
 
+    *) Add a native private-destination recipe using separate worker/backend
+       ownership and filesystem permissions, with real nginx/Angie tests for
+       aliases, redirects, symlinks, hardlinks and public file identity.
+
     *) Add optional http-context shield_stats_zone <name> <size> for global
        counters without banning. shield_ban_status accepts either zone kind.
        Ban shared-memory layout remains unchanged by this addition.
