@@ -10,12 +10,14 @@ import gzip
 import hashlib
 import http.client
 import json
+import os
 import signal
 import socket
 import subprocess
 import tempfile
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import ClassVar
@@ -72,8 +74,71 @@ def snapshot(port: int) -> dict:
         connection.close()
 
 
+def stop_server(process, root: Path, output: Path, fault: str | None) -> None:
+    """Retain shutdown evidence and reject process or sanitizer failures."""
+    try:
+        if process.poll() is None:
+            if fault == "exit":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.send_signal(signal.SIGTERM)
+        try:
+            status = process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            raise
+    finally:
+        # Deliberate log faults prove both channels are checked, independently
+        # of the normally successful master exit status.
+        if fault in ("stderr-asan", "error-log-ubsan"):
+            name, diagnostic = (
+                ("stderr", "AddressSanitizer: injected teardown control")
+                if fault == "stderr-asan"
+                else ("error.log", "runtime error: injected teardown control")
+            )
+            with (root / name).open("a") as log:
+                log.write(diagnostic + "\n")
+        output.mkdir(parents=True, exist_ok=True)
+        logs = b""
+        for name in ("error.log", "hits.jsonl", "stderr"):
+            source = root / name
+            if source.exists():
+                data = source.read_bytes()
+                (output / name).write_bytes(data)
+                if name != "hits.jsonl":
+                    logs += data
+    assert status == 0, ("nginx shutdown status", status, logs.decode(errors="replace"))
+    assert not any(
+        marker in logs
+        for marker in (
+            b"AddressSanitizer",
+            b"LeakSanitizer",
+            b"UndefinedBehaviorSanitizer",
+            b"runtime error:",
+        )
+    ), ("sanitizer diagnostics", logs.decode(errors="replace"))
+
+
+def gzip_header(
+    body: bytes, flags: int, optional: bool = False, bad_crc: bool = False
+) -> bytes:
+    """Prepare accepted backend forms without changing the compressed payload."""
+    header = body[:3] + bytes([flags | (0x1E if optional else 0)]) + body[4:10]
+    if optional:
+        header += b"\x03\x00abcname\x00comment\x00"
+        crc = (zlib.crc32(header) & 0xFFFF) ^ int(bad_crc)
+        header += crc.to_bytes(2, "little")
+    return header + body[10:]
+
+
 def run(
-    binary: Path, module: Path | None, output: Path, disable: bool, wrong_oracle: bool
+    binary: Path,
+    module: Path | None,
+    output: Path,
+    disable: bool,
+    wrong_oracle: bool,
+    fault_teardown: str | None = None,
 ) -> None:
     """Every allowed body must reach the backend with its original bytes."""
     results = []
@@ -157,6 +222,7 @@ http {{
                     [str(binary), "-p", f"{root}/", "-c", "nginx.conf"],
                     stdout=stderr,
                     stderr=stderr,
+                    start_new_session=True,
                 )
                 try:
                     deadline = time.monotonic() + 10
@@ -242,7 +308,106 @@ http {{
                     benign = gzip.compress(BENIGN, mtime=0)
                     attack = gzip.compress(ATTACK, mtime=0)
                     check("benign", benign, expected_decoded=BENIGN)
+                    if fault_teardown:
+                        return
                     check("attack", attack, 403)
+                    for flags in (0x01, 0x20, 0x40, 0x80, 0xE0):
+                        check(
+                            f"flags-{flags:02x}-benign",
+                            gzip_header(benign, flags),
+                            expected_decoded=BENIGN,
+                        )
+                        check(
+                            f"flags-{flags:02x}-attack", gzip_header(attack, flags), 403
+                        )
+                    for flags, bad_crc in (
+                        (0, False),
+                        (0, True),
+                        (0xE0, False),
+                        (0xE0, True),
+                    ):
+                        check(
+                            f"optional-{flags:02x}-{bad_crc}-benign",
+                            gzip_header(benign, flags, True, bad_crc),
+                            expected_decoded=BENIGN,
+                        )
+                        check(
+                            f"optional-{flags:02x}-{bad_crc}-attack",
+                            gzip_header(attack, flags, True, bad_crc),
+                            403,
+                        )
+                    check(
+                        "flags-second-member",
+                        benign + gzip_header(attack, 0xE0, True, True),
+                        403,
+                    )
+                    check(
+                        "flags-second-benign",
+                        benign + gzip_header(benign, 0xE0, True, True),
+                        expected_decoded=BENIGN * 2,
+                    )
+                    flagged_bad_crc = bytearray(gzip_header(attack, 0xE0, True, True))
+                    flagged_bad_crc[-8] ^= 1
+                    check(
+                        "flags-payload-crc",
+                        bytes(flagged_bad_crc),
+                        decoded_rejected=True,
+                    )
+                    flagged_bad_size = bytearray(gzip_header(attack, 0xE0, True, True))
+                    flagged_bad_size[-4] ^= 1
+                    check(
+                        "flags-payload-size",
+                        bytes(flagged_bad_size),
+                        decoded_rejected=True,
+                    )
+                    check(
+                        "flags-truncated-header",
+                        gzip_header(benign, 0xE0, True)[:15],
+                        decoded_rejected=True,
+                    )
+                    optional_header = gzip_header(benign, 0xE0, True)
+                    header_size = len(optional_header) - len(benign[10:])
+                    check(
+                        "fhcrc-absent",
+                        optional_header[: header_size - 2],
+                        decoded_rejected=True,
+                    )
+                    check(
+                        "fhcrc-one-byte",
+                        optional_header[: header_size - 1],
+                        decoded_rejected=True,
+                    )
+                    # A complete member at max_body+1 must classify known trailing
+                    # non-member data before treating the output as a partial view.
+                    for label, plain in (
+                        ("benign", b"a" * 8193),
+                        ("attack", ATTACK + b"a" * (8193 - len(ATTACK))),
+                    ):
+                        coded = gzip.compress(plain, mtime=0)
+                        before_trailing = snapshot(port)["body_uninspected"]
+                        check(
+                            f"cap-trailing-{label}", coded + b"x", decoded_rejected=True
+                        )
+                        check(
+                            f"cap-magic-{label}",
+                            coded + b"\x1fx",
+                            decoded_rejected=True,
+                        )
+                        after_trailing = snapshot(port)["body_uninspected"]
+                        assert (
+                            after_trailing["encoding"]
+                            == before_trailing["encoding"] + 2
+                        )
+                        assert (
+                            after_trailing["too_large"] == before_trailing["too_large"]
+                        )
+                        assert after_trailing["error"] == before_trailing["error"]
+                    check(
+                        "cap-valid-next-member",
+                        gzip.compress(ATTACK + b"a" * (8193 - len(ATTACK)), mtime=0)
+                        + benign,
+                        403,
+                    )
                     # Valid full uploads whose inspection prefix ends inside a
                     # later member header must retain earlier decoded text.
                     empty_member = gzip.compress(b"", mtime=0)
@@ -332,6 +497,16 @@ http {{
                         route="skip",
                         expected_decoded=BENIGN + ATTACK,
                     )
+                    check(
+                        "member-trailing-attack",
+                        attack + gzip.compress(b"", mtime=0) * 63 + b"x",
+                        decoded_rejected=True,
+                    )
+                    check(
+                        "member-trailing-benign",
+                        benign + gzip.compress(b"", mtime=0) * 63 + b"x",
+                        decoded_rejected=True,
+                    )
                     before_members = snapshot(port)["body_uninspected"]
                     check(
                         "member-limit",
@@ -402,18 +577,9 @@ http {{
                     (output / "backend.json").write_text(
                         json.dumps(Backend.records, indent=2)
                     )
-                    print(
-                        f"compressed body: {len(results)} named HTTP assertions passed"
-                    )
                 finally:
-                    if process.poll() is None:
-                        process.send_signal(signal.SIGTERM)
-                    process.wait(timeout=10)
-                    output.mkdir(parents=True, exist_ok=True)
-                    for name in ("error.log", "hits.jsonl", "stderr"):
-                        source = root / name
-                        if source.exists():
-                            (output / name).write_bytes(source.read_bytes())
+                    stop_server(process, root, output, fault_teardown)
+                print(f"compressed body: {len(results)} named HTTP assertions passed")
     finally:
         backend.shutdown()
         backend.server_close()
@@ -429,6 +595,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--disable-decoder", action="store_true")
     parser.add_argument("--wrong-byte-oracle", action="store_true")
+    parser.add_argument(
+        "--fault-teardown", choices=("exit", "stderr-asan", "error-log-ubsan")
+    )
     args = parser.parse_args()
     run(
         args.nginx.resolve(),
@@ -436,6 +605,7 @@ def main():
         args.output.resolve(),
         args.disable_decoder,
         args.wrong_byte_oracle,
+        args.fault_teardown,
     )
 
 

@@ -266,8 +266,9 @@ backend in `ci/tests/test_compressed_body.py` accepts gzip with
 `gzip.decompress` and records the received bytes before decoding. It proves
 forwarding and policy behavior; it does not certify another application's
 compression support or turn code-shaped text into a universally unsafe body.
-Deploy this only where the backend rejects malformed or truncated gzip and
-non-padding trailing data before interpreting decoded content. A backend that
+Deploy this only where the backend rejects malformed deflate data, bad payload
+CRC/size, truncated gzip and non-padding trailing data before interpreting
+decoded content. A backend that
 ignores trailing garbage or acts before integrity validation is outside this
 protection contract. The recording-backend tests verify strict rejection of
 these representations while asserting the original forwarded bytes.
@@ -292,8 +293,8 @@ has no other zlib user. A Unix dynamic bundled-zlib build links the bundled
 static archive into the module, building those library objects as PIC. Both
 paths support loading into a compatible core without its own zlib user.
 It calls
-`inflateInit2(31)` and at most 64 `inflate(..., Z_FINISH)` calls, one per
-member, without a decoder fork or unbounded retry loop. `inflateReset2(31)`
+`inflateInit2(31)` and at most 192 inflate calls for 64 members: two
+bounded `Z_BLOCK` header calls and one `Z_FINISH` payload call per member, without a decoder fork or unbounded retry loop. `inflateReset2(31)`
 reuses the same stream and allocations between members. The helper returns the exact consumed bytes, produced
 bytes, zlib status and allocation counts. Its private arena permits at most
 64 KiB of zlib allocations and is released after decoding. The encoded copy
@@ -307,7 +308,12 @@ expansion bombs and gzip optional header fields. No shared lock is added.
 
 Only one Content-Encoding field with the single case-insensitive token `gzip`
 is decoded. Up to 64 concatenated gzip members and zero padding between/after
-members are supported, matching the recording backend's accepted forms. Absent encoding or one `identity` value uses the existing path.
+members are supported, matching the recording backend's accepted forms.
+The four-byte inspection header clears reserved flags. zlib parses optional
+extra/name/comment fields and identifies their end; an original FHCRC field is
+skipped unchecked, as Python gzip does. Payload CRC and uncompressed-size
+validation remain enabled. Original compressed bytes are never rewritten.
+Known non-member trailing magic takes precedence over byte/member limits. Absent encoding or one `identity` value uses the existing path.
 Repeated fields, comma-separated/stacked encodings, other tokens and non-padding
 trailing bytes are unsupported inspection representations.
 They keep the legacy raw-byte scan and count as incomplete. A malformed or

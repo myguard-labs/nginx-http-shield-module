@@ -1,4 +1,4 @@
-# sync-sha: 0941452d698eb7373779f9163540b60536261a38c80d69e9338f7545fc0d8864
+# sync-sha: 38236e20b3907f01c1d04f552881bb5c1430018b6b28a5d456bd62694fe2d254
 name: Build and Test
 
 env:
@@ -515,6 +515,20 @@ jobs:
               grep -Fq "AssertionError: ('attack', 200" "$PWD/.build/gzip-$control.log"
             else
               grep -Fq 'AssertionError: benign' "$PWD/.build/gzip-$control.log"
+            fi
+          done
+          for fault in exit stderr-asan error-log-ubsan; do
+            set +e
+            python3 ci/tests/test_compressed_body.py --nginx "$binary" \
+              "${module[@]}" --output "$PWD/.build/gzip-teardown-$fault" \
+              --fault-teardown "$fault" >"$PWD/.build/gzip-teardown-$fault.log" 2>&1
+            rc=$?
+            set -e
+            test "$rc" = 1
+            if [ "$fault" = exit ]; then
+              grep -Fq "nginx shutdown status" "$PWD/.build/gzip-teardown-$fault.log"
+            else
+              grep -Fq "sanitizer diagnostics" "$PWD/.build/gzip-teardown-$fault.log"
             fi
           done
           python3 ci/tests/test_compressed_body.py --nginx "$binary" \

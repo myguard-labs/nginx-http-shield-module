@@ -81,8 +81,10 @@ ngx_shield_gzip_decode(const unsigned char *input, size_t length,
     ngx_shield_gzip_result_t result;
     ngx_shield_gzip_arena_t arena;
     z_stream stream;
-    int status;
-    uInt before;
+    gz_header header;
+    unsigned char prefix[4] = {0};
+    size_t member_start, prefix_size;
+    int status, header_crc;
 
     memset(&result, 0, sizeof(result));
     result.state = NGX_SHIELD_GZIP_ERROR;
@@ -102,24 +104,65 @@ ngx_shield_gzip_decode(const unsigned char *input, size_t length,
     stream.opaque = &arena;
     status = inflateInit2(&stream, 15 + 16); /* gzip only, never raw/auto */
     if (status == Z_OK) {
-        stream.next_in = (Bytef *) input;
-        stream.avail_in = (uInt) length;
         stream.next_out = output;
         stream.avail_out = (uInt) capacity;
         for ( ;; ) {
-            before = stream.avail_in;
+            member_start = result.consumed;
+            prefix_size = length - member_start;
+            if (prefix_size > sizeof(prefix)) {
+                prefix_size = sizeof(prefix);
+            }
+            memcpy(prefix, input + member_start, prefix_size);
+            header_crc = prefix_size == 4 && (prefix[3] & 2);
+            if (prefix_size == 4) {
+                /* Match Python gzip's accepted reserved flags and unchecked
+                 * FHCRC. Only this fixed-size inspection prefix is changed. */
+                prefix[3] &= 0x1d;
+            }
+            memset(&header, 0, sizeof(header));
+            status = inflateGetHeader(&stream, &header);
+            if (status != Z_OK) {
+                break;
+            }
+            stream.next_in = prefix;
+            stream.avail_in = (uInt) prefix_size;
+            result.calls++;
+            status = inflate(&stream, Z_BLOCK);
+            result.consumed = member_start + prefix_size - stream.avail_in;
+            if (status != Z_OK && status != Z_BUF_ERROR) {
+                goto failed;
+            }
+            /* zlib parses every optional field. Z_BLOCK returns at the header
+             * boundary before consuming any deflate bytes or trailer. */
+            stream.next_in = (Bytef *) input + result.consumed;
+            stream.avail_in = (uInt) (length - result.consumed);
+            result.calls++;
+            status = inflate(&stream, Z_BLOCK);
+            result.consumed = length - stream.avail_in;
+            if (status != Z_OK || !header.done) {
+                goto failed;
+            }
+            if (header_crc) {
+                if (stream.avail_in < 2) {
+                    result.consumed = length;
+                    result.state = NGX_SHIELD_GZIP_TRUNCATED;
+                    break;
+                }
+                stream.next_in += 2;
+                stream.avail_in -= 2;
+                result.consumed += 2;
+            }
             result.calls++;
             status = inflate(&stream, Z_FINISH);
             result.consumed = length - stream.avail_in;
             result.produced = capacity - stream.avail_out;
             if (status == Z_STREAM_END) {
                 result.members++;
-                if (stream.avail_in == before) {
+                if (result.consumed == member_start) {
                     result.state = NGX_SHIELD_GZIP_ERROR;
                     break;
                 }
-                /* Python gzip.decompress accepts zero padding between/after
-                 * members. Skipping it costs at most the input byte budget. */
+                /* Padding costs at most the input byte budget. */
                 while (stream.avail_in != 0 && *stream.next_in == 0) {
                     stream.next_in++;
                     stream.avail_in--;
@@ -127,6 +170,18 @@ ngx_shield_gzip_decode(const unsigned char *input, size_t length,
                 result.consumed = length - stream.avail_in;
                 if (stream.avail_in == 0) {
                     result.state = NGX_SHIELD_GZIP_COMPLETE;
+                    break;
+                }
+                /* Known non-member data is invalid even at a byte/member cap.
+                 * A lone next magic byte is an incomplete member instead. */
+                if (*stream.next_in != 0x1f
+                    || (stream.avail_in > 1 && stream.next_in[1] != 0x8b))
+                {
+                    result.state = NGX_SHIELD_GZIP_TRAILING;
+                    break;
+                }
+                if (stream.avail_in == 1) {
+                    result.state = NGX_SHIELD_GZIP_TRUNCATED;
                     break;
                 }
                 if (stream.avail_out == 0) {
@@ -137,12 +192,6 @@ ngx_shield_gzip_decode(const unsigned char *input, size_t length,
                     result.state = NGX_SHIELD_GZIP_MEMBER_LIMIT;
                     break;
                 }
-                /* Reject non-gzip trailing bytes as an unsupported view.
-                 * A partial next magic still belongs to a truncated member. */
-                if (*stream.next_in != 0x1f) {
-                    result.state = NGX_SHIELD_GZIP_TRAILING;
-                    break;
-                }
                 status = inflateReset2(&stream, 15 + 16);
                 if (status != Z_OK) {
                     result.state = NGX_SHIELD_GZIP_ERROR;
@@ -150,6 +199,7 @@ ngx_shield_gzip_decode(const unsigned char *input, size_t length,
                 }
                 continue;
             }
+failed:
             if (status == Z_DATA_ERROR || status == Z_NEED_DICT) {
                 result.state = NGX_SHIELD_GZIP_INVALID;
             } else if (status == Z_BUF_ERROR || status == Z_OK) {
