@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "/srv/shield-site/app/index.php": {
+      "PHP_VALUE": [],
+      "PHP_ADMIN_VALUE": ["open_basedir=/srv/shield-site\nmemory_limit=128M"]
+    }
+  }
+}
