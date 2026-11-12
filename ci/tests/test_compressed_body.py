@@ -42,7 +42,7 @@ class Backend(BaseHTTPRequestHandler):
                 if len(fields) == 1 and fields[0].strip().lower() == "gzip"
                 else None
             )
-        except (OSError, EOFError):
+        except (OSError, EOFError, zlib.error):
             decoded = None
         record = {
             "path": self.path,
@@ -308,6 +308,11 @@ http {{
                     benign = gzip.compress(BENIGN, mtime=0)
                     attack = gzip.compress(ATTACK, mtime=0)
                     check("benign", benign, expected_decoded=BENIGN)
+                    check(
+                        "invalid-deflate",
+                        bytes.fromhex("1f8b0800000000000003070000000000000000"),
+                        decoded_rejected=True,
+                    )
                     if fault_teardown:
                         return
                     check("attack", attack, 403)
