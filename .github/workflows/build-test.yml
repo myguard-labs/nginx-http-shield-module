@@ -1,4 +1,4 @@
-# sync-sha: f13c199a4f78fa3f5661bfa60f672743de26f23fb32868961075f0c9a13d2457
+# sync-sha: 44a1096e199645e1e20f76f3b4698c53d21162d1f5bc2db472892c9f3b265d51
 name: Build and Test
 
 env:
@@ -539,6 +539,14 @@ jobs:
           python3 ci/tests/test_private_destinations.py --nginx "$TEST_BINARY" \
             --output /evidence/restored -v
           CHECK
+
+      - name: Preserve private destination evidence
+        if: always() && matrix.mode == 'debug'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: private-destinations-${{ matrix.flavor }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/private-destinations
+          retention-days: 14
 
   coverage:
     name: C line coverage
