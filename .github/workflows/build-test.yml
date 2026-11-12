@@ -1,4 +1,4 @@
-# sync-sha: 44a1096e199645e1e20f76f3b4698c53d21162d1f5bc2db472892c9f3b265d51
+# sync-sha: 0941452d698eb7373779f9163540b60536261a38c80d69e9338f7545fc0d8864
 name: Build and Test
 
 env:
@@ -481,6 +481,45 @@ jobs:
           python3 ci/tests/test_cve_controls.py --nginx "$binary" \
             "${module[@]}" --output "$PWD/.build/cve-controls"
 
+      - name: Check gzip inspection and immutable forwarding
+        env:
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
+          MATRIX_MODE: ${{ matrix.mode }}
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          build="$PWD/.build/${MATRIX_FLAVOR}-${VER}-${MATRIX_MODE}/objs"
+          binary="$build/nginx"
+          [ -x "$binary" ] || binary="$build/angie"
+          module=()
+          if [ -f "$build/ngx_http_shield_module.so" ]; then
+            module=(--module "$build/ngx_http_shield_module.so")
+            readelf -d "$build/ngx_http_shield_module.so" \
+              > "$PWD/.build/gzip-module-needed.txt"
+            grep -Fq 'Shared library: [libz.so' "$PWD/.build/gzip-module-needed.txt"
+          fi
+          flags=""
+          if [ "$MATRIX_MODE" = asan ]; then
+            flags="-fsanitize=address,undefined -fno-sanitize-recover=all"
+          fi
+          EXTRA_CFLAGS="$flags" bash ci/t/run-gzip-unit.sh
+          for control in disable-decoder wrong-byte-oracle; do
+            set +e
+            python3 ci/tests/test_compressed_body.py --nginx "$binary" \
+              "${module[@]}" --output "$PWD/.build/gzip-$control" \
+              "--$control" >"$PWD/.build/gzip-$control.log" 2>&1
+            rc=$?
+            set -e
+            test "$rc" = 1
+            if [ "$control" = disable-decoder ]; then
+              grep -Fq "AssertionError: ('attack', 200" "$PWD/.build/gzip-$control.log"
+            else
+              grep -Fq 'AssertionError: benign' "$PWD/.build/gzip-$control.log"
+            fi
+          done
+          python3 ci/tests/test_compressed_body.py --nginx "$binary" \
+            "${module[@]}" --output "$PWD/.build/gzip-restored"
+
       - name: Check native PHP execution boundaries
         if: matrix.mode == 'debug'
         env:
@@ -645,6 +684,13 @@ jobs:
           COVERAGE: 1
           NGX_BUILD_MODE: coverage
         run: bash ci/tests/unit/run.sh
+
+      - name: Cover gzip decoding and original body forwarding
+        run: |
+          EXTRA_CFLAGS="--coverage" bash ci/t/run-gzip-unit.sh
+          python3 ci/tests/test_compressed_body.py \
+            --nginx "$PWD/.build/nginx-${NGINX_VERSION}-coverage/objs/nginx" \
+            --output "$PWD/.build/gzip-coverage"
 
       # Harvest coverage for our translation unit only; upstream nginx .gcda is
       # captured (core is instrumented too) but discarded by the --extract filter.

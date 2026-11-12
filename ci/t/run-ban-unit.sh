@@ -163,7 +163,7 @@ esac
     $EXTRA_CFLAGS \
     $CONFIG_GLOBAL_FLAGS $NGX_INCS \
     -I"$NGX_SRC/src/http" -I"$NGX_SRC/src/http/modules" \
-    -o "$BODY_BIN" "$SCRIPT_DIR/body_unit.c" "$NGX_SRC/src/core/ngx_string.c"
+    -o "$BODY_BIN" "$SCRIPT_DIR/body_unit.c" "$NGX_SRC/src/core/ngx_string.c" -lz
 "$BODY_BIN"
 case " $EXTRA_CFLAGS " in
     *" --coverage "* | *" -coverage "*)

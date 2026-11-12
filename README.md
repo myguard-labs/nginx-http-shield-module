@@ -257,6 +257,80 @@ and servers. These profiles do not mitigate nginx memory/TLS/HTTP framing
 vulnerabilities, React resource-exhaustion bugs, or the 2026 Next.js Windows
 RCE. See [sources and inert fixtures](ci/cve-controls.md).
 
+### Optional gzip request inspection
+
+Use `shield_gzip on;` only for a backend that accepts gzip request bodies and
+whose decoded text is covered by the existing admitted Shield categories or
+explicit `shield_cve` application policy. The shipped recording Python HTTP
+backend in `ci/tests/test_compressed_body.py` accepts gzip with
+`gzip.decompress` and records the received bytes before decoding. It proves
+forwarding and policy behavior; it does not certify another application's
+compression support or turn code-shaped text into a universally unsafe body.
+Deploy this only where the backend rejects malformed or truncated gzip and
+non-padding trailing data before interpreting decoded content. A backend that
+ignores trailing garbage or acts before integrity validation is outside this
+protection contract. The recording-backend tests verify strict rejection of
+these representations while asserting the original forwarded bytes.
+
+```nginx
+http {
+    shield_stats_zone body_inspection 64k;
+    server {
+        shield block;
+        shield_gzip on;                # default off; inherited per location
+        shield_max_encoded_body 64k;   # compressed inspection input budget
+        shield_max_body 8k;            # decoded inspection output budget
+        # Existing proxy/FastCGI configuration and application policy go here.
+    }
+}
+```
+
+The module requires the supported zlib library at build time (development
+headers and library, or nginx's `--with-zlib` source configuration). A dynamic
+system-zlib build links libz directly so it can load into a compatible core that
+has no other zlib user. A Unix dynamic bundled-zlib build links the bundled
+static archive into the module, building those library objects as PIC. Both
+paths support loading into a compatible core without its own zlib user.
+It calls
+`inflateInit2(31)` and at most 64 `inflate(..., Z_FINISH)` calls, one per
+member, without a decoder fork or unbounded retry loop. `inflateReset2(31)`
+reuses the same stream and allocations between members. The helper returns the exact consumed bytes, produced
+bytes, zlib status and allocation counts. Its private arena permits at most
+64 KiB of zlib allocations and is released after decoding. The encoded copy
+is bounded by `shield_max_encoded_body`; the decoded buffer is
+`shield_max_body + 1` bytes. The extra byte detects an exact fit without
+claiming completion at a cap. The existing scanner still owns its bounded
+scratch buffers. Both inspection budgets may be zero and must not exceed
+16 MiB when gzip inspection is enabled; neither changes nginx's upload limit.
+Input, output and member budgets bound decoder work, including
+expansion bombs and gzip optional header fields. No shared lock is added.
+
+Only one Content-Encoding field with the single case-insensitive token `gzip`
+is decoded. Up to 64 concatenated gzip members and zero padding between/after
+members are supported, matching the recording backend's accepted forms. Absent encoding or one `identity` value uses the existing path.
+Repeated fields, comma-separated/stacked encodings, other tokens and non-padding
+trailing bytes are unsupported inspection representations.
+They keep the legacy raw-byte scan and count as incomplete. A malformed or
+truncated stream likewise retains only the raw scan; decoded bytes from an
+invalid representation are never treated as validated text. A valid decoded
+prefix at the output cap is scanned and counted as partial, even if it
+matches an admitted attack. Bytes beyond either budget are never claimed
+inspected, and trailer integrity is not established for capped output. A module input cap
+that cuts a gzip stream also retains its decoded prefix for scanning, unlike
+a genuinely truncated complete upload. It counts as incomplete encoding; bytes
+and trailer integrity beyond the input budget remain uninspected. At the
+member cap, the decoded prefix is scanned and counted as incomplete encoding;
+an input cap takes counter precedence over a simultaneous decoded output cap.
+
+The feature changes only the inspection view: original buffers, file offsets,
+Content-Encoding, Content-Length and compressed bytes remain available to the
+content handler unchanged. It reuses `shield_body`, media-type admission,
+category skips, `shield_cve`, configured status, and off/detect/block actions.
+An encoding error or inspection cap alone never rejects an upload; resource
+or I/O failure follows the existing inspection-failure action. A deployment
+requiring complete inspection must monitor the incomplete counters and set
+budgets appropriate to its explicit backend contract.
+
 ### Repeat-offender banning
 
 In block mode, a single shield hit blocks that request. `shield_ban` escalates a **persistent**
@@ -432,13 +506,19 @@ location /shield-status {
   without a ban zone remains available.
 - `evictions` counts reclaimed stale ban nodes; `alloc_failures` counts dropped
   node allocations after reclamation. Successful allocations do not increment it.
-- `body_uninspected` counts bodies with incomplete inspection in the zone,
-  including a scanned prefix of a body larger than `shield_max_body` and raw
-  bytes with a non-identity Content-Encoding. Collection or scan failures use
-  `error`; otherwise `encoding` takes precedence over `too_large`. A request
-  increments at most one reason per zone, including across internal redirects.
-  OpenMetrics exposes the same values as `shield_body_uninspected_total` with
-  a bounded `reason` label. Encoded bodies retain their existing raw-byte scan.
+- `body_uninspected` counts bodies with incomplete inspection in the zone.
+  `too_large` records an inspected prefix above the byte budget; `encoding`
+  records an unsupported or incomplete encoded representation; collection,
+  allocation and scan failures use `error`. A request increments at most one
+  reason per zone across internal redirects. OpenMetrics exposes these as
+  `shield_body_uninspected_total` with a bounded `reason` label. With gzip
+  inspection disabled, encoded bodies retain their existing raw-byte scan.
+  With gzip inspection enabled, valid gzip members within the byte/member
+  budgets are decoded before scanning; a decoded output cap uses `too_large`.
+  Malformed, truncated, non-padding trailing, member/input-capped, ambiguous or
+  unsupported encodings use `encoding` (which takes precedence over raw size).
+  These counters require a configured stats or ban zone; configure one when
+  using body inspection so partial inspection remains visible.
 - `used` is reserved zone memory in bytes, including slab metadata and partially
   occupied pages; only wholly free slab pages are subtracted. `size` is the
   mapped zone size. Both gauges are sampled together under the slab mutex.

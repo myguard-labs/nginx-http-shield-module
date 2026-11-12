@@ -58,3 +58,6 @@ ci/t/prober/json_test
 
 # GCC/Clang numeric compiler dumps adjacent to C sources
 *.c.[0-9]*.dump
+
+# Bounded gzip decoder unit artifacts
+ci/t/gzip-unit-build/

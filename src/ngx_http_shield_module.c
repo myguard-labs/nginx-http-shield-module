@@ -30,6 +30,7 @@
 #include "ngx_http_shield_patterns.h"
 #include "ngx_http_shield_scan.h"
 #include "ngx_http_shield_cve.h"
+#include "ngx_http_shield_gzip.h"
 #include "ngx_http_shield_ban.h"
 #include "ngx_http_shield_negotiate.h"
 #include "ngx_shield_probe_hooks.h"
@@ -80,6 +81,8 @@ typedef struct {
 typedef struct {
     ngx_uint_t   mode;        /* OFF / DETECT / BLOCK                        */
     ngx_uint_t   cve;         /* opt-in application policies                */
+    ngx_flag_t   gzip;        /* opt-in decoded gzip inspection             */
+    size_t       max_encoded_body; /* compressed input inspection budget   */
     ngx_flag_t   body;        /* inspect request body                       */
     size_t       max_body;    /* bytes of body scanned                      */
     ngx_uint_t   status;      /* status returned in BLOCK mode              */
@@ -319,6 +322,20 @@ static ngx_command_t  ngx_http_shield_commands[] = {
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_shield_loc_conf_t, body),
+      NULL },
+
+    { ngx_string("shield_gzip"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_shield_loc_conf_t, gzip),
+      NULL },
+
+    { ngx_string("shield_max_encoded_body"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_shield_loc_conf_t, max_encoded_body),
       NULL },
 
     { ngx_string("shield_max_body"),
@@ -1714,37 +1731,163 @@ ngx_http_shield_collect_body(ngx_http_request_t *r, size_t max, ngx_str_t *out)
 }
 
 
+/* 0 = absent/single identity, 1 = single gzip, 2 = unsupported/ambiguous.
+ * Repeated identity is also ambiguous: do not silently combine field values. */
+static ngx_uint_t
+ngx_http_shield_body_encoding(ngx_http_request_t *r)
+{
+    ngx_list_part_t *part = &r->headers_in.headers.part;
+    ngx_table_elt_t *h = part->elts;
+    ngx_uint_t i, count = 0, encoding = 0;
+    size_t start, end;
+
+    for (i = 0; /* entire header list */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            h = part->elts;
+            i = 0;
+        }
+        if (!h[i].hash || !ngx_http_shield_header_name_is(&h[i],
+                "Content-Encoding", sizeof("Content-Encoding") - 1))
+        {
+            continue;
+        }
+        if (++count > 1) {
+            return 2;
+        }
+        start = 0;
+        end = h[i].value.len;
+        while (start < end && (h[i].value.data[start] == ' '
+                               || h[i].value.data[start] == '\t'))
+        {
+            start++;
+        }
+        while (end > start && (h[i].value.data[end - 1] == ' '
+                               || h[i].value.data[end - 1] == '\t'))
+        {
+            end--;
+        }
+        if (end - start == 4
+            && ngx_strncasecmp(h[i].value.data + start, (u_char *) "gzip", 4)
+               == 0)
+        {
+            encoding = 1;
+        } else if (end - start != 8
+                   || ngx_strncasecmp(h[i].value.data + start,
+                                      (u_char *) "identity", 8) != 0)
+        {
+            encoding = 2;
+        }
+    }
+    return encoding;
+}
+
+
 static ngx_int_t
 ngx_http_shield_inspect_body(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
 {
     ngx_str_t                   body;
     ngx_int_t                   rc;
-    ngx_uint_t                  reason, i, too_large, has_body;
-    size_t                      remaining, len, start, end;
+    ngx_uint_t                  reason, too_large, has_body, encoding;
+    size_t                      remaining, len, input_cap;
+    u_char                     *decoded, *arena;
+    ngx_shield_gzip_result_t    gzip;
+    ngx_int_t                  decode_reason = -1;
     ngx_chain_t                *cl;
     ngx_buf_t                  *b;
-    ngx_list_part_t            *part;
-    ngx_table_elt_t            *h;
     ngx_http_shield_ban_ctx_t  *ctx, *stats;
     ngx_atomic_t               *counter;
     ngx_http_variable_value_t  *mark;
     ngx_uint_t                  state, zone;
 
-    if (ngx_http_shield_collect_body(r, slcf->max_body, &body) != NGX_OK) {
+    encoding = ngx_http_shield_body_encoding(r);
+    input_cap = slcf->gzip && encoding == 1 && slcf->max_body != 0
+                ? slcf->max_encoded_body : slcf->max_body;
+    if (ngx_http_shield_collect_body(r, input_cap, &body) != NGX_OK) {
         /* Allocation or temp-file read failure: the body was not scanned. */
         rc = NGX_ERROR;
         goto account;
     }
 
+    remaining = input_cap;
+    too_large = 0;
+    has_body = 0;
+    cl = r->request_body != NULL ? r->request_body->bufs : NULL;
+    for ( /* void */; cl != NULL; cl = cl->next) {
+        b = cl->buf;
+        if (ngx_buf_in_memory(b)) {
+            len = (size_t) (b->last - b->pos);
+        } else if (b->in_file && b->file != NULL) {
+            len = (size_t) (b->file_last - b->file_pos);
+        } else {
+            continue;
+        }
+        if (len != 0) {
+            has_body = 1;
+        }
+        if (len > remaining) {
+            too_large = 1;
+            break;
+        }
+        remaining -= len;
+    }
+
     if (body.len == 0) {
         rc = NGX_DECLINED;
-        if (slcf->max_body != 0 || r->request_body == NULL
+        if (input_cap != 0 || r->request_body == NULL
             || r->request_body->bufs == NULL)
         {
             return rc;
         }
         goto account;
+    }
+
+    if (slcf->gzip && encoding == 1 && slcf->max_body != 0) {
+        /* One extra byte distinguishes an exact fit from an output cap.
+         * Original body chains and offsets remain unchanged. */
+        decoded = ngx_pnalloc(r->pool, slcf->max_body + 1);
+        arena = ngx_palloc(r->pool, NGX_SHIELD_GZIP_ARENA);
+        if (decoded == NULL || arena == NULL) {
+            rc = NGX_ERROR;
+            goto account;
+        }
+        gzip = ngx_shield_gzip_decode(body.data, body.len, decoded,
+                    slcf->max_body + 1, arena, NGX_SHIELD_GZIP_ARENA);
+        (void) ngx_pfree(r->pool, arena);
+        if (gzip.state == NGX_SHIELD_GZIP_ERROR) {
+            rc = NGX_ERROR;
+            goto account;
+        }
+        if (gzip.state == NGX_SHIELD_GZIP_COMPLETE
+            || gzip.state == NGX_SHIELD_GZIP_LIMIT
+            || gzip.state == NGX_SHIELD_GZIP_MEMBER_LIMIT
+            || (gzip.state == NGX_SHIELD_GZIP_TRUNCATED && too_large))
+        {
+            body.data = decoded;
+            body.len = gzip.produced;
+            /* A module input cut is partial inspection, not an invalid
+             * complete upload. Keep its decoded prefix, as for output caps. */
+            if (gzip.state == NGX_SHIELD_GZIP_MEMBER_LIMIT
+                || too_large)
+            {
+                decode_reason = NGX_HTTP_SHIELD_BODY_ENCODING;
+            }
+            if (body.len > slcf->max_body) {
+                body.len = slcf->max_body;
+                decode_reason = NGX_HTTP_SHIELD_BODY_TOO_LARGE;
+            }
+        } else {
+            /* Never turn a malformed/unsupported representation into a new
+             * rejection policy. Retain the legacy raw-byte inspection only. */
+            decode_reason = NGX_HTTP_SHIELD_BODY_ENCODING;
+            if (body.len > slcf->max_body) {
+                body.len = slcf->max_body;
+            }
+        }
     }
 
     /* Fold the body-unsafe categories into the skip mask for this scan only.
@@ -1767,68 +1910,21 @@ account:
         goto count;
     }
 
-    remaining = slcf->max_body;
-    too_large = 0;
-    has_body = 0;
-    for (cl = r->request_body->bufs; cl != NULL; cl = cl->next) {
-        b = cl->buf;
-        if (ngx_buf_in_memory(b)) {
-            len = (size_t) (b->last - b->pos);
-        } else if (b->in_file && b->file != NULL) {
-            len = (size_t) (b->file_last - b->file_pos);
-        } else {
-            continue;
-        }
-        if (len != 0) {
-            has_body = 1;
-        }
-        if (len > remaining) {
-            too_large = 1;
-            break;
-        }
-        remaining -= len;
-    }
     if (!has_body) {
         return rc;
     }
 
-    /* Encoded bytes are still scanned as before, but do not cover the decoded
-     * representation. Only a single identity value needs no decoding. */
-    part = &r->headers_in.headers.part;
-    h = part->elts;
-    for (i = 0; /* entire header list */; i++) {
-        if (i >= part->nelts) {
-            if (part->next == NULL) {
-                break;
-            }
-            part = part->next;
-            h = part->elts;
-            i = 0;
-        }
-        if (!h[i].hash || !ngx_http_shield_header_name_is(&h[i],
-                "Content-Encoding", sizeof("Content-Encoding") - 1))
-        {
-            continue;
-        }
-        start = 0;
-        end = h[i].value.len;
-        while (start < end && (h[i].value.data[start] == ' '
-                               || h[i].value.data[start] == '\t'))
-        {
-            start++;
-        }
-        while (end > start && (h[i].value.data[end - 1] == ' '
-                               || h[i].value.data[end - 1] == '\t'))
-        {
-            end--;
-        }
-        if (end - start != sizeof("identity") - 1
-            || ngx_strncasecmp(h[i].value.data + start, (u_char *) "identity",
-                               sizeof("identity") - 1) != 0)
-        {
-            reason = NGX_HTTP_SHIELD_BODY_ENCODING;
-            goto count;
-        }
+    if (too_large && encoding == 1 && slcf->gzip) {
+        reason = NGX_HTTP_SHIELD_BODY_ENCODING;
+        goto count;
+    }
+    if (decode_reason >= 0) {
+        reason = (ngx_uint_t) decode_reason;
+        goto count;
+    }
+    if (encoding != 0 && !(encoding == 1 && slcf->gzip && !too_large)) {
+        reason = NGX_HTTP_SHIELD_BODY_ENCODING;
+        goto count;
     }
 
     if (too_large) {
@@ -1876,6 +1972,8 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
 
     slcf->mode = NGX_CONF_UNSET_UINT;
     slcf->cve = NGX_CONF_UNSET_UINT;
+    slcf->gzip = NGX_CONF_UNSET;
+    slcf->max_encoded_body = NGX_CONF_UNSET_SIZE;
     slcf->body = NGX_CONF_UNSET;
     slcf->max_body = NGX_CONF_UNSET_SIZE;
     slcf->status = NGX_CONF_UNSET_UINT;
@@ -1908,6 +2006,9 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode, NGX_HTTP_SHIELD_OFF);
     ngx_conf_merge_uint_value(conf->cve, prev->cve, 0);
+    ngx_conf_merge_value(conf->gzip, prev->gzip, 0);
+    ngx_conf_merge_size_value(conf->max_encoded_body, prev->max_encoded_body,
+                             64 * 1024);
     ngx_conf_merge_value(conf->body, prev->body, 1);
     /* 8k, not 64k. Scan cost is linear in the buffer -- the Aho-Corasick pass
      * is O(bytes), independent of the signature count -- so a body is still a
@@ -1917,6 +2018,13 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
      * (~10.9 ms/req, ~90 req/s to pin a worker); the cap stays at 8k because
      * the budget is still attacker-driven, and 8k covers real form/JSON. */
     ngx_conf_merge_size_value(conf->max_body, prev->max_body, 8 * 1024);
+    if (conf->gzip && (conf->max_body > NGX_SHIELD_GZIP_MAX
+                      || conf->max_encoded_body > NGX_SHIELD_GZIP_MAX))
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                          "shield gzip inspection budgets must not exceed 16m");
+        return NGX_CONF_ERROR;
+    }
     ngx_conf_merge_uint_value(conf->status, prev->status, NGX_HTTP_FORBIDDEN);
     ngx_conf_merge_uint_value(conf->status_format, prev->status_format,
                              NGX_HTTP_SHIELD_STATUS_JSON);

@@ -1,5 +1,9 @@
 Changes with the next minor release
 
+    *) Add opt-in shield_gzip request inspection using bounded zlib decoding,
+       independent encoded/decoded inspection budgets, unchanged forwarded
+       compressed bodies and incomplete-inspection counters.
+
     *) Add an optional native PHP boundary recipe with approved absolute
        entrypoints, non-executable filesystem trees and recording FastCGI tests
        for nginx and Angie. No module runtime changes.

@@ -25,6 +25,12 @@ static int fail_alloc = 1;
 static int fail_read;
 static int fail_nth;
 static int alloc_calls;
+static int fail_arena = 1;
+static int arena_calls;
+static union {
+    ngx_shield_gzip_align_t align;
+    u_char bytes[NGX_SHIELD_GZIP_ARENA];
+} arena_storage;
 static u_char storage[32];
 
 void *ngx_pnalloc(ngx_pool_t *pool, size_t size)
@@ -33,6 +39,20 @@ void *ngx_pnalloc(ngx_pool_t *pool, size_t size)
     assert(size <= sizeof(storage));
     alloc_calls++;
     return fail_alloc || alloc_calls == fail_nth ? NULL : storage;
+}
+
+void *ngx_palloc(ngx_pool_t *pool, size_t size)
+{
+    (void) pool;
+    assert(size == sizeof(arena_storage.bytes));
+    arena_calls++;
+    return fail_arena ? NULL : arena_storage.bytes;
+}
+
+ngx_int_t ngx_pfree(ngx_pool_t *pool, void *data)
+{
+    (void) pool; (void) data;
+    return NGX_OK;
 }
 
 ssize_t ngx_read_file(ngx_file_t *file, u_char *buf, size_t size, off_t offset)
@@ -289,6 +309,35 @@ int main(void)
                == NGX_DECLINED);
         assert(cve_compares == once);
     }
+    /* Decoder allocation failures preserve the existing inspection error path. */
+    r.variables = &mark;
+    main_conf.stats_zone = NULL;
+    conf.ban_zone = NULL;
+    conf.gzip = 1;
+    conf.max_encoded_body = 4;
+    conf.max_body = 4;
+    r.headers_in.headers.part.elts = &encoding;
+    r.headers_in.headers.part.nelts = 1;
+    encoding.hash = 1;
+    ngx_str_set(&encoding.value, "gzip");
+    request_body.bufs = &chain;
+    r.request_body = &request_body;
+    buf.memory = 1;
+    buf.pos = data;
+    buf.last = data + sizeof(data) - 1;
+    fail_alloc = 0;
+    alloc_calls = 0;
+    fail_nth = 2;
+    fail_arena = 0;
+    arena_calls = 0;
+    assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_ERROR);
+    assert(alloc_calls == 2 && arena_calls == 1); /* decoded buffer alone */
+    fail_nth = 0;
+    fail_arena = 1;
+    alloc_calls = 0;
+    arena_calls = 0;
+    assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_ERROR);
+    assert(alloc_calls == 2 && arena_calls == 1); /* arena alone */
     puts("body_unit: errors, boundaries and once-per-zone accounting passed");
     return 0;
 }

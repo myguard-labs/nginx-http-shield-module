@@ -250,10 +250,11 @@ cd "$ROOT/$DIR"
 # --- configure skip ---------------------------------------------------------
 # configure is several seconds of SERIAL shell that ccache cannot touch. Skip
 # it when the resulting objs/Makefile was produced by an identical invocation.
-# Keying on the exact argv (not just mode/version) is what makes this safe:
+# Key on the exact argv and addon config that generates dependencies/link flags:
 # change any flag -- including TEST_HARNESS's -DNGX_TEST_HARNESS, which is
-# folded into CC_OPT above -- change the stamp, get a reconfigure.
-CONF_ARGS="--with-compat --with-cc=${WITH_CC} --with-cc-opt=${CC_OPT} --with-ld-opt=${LD_OPT} ${ADD_MODULE}"
+# folded into CC_OPT above -- or config content, get a reconfigure.
+MODULE_CONFIG_SHA=$(sha256sum "$MODULE_DIR/config" | awk '{print $1}')
+CONF_ARGS="module_config_sha=${MODULE_CONFIG_SHA} --with-compat --with-cc=${WITH_CC} --with-cc-opt=${CC_OPT} --with-ld-opt=${LD_OPT} ${ADD_MODULE}"
 STAMP="objs/.conf-stamp"
 
 # --- eatmydata ----------------------------------------------------------

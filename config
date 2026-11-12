@@ -10,13 +10,27 @@ ngx_module_srcs="$ngx_addon_dir/src/ngx_http_shield_module.c \
                  $ngx_addon_dir/src/ngx_http_shield_scan.c \
                  $ngx_addon_dir/src/ngx_http_shield_ban.c \
                  $ngx_addon_dir/src/ngx_shield_probe_hooks.c"
-ngx_module_deps="$ngx_addon_dir/src/ngx_http_shield_patterns.h \
+ngx_module_deps="$ngx_addon_dir/src/ngx_http_shield_gzip.h \
+                 $ngx_addon_dir/src/ngx_http_shield_patterns.h \
                  $ngx_addon_dir/src/ngx_http_shield_scan.h \
                  $ngx_addon_dir/src/ngx_http_shield_cve.h \
                  $ngx_addon_dir/src/ngx_http_shield_status.h \
                  $ngx_addon_dir/src/ngx_http_shield_negotiate.h \
                  $ngx_addon_dir/src/ngx_http_shield_ban.h \
                  $ngx_addon_dir/src/ngx_shield_probe_hooks.h"
+# Use nginx's probe/include settings, including bundled zlib on Windows.
+ngx_module_libs=ZLIB
+# A separately loaded Unix module must own its zlib references, even when the
+# host core has no compression user. Build bundled objects as PIC for the .so;
+# nginx's zlib rule also places the archive in the module target dependencies.
+if [ "$ngx_module_link" = DYNAMIC ] && [ "$NGX_PLATFORM" != win32 ]; then
+    if [ "$ZLIB" = NONE ]; then
+        ngx_module_libs="$ngx_module_libs -lz"
+    else
+        ZLIB_OPT="$ZLIB_OPT -fPIC"
+        ngx_module_libs="$ngx_module_libs $ZLIB/libz.a"
+    fi
+fi
 ngx_module_incs=""
 
 # The CI-only test probe comes from ci/t/harness (nginx-module-testkit). It is
