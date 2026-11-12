@@ -88,6 +88,7 @@ trap 'exit 143' TERM
     -o "$STATUS_BIN" \
     "$SCRIPT_DIR/status_unit.c" "$NGX_SRC/src/core/ngx_string.c"
 "$STATUS_BIN"
+python3 -m unittest discover -s "$REPO_ROOT/ci/tests" -p test_module_dependencies_check.py
 python3 "$REPO_ROOT/ci/tests/test_module_dependencies.py" "$NGX_SRC/objs/Makefile"
 # Exercise the bounded status-only query and Accept parser.
 # shellcheck disable=SC2086

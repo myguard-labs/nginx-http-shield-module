@@ -7,9 +7,30 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
-import re
 import shlex
 import sys
+
+
+def archive_has_pic(lines: list[str], archive: str) -> bool:
+    """Check CFLAGS in the linked archive's own generated rule recipes."""
+    recipes = []
+    for rule_index, rule in enumerate(lines):
+        if rule.startswith("\t") or ":" not in rule:
+            continue
+        targets = shlex.split(rule.split(":", 1)[0])
+        if archive not in targets:
+            continue
+        for recipe_line in lines[rule_index + 1 :]:
+            if not recipe_line.startswith("\t"):
+                break
+            recipes.append(recipe_line)
+    flags = [
+        token.split("=", 1)[1]
+        for recipe_line in recipes
+        for token in shlex.split(recipe_line)
+        if token.startswith("CFLAGS=")
+    ]
+    return any("-fPIC" in shlex.split(value) for value in flags)
 
 
 def main() -> None:
@@ -51,7 +72,7 @@ def main() -> None:
         for archive in archives:
             if archive not in shlex.split(line.split(":", 1)[1]):
                 raise RuntimeError("bundled zlib missing from module dependencies")
-            if not re.search(r'CFLAGS="[^"]*\s-fPIC(?:\s|\")', text):
+            if not archive_has_pic(lines, archive):
                 raise RuntimeError("bundled dynamic zlib must be built as PIC")
     print("module dependencies: every private header invalidates compiled objects")
 
