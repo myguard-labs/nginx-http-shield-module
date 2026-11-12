@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "required_categories": ["sqli"],
+  "required_body_categories": ["sqli"],
+  "approved_scripts": ["/srv/site/app/index.php"],
+  "nonexec_roots": ["/srv/site/uploads", "/srv/site/cache", "/srv/site/media"],
+  "private_roots": ["/srv/site/private"],
+  "private_dac_verified": true,
+  "internal_routes": ["/ops/"],
+  "handoffs": [{
+    "endpoint": "unix:/run/shield/guard.sock",
+    "mode": "block",
+    "isolated": true,
+    "policy": "handoff.json"
+  }]
+}

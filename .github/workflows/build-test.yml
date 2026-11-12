@@ -1,4 +1,4 @@
-# sync-sha: 6dd14a0c3120f752af16f1b756919dc77208802def8bc088339422179ae2a601
+# sync-sha: 867c59432ae32af505838fe0ee827449848eb01e762da01a94ab30629bfed01f
 name: Build and Test
 
 env:
@@ -62,6 +62,18 @@ jobs:
 
       - name: Check configuration-test sanitizer scope
         run: python3 -m unittest discover -s ci/tests -p test_config_environment.py
+
+      - name: Check deployment analysis and diagnostic control
+        run: |
+          python3 ci/tests/test_deployment_checker.py -v
+          if python3 ci/tests/test_deployment_checker.py --faulty-expected \
+              -k test_unsafe_golden > /tmp/deployment-checker-control.log 2>&1; then
+            cat /tmp/deployment-checker-control.log
+            echo 'faulty diagnostic control unexpectedly passed' >&2
+            exit 1
+          fi
+          grep -F "missing expected diagnostic: {'deliberately_wrong_diagnostic'}" \
+            /tmp/deployment-checker-control.log
 
       - name: Validate monitoring kit
         run: |

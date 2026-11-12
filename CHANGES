@@ -4,6 +4,10 @@ Changes with the next minor release
        independent encoded/decoded inspection budgets, unchanged forwarded
        compressed bodies and incomplete-inspection counters.
 
+    *) Add an optional bounded deployment checker for declared Shield coverage,
+       PHP/final-handoff mappings, private destinations and internal routes,
+       with safe diagnostics and explicit unsupported-input outcomes.
+
     *) Add an optional native PHP boundary recipe with approved absolute
        entrypoints, non-executable filesystem trees and recording FastCGI tests
        for nginx and Angie. No module runtime changes.
