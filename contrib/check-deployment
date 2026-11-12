@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Copyright (C) 2026 Thijs Eilander
+# SPDX-License-Identifier: BSD-2-Clause
+exec python3 "$(dirname "$0")/deployment-checker/check_deployment.py" "$@"

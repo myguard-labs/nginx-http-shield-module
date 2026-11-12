@@ -109,6 +109,11 @@ rewrites, internal redirects and symlink targets. It preserves declared public
 files and legitimate public symlinks under a separate worker/backend ownership
 contract; no Shield directive or automatic configuration change is involved.
 
+The optional [deployment checker](contrib/deployment-checker/README.md) inspects
+an explicit configuration snapshot and site contract without applying changes.
+It reports effective category skips, PHP/final-handoff mapping problems, private
+file obligations and public internal routes. Unsupported input stays nonclean.
+
 ## Install
 
 The optional [final FastCGI handoff companion](contrib/final-handoff/README.md)
