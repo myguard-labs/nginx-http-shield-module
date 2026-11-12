@@ -734,6 +734,220 @@ class DeploymentCheckerTests(unittest.TestCase):
                 CHECKER.main()
             self.assertEqual(error.exception.code, 2)
 
+    def test_public_internal_redirects(self):
+        directives = (
+            "rewrite ^ /ops/ last;",
+            "rewrite ^ /ops/;",
+            "try_files $uri /ops/;",
+            "error_page 404 /ops/;",
+            "error_page 404 =200 /ops/;",
+            "error_page 404 = /ops/;",
+            "index /ops/;",
+        )
+        for directive in directives:
+            with self.subTest(directive=directive):
+                result = self.run_config(
+                    self.simple(locations="location /status/ { " + directive + " }")
+                )
+                self.assertIn(
+                    "PUBLIC_INTERNAL",
+                    self.codes(result),
+                    "public redirect into declared internal route was not diagnosed",
+                )
+                self.assertEqual(result["status"], "nonclean")
+
+    def test_break_directory_index_composition(self):
+        contract = dict(self.contract)
+        contract["internal_routes"] = ["/ops/private.html"]
+        for index in ("private.html", "private.html.backup"):
+            with self.subTest(index=index):
+                result = self.run_config(
+                    self.simple(
+                        locations="location /ops/private.html { internal; } "
+                        "location /status/ { rewrite ^ /ops/ break; index "
+                        + index
+                        + "; }"
+                    ),
+                    contract=contract,
+                )
+                self.assertIn(
+                    "ROUTE_UNKNOWN",
+                    self.codes(result),
+                    "directory break plus relative index was falsely clean",
+                )
+        for directive in (
+            "rewrite ^ /ops/ break; index public.html;",
+            "rewrite ^ /ops-other/ break; index private.html;",
+            "rewrite ^ /ops/private.html break; index private.html;",
+        ):
+            with self.subTest(legitimate=directive):
+                result = self.run_config(
+                    self.simple(
+                        locations="location /ops/private.html { internal; } "
+                        "location /status/ { " + directive + " }"
+                    ),
+                    contract=contract,
+                )
+                self.assertEqual(result["status"], "clean", result)
+
+    def test_legitimate_redirect_controls(self):
+        directives = (
+            "rewrite ^ /ops/ redirect;",
+            "rewrite ^ /ops/ permanent;",
+            "rewrite ^ https://example.test/ops/;",
+            "rewrite ^ http://example.test/ops/ last;",
+            "rewrite ^ /ops/file break;",
+            "rewrite ^ /ops last;",
+            "rewrite ^ /ops-other/ last;",
+            "error_page 404 https://example.test/ops/;",
+            "try_files $uri $uri/ =404;",
+            "try_files $uri =000404;",
+            "try_files /ops/file =404;",
+            "try_files $uri $uri/ /index.php$is_args$args;",
+            "try_files $uri /index.php?$args;",
+            "index index.html;",
+            "index /ops/; return 200;",
+        )
+        for directive in directives:
+            with self.subTest(directive=directive):
+                result = self.run_config(
+                    self.simple(locations="location /status/ { " + directive + " }")
+                )
+                self.assertEqual(result["status"], "clean", result)
+        for directive in (
+            "rewrite ^ /ops/target last;",
+            "try_files $uri /ops/target;",
+            "error_page 404 /ops/target;",
+            "index /ops/target;",
+        ):
+            with self.subTest(internal=directive):
+                result = self.run_config(
+                    self.simple(
+                        locations="location /ops/source/ { "
+                        + directive
+                        + " internal; }"
+                    )
+                )
+                self.assertEqual(result["status"], "clean", result)
+
+    def test_unresolved_redirects_are_unknown(self):
+        directives = (
+            "rewrite ^ $uri last;",
+            "rewrite ^ /ops/$args last;",
+            "rewrite ^ /ops/ break;",
+            "rewrite ^ $uri break;",
+            "rewrite nomatch /ops/ last;",
+            "rewrite ^ /ops%2ftarget last;",
+            "rewrite ^ /ops/../public last;",
+            "rewrite ^ //ops/ last;",
+            "try_files $uri $args;",
+            "try_files $args/ =404;",
+            "try_files /ops// =404;",
+            "try_files $uri @fallback;",
+            "error_page 404 $uri;",
+            "error_page 404 @fallback;",
+            "index $args;",
+            "index ops/index.html;",
+            "index ../ops/index.html;",
+            "index .;",
+            "index ..;",
+        )
+        for directive in directives:
+            with self.subTest(directive=directive):
+                result = self.run_config(
+                    self.simple(locations="location /status/ { " + directive + " }")
+                )
+                self.assertIn("ROUTE_UNKNOWN", self.codes(result, "unknown"), result)
+                self.assertEqual(result["status"], "nonclean")
+
+    def test_redirect_syntax_and_query_boundaries(self):
+        for directive in (
+            "rewrite ^ /ops/ invalid;",
+            "rewrite ^;",
+            "try_files $uri =oops;",
+            "try_files $uri =0;",
+            "try_files $uri =1000;",
+            "try_files $uri;",
+            "error_page invalid /ops/;",
+            "error_page 499 /ops/;",
+            "error_page =200 /ops/;",
+            "error_page 404 =oops /ops/;",
+            "index;",
+        ):
+            with self.subTest(directive=directive):
+                self.assertEqual(
+                    self.run_config(
+                        self.simple(locations="location /status/ { " + directive + " }")
+                    )["status"],
+                    "nonclean",
+                )
+        for target, clean in (
+            ("/ops?$args", True),
+            ("/ops/?$args", False),
+            ("/ops/$is_args$args", False),
+            ("/index.php$is_args$args", True),
+        ):
+            result = self.run_config(
+                self.simple(
+                    locations=f"location /status {{ rewrite ^ {target} last; }}"
+                )
+            )
+            self.assertEqual(result["status"], "clean" if clean else "nonclean")
+
+    def test_redirect_inheritance_and_indirect_helpers(self):
+        for directive in ("index /ops/;", "error_page 404 /ops/;"):
+            result = self.run_config(
+                self.simple(outer=directive, locations="location /public/ { }")
+            )
+            self.assertIn(
+                "PUBLIC_INTERNAL",
+                self.codes(result),
+                "inherited routing policy was not checked",
+            )
+        for helper in (
+            "location /helper/ { internal; rewrite ^ /ops/ last; }",
+            "location @fallback { rewrite ^ /ops/ last; }",
+        ):
+            result = self.run_config(self.simple(locations=helper))
+            self.assertIn("ROUTE_UNKNOWN", self.codes(result, "unknown"))
+        contract = dict(self.contract, internal_routes=["/index"])
+        result = self.run_config(
+            "http { shield block; server { location /index { internal; } location / { index index.html; } } }",
+            contract,
+        )
+        self.assertIn(
+            "ROUTE_UNKNOWN",
+            self.codes(result, "unknown"),
+            "relative index prefix boundary was assumed safe",
+        )
+
+    def test_routing_scope_and_duplicate_boundaries(self):
+        contract = dict(self.contract, internal_routes=[])
+        for directive in (
+            "rewrite ^ $uri last;",
+            "try_files $uri /fallback;",
+            "index subdir/index.html;",
+            "error_page 404 /fallback;",
+        ):
+            result = self.run_config(
+                self.simple(locations="location /status/ { " + directive + " }"),
+                contract,
+            )
+            self.assertEqual(result["status"], "clean", result)
+        result = self.run_config(
+            self.simple(
+                locations="location /status/ { try_files $uri /fallback; try_files $uri /other; }"
+            )
+        )
+        self.assertIn("DUPLICATE", self.codes(result, "unknown"))
+        result = self.run_config(
+            self.simple(
+                locations="location /status/ { rewrite ^ /ops/?sensitive-query-placeholder last; }"
+            )
+        )
+        self.assertNotIn("sensitive-query-placeholder", json.dumps(result))
+        self.assertIn("PUBLIC_INTERNAL", self.codes(result))
+
     def test_cli_safe_identifiers_redaction_and_exit_status(self):
         sentinel = "sensitive-value-for-redaction-control"
         config = f"credential_{sentinel}.conf"

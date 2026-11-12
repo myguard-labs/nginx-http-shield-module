@@ -126,7 +126,7 @@ open descriptors are external obligations; a clean result cannot prove them.
 
 The parser handles main, `events`, `http`, `server` and nested `location` blocks;
 literal includes; single/double quoted arguments, comments and nginx escapes;
-and the limited directives listed in `INERT` and `SINGLE` in
+and the limited directives listed in `INERT`, `ROUTING` and `SINGLE` in
 [check_deployment.py](check_deployment.py). It never expands variables or globs,
 reads environment values, loads modules, evaluates regexes or invokes a shell.
 Braced variables must have the exact `${name}` form; malformed references are
@@ -160,7 +160,43 @@ Declared internal prefixes are checked in every server. Missing declarations,
 public exact/prefix descendants and public status handlers (`stub_status` and
 `shield_ban_status`) are nonclean. Named locations are inherently internal.
 Public regex locations can overlap a declared prefix, so their coverage is
-unknown rather than claimed safe. No general route simulation is attempted.
+unknown rather than claimed safe.
+
+`internal` only prevents direct client entry. The checker also inspects
+configured `rewrite`, `try_files`, `error_page` and `index` transitions into
+those prefixes. Index and error-page lists inherit unless a child declares
+its own list; rewrite and try-files rules stay local to their ordinary scope.
+Literal public transitions into a protected prefix are nonclean. The same
+prefix boundary applies: `/ops` does not match a declared `/ops/` prefix.
+An internal location already within a declared protected prefix can redirect
+within that prefix. Unlisted internal helpers, named fallbacks and unresolved
+chains stay unknown; being named or marked internal alone does not prove that
+public routes cannot reach a helper.
+
+Supported destinations are canonical literal URI paths, with an optional
+literal `?` query or the shipped `$is_args$args` suffix. The usual
+`try_files $uri $uri/ /index.php$is_args$args` fallback is preserved.
+Variables in URI destinations, other dynamic file candidates, encoded or dot
+segments, and relative index subpaths require local review and stay unknown.
+Only the namespace-preserving `$uri` and `$uri/` candidate forms (including
+braced equivalents) are modeled for try-files tests. Its final `=code` is a
+response rather than a redirect. Simple relative index basenames are supported
+when they cannot complete a protected prefix from a public directory URI;
+ambiguous prefix completions remain unknown. The default `index.html` is
+included. Explicit content handlers and an unconditional local return without
+rewrite rules do not run the index handler.
+
+External rewrite `redirect`/`permanent` flags and literal HTTP(S) replacement
+URLs send a new client request, so they do not grant internal entry. A literal
+non-directory `break` target keeps its handler. A directory `break` target can
+still trigger index and reach a protected location; that case remains unknown.
+Relative index names are also checked against literal directory `break`
+targets, including directories outside the protected prefix.
+For a target inside the protected set, rewrite patterns beyond `^` and `^/`
+remain unknown rather than being evaluated as regexes. The diagnostics identify
+configured transitions and unresolved policy coverage, not a proof that every
+application request executes an edge. No general route simulation or backend
+response analysis is attempted.
 
 Bounds are fixed per invocation: 65,536 bytes per input file, 1,048,576 total
 bytes, 64 file reads including contracts/policies/repeated includes, include

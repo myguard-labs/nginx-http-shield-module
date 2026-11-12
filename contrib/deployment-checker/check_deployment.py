@@ -116,7 +116,8 @@ MESSAGES = {
     "SKIP_REPLACED": "Local category skips replace the entire inherited mask.",
     "COVERAGE": "A required category is skipped or Shield is not in block mode.",
     "BODY": "A required body category is disabled or has no body scanner.",
-    "PUBLIC_INTERNAL": "Add internal to the declared internal route or status handler.",
+    "PUBLIC_INTERNAL": "Keep declared internal routes and status handlers inaccessible through public entry or redirect paths.",
+    "ROUTE_UNKNOWN": "Review an unresolved routing transition into the internal-route contract.",
     "MISSING_INTERNAL": "A declared internal route has no analyzed location.",
     "PHP_SCRIPT": "Use a declared constant script outside nonexec trees or the declared final guard.",
     "PHP_PARAMS": "Supply exactly one SCRIPT_FILENAME in the effective parameter list.",
@@ -474,12 +475,14 @@ INERT = {
     "server_name": ("server", 1, 32),
     "access_log": ("http server location", 1, 4),
     "error_log": ("main http server location", 1, 3),
+    "return": ("server location", 1, 2),
+    "default_type": ("http server location", 1, 1),
+}
+ROUTING = {
     "index": ("http server location", 1, 16),
     "try_files": ("server location", 2, 32),
     "rewrite": ("server location", 2, 3),
     "error_page": ("http server location", 2, 32),
-    "return": ("server location", 1, 2),
-    "default_type": ("http server location", 1, 1),
 }
 SINGLE = {
     "shield": ("off", "detect", "block"),
@@ -530,6 +533,7 @@ class Analyzer:
         state["params"] = list(state.get("params", []))
         inherited_skip = set(state.get("skip", ()))
         local_skip, params, seen, children = set(), [], set(), []
+        routing = {name: [] for name in (*ROUTING, "return")}
         owner = owner or Node("main", [], None, 1, 1)
         for node in nodes:
             name, args = node.name, node.args
@@ -553,12 +557,17 @@ class Analyzer:
                 else:
                     children.append(node)
                 continue
-            if name in INERT:
-                contexts, low, high = INERT[name]
+            if name in INERT or name in ROUTING:
+                contexts, low, high = INERT.get(name) or ROUTING[name]
                 if kind not in contexts.split() or not low <= len(args) <= high:
                     self.emit("unknown", "UNKNOWN", node, scope=scope)
+                    continue
                 for value in args:
                     self.variables(value, node, scope)
+                if name in ROUTING:
+                    routing[name].append(node)
+                elif name == "return":
+                    routing["return"].append(node)
                 continue
             if kind not in ("http", "server", "location") or name not in {
                 *SINGLE,
@@ -609,6 +618,16 @@ class Analyzer:
             if args:
                 self.variables(args[0], node, scope)
         state["skip"] = local_skip or inherited_skip
+        # Index/error-page arrays inherit only in the absence of local entries.
+        # Rewrite and try_files do not merge into ordinary child locations.
+        for name in ("index", "error_page"):
+            if routing[name]:
+                state["route_" + name] = routing[name]
+            routing[name] = state.get("route_" + name, [])
+        if not routing["index"]:
+            routing["index"] = [
+                Node("index", ["index.html"], None, owner.file, owner.line)
+            ]
         if params:
             if state["params"]:
                 self.emit("info", "PARAMS_REPLACED", owner, scope=scope)
@@ -654,6 +673,7 @@ class Analyzer:
                     (owner, state["internal"] or named, scope)
                 )
             self.files(state, owner, scope)
+            self.routing(routing, state, owner, scope)
             if state.get("fastcgi_pass"):
                 self.php(state, owner, scope)
         for child in children:
@@ -663,6 +683,174 @@ class Analyzer:
                 child.name,
                 child,
             )
+
+    def route_target(self, value, node, scope, *, query=True):
+        """Resolve only literal URI paths and the shipped query-string suffix."""
+        if query:
+            value = value.split("?", 1)[0]
+            value = value.removesuffix("$is_args$args")
+        if not absolute(value) or any(c in value for c in "%\\#?") or "//" in value:
+            self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+            return None
+        return value
+
+    def routing(self, rules, state, owner, scope):
+        """Check bounded configured transitions, without simulating applications."""
+        prefixes = self.contract["internal_routes"]
+        route = owner.args[-1] if owner.name == "location" else ""
+        literal = owner.name == "location" and (
+            len(owner.args) == 1 or owner.args[0] in ("=", "^~")
+        )
+        trusted = (
+            literal and state["internal"] and any(route.startswith(p) for p in prefixes)
+        )
+        indirect = (
+            owner.name != "location"
+            or not literal
+            or state["internal"]
+            or route.startswith("@")
+        )
+        rewritten_directories = []
+
+        def check(value, node):
+            if any(value.startswith(p) for p in prefixes) and not trusted:
+                self.emit(
+                    "unknown" if indirect else "hole",
+                    "ROUTE_UNKNOWN" if indirect else "PUBLIC_INTERNAL",
+                    node,
+                    scope=scope,
+                )
+
+        for node in rules["rewrite"]:
+            flag = node.args[2] if len(node.args) == 3 else "last"
+            if flag not in ("last", "break", "redirect", "permanent"):
+                self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+                continue
+            target = node.args[1]
+            if flag in ("redirect", "permanent") or target.startswith(
+                ("http://", "https://")
+            ):
+                continue
+            if not prefixes:
+                continue
+            target = self.route_target(target, node, scope)
+            if target is None:
+                continue
+            if flag == "break":
+                # No immediate reselection, but a directory URI can still run
+                # index and enter another location during the content phase.
+                if target.endswith("/"):
+                    rewritten_directories.append(target)
+                if (
+                    target.endswith("/")
+                    and any(target.startswith(p) for p in prefixes)
+                    and not trusted
+                ):
+                    self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+            elif (
+                node.args[0] not in ("^", "^/")
+                and any(target.startswith(p) for p in prefixes)
+                and not trusted
+            ):
+                self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+            else:
+                check(target, node)
+
+        for node in rules["try_files"]:
+            if len(rules["try_files"]) > 1:
+                self.emit("unknown", "DUPLICATE", node, scope=scope)
+            target = node.args[-1]
+            if prefixes:
+                for candidate in node.args[:-1]:
+                    if (
+                        "$" in candidate
+                        and candidate
+                        not in (
+                            "$uri",
+                            "$uri/",
+                            "${uri}",
+                            "${uri}/",
+                        )
+                        or "$" not in candidate
+                        and ("//" in candidate or any(c in candidate for c in "%\\#?"))
+                    ):
+                        self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+            if target.startswith("="):
+                if (
+                    not re.fullmatch(r"=[0-9]+", target)
+                    or not 0 < int(target[1:]) <= 999
+                ):
+                    self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+                continue
+            if prefixes:
+                target = self.route_target(target, node, scope)
+                if target is not None:
+                    check(target, node)
+
+        for node in rules["error_page"]:
+            codes = node.args[:-1]
+            if codes[-1].startswith("="):
+                override = codes.pop()
+                if override != "=" and (
+                    not re.fullmatch(r"=[0-9]+", override) or int(override[1:]) > 999
+                ):
+                    self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+            if not codes or any(
+                not re.fullmatch(r"[0-9]+", c)
+                or not 300 <= int(c) <= 599
+                or int(c) == 499
+                for c in codes
+            ):
+                self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+                continue
+            target = node.args[-1]
+            if prefixes and (target.startswith(("/", "@")) or "$" in target):
+                target = self.route_target(target, node, scope)
+                if target is not None:
+                    check(target, node)
+
+        if (
+            not prefixes
+            or any(
+                state.get(h)
+                for h in ("fastcgi_pass", "stub_status", "shield_ban_status")
+            )
+            or (rules["return"] and not rules["rewrite"])
+        ):
+            return
+        for node in rules["index"]:
+            for target in node.args:
+                if target.startswith("/"):
+                    target = self.route_target(target, node, scope, query=False)
+                    if target is not None:
+                        check(target, node)
+                elif (
+                    not target
+                    or target in (".", "..")
+                    or any(c in target for c in "/$%\\#?")
+                ):
+                    self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+                elif not trusted:
+                    if any(
+                        (directory + target).startswith(prefix)
+                        for directory in rewritten_directories
+                        for prefix in prefixes
+                    ):
+                        self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
+                    for prefix in prefixes:
+                        parent, tail = prefix.rsplit("/", 1)
+                        source = parent + "/"
+                        possible = (
+                            not literal
+                            or route.startswith("@")
+                            or (
+                                source == route
+                                if owner.args[0] == "="
+                                else source.startswith(route)
+                            )
+                        )
+                        if tail and target.startswith(tail) and possible:
+                            self.emit("unknown", "ROUTE_UNKNOWN", node, scope=scope)
 
     def files(self, state, owner, scope):
         roots = self.contract["private_roots"]
