@@ -111,6 +111,11 @@ contract; no Shield directive or automatic configuration change is involved.
 
 ## Install
 
+The optional [final FastCGI handoff companion](contrib/final-handoff/README.md)
+checks actual generated script and privileged parameter vectors against an
+explicit site contract after nginx constructs them. It preserves ordinary
+parameters and body bytes and documents supported transport/resource limits.
+
 Build as a dynamic module against your nginx (or Angie) source:
 
 ```sh
