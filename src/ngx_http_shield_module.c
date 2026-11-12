@@ -1807,6 +1807,9 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
     encoding = ngx_http_shield_body_encoding(r);
     input_cap = slcf->gzip && encoding == 1 && slcf->max_body != 0
                 ? slcf->max_encoded_body : slcf->max_body;
+    /* Shared accounting is also reached before collection succeeds. */
+    too_large = 0;
+    has_body = 0;
     if (ngx_http_shield_collect_body(r, input_cap, &body) != NGX_OK) {
         /* Allocation or temp-file read failure: the body was not scanned. */
         rc = NGX_ERROR;
@@ -1814,8 +1817,6 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
     }
 
     remaining = input_cap;
-    too_large = 0;
-    has_body = 0;
     cl = r->request_body != NULL ? r->request_body->bufs : NULL;
     for ( /* void */; cl != NULL; cl = cl->next) {
         b = cl->buf;
