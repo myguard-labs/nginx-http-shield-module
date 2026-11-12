@@ -1,4 +1,4 @@
-# sync-sha: 1b197d75a2d4bd369bc1874139fe0767f865095df31efe64134e9a63d18f2885
+# sync-sha: 44a1096e199645e1e20f76f3b4698c53d21162d1f5bc2db472892c9f3b265d51
 name: Build and Test
 
 env:
@@ -492,6 +492,61 @@ jobs:
           [ -x "$binary" ] || binary="$build/angie"
           python3 ci/tests/test_php_boundary.py --nginx "$binary" \
             --output "$PWD/.build/php-boundary"
+
+      - name: Check private filesystem destinations
+        if: matrix.mode == 'debug'
+        env:
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
+        run: |
+          build="$PWD/.build/${MATRIX_FLAVOR}-${VER}-debug/objs"
+          binary="$build/nginx"
+          [ -x "$binary" ] || binary="$build/angie"
+          evidence="$RUNNER_TEMP/private-destinations"
+          mkdir -p "$evidence"
+          container="shield-private-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${MATRIX_FLAVOR}"
+          cleanup() {
+            if [ -s "$evidence/container.id" ]; then
+              docker rm -f "$(cat "$evidence/container.id")" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          docker run --rm -i --name "$container" --label "myguard.run=$container" \
+            --cidfile "$evidence/container.id" \
+            -v "$PWD:/work:ro" -v "$evidence:/evidence" -w /work \
+            -e "TEST_BINARY=/work/${binary#"$PWD"/}" \
+            -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
+            eilandert/goldenimage:ci bash -s <<'CHECK'
+          set -euo pipefail
+          trap 'chown -hR "$HOST_UID:$HOST_GID" /evidence' EXIT
+          permissions_status=0
+          {
+            python3 ci/tests/test_private_destinations.py --nginx "$TEST_BINARY" \
+              --output /evidence/permissions-red --disable-permissions \
+              -k test_private -v || permissions_status=$?
+          } > /evidence/permissions-red.log 2>&1
+          cat /evidence/permissions-red.log
+          test "$permissions_status" -eq 1
+          grep -Fx 'FAILED (failures=12)' /evidence/permissions-red.log
+          oracle_status=0
+          {
+            python3 ci/tests/test_private_destinations.py --nginx "$TEST_BINARY" \
+              --output /evidence/oracle-red --wrong-public-oracle \
+              -k test_public -v || oracle_status=$?
+          } > /evidence/oracle-red.log 2>&1
+          cat /evidence/oracle-red.log
+          test "$oracle_status" -eq 1
+          grep -Fx 'FAILED (failures=11)' /evidence/oracle-red.log
+          python3 ci/tests/test_private_destinations.py --nginx "$TEST_BINARY" \
+            --output /evidence/restored -v
+          CHECK
+
+      - name: Preserve private destination evidence
+        if: always() && matrix.mode == 'debug'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: private-destinations-${{ matrix.flavor }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/private-destinations
+          retention-days: 14
 
   coverage:
     name: C line coverage
