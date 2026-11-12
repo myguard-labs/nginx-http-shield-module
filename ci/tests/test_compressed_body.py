@@ -544,22 +544,46 @@ http {{
                         gzip.compress(ATTACK + b"a" * 65536, mtime=0),
                         403,
                     )
+                    before_limited = snapshot(port)["body_uninspected"]
                     check(
                         "late-attack",
                         gzip.compress(b"a" * 32 + ATTACK, mtime=0),
                         route="limited",
                     )
+                    after_limited = snapshot(port)["body_uninspected"]
+                    assert after_limited == {
+                        **before_limited,
+                        "too_large": before_limited["too_large"] + 1,
+                    }, "decoded cap counter"
                     check(
                         "input-cap", benign, route="input-cap", expected_decoded=BENIGN
                     )
+                    before_zero = snapshot(port)["body_uninspected"]
                     check("zero", attack, route="zero", expected_decoded=ATTACK)
+                    after_zero = snapshot(port)["body_uninspected"]
+                    assert after_zero == {
+                        **before_zero,
+                        "too_large": before_zero["too_large"] + 1,
+                    }, "zero decoded budget counter"
+                    before_zero_input = snapshot(port)["body_uninspected"]
                     check(
                         "zero-input",
                         attack,
                         route="zero-input",
                         expected_decoded=ATTACK,
                     )
+                    after_zero_input = snapshot(port)["body_uninspected"]
+                    assert after_zero_input == {
+                        **before_zero_input,
+                        "encoding": before_zero_input["encoding"] + 1,
+                    }, "zero encoded budget counter"
+                    before_unsupported = snapshot(port)["body_uninspected"]
                     check("unsupported-attack", attack, encodings=["br"])
+                    after_unsupported = snapshot(port)["body_uninspected"]
+                    assert after_unsupported == {
+                        **before_unsupported,
+                        "encoding": before_unsupported["encoding"] + 1,
+                    }, "unsupported encoding counter"
                     check("stacked-attack", attack, encodings=["gzip, gzip"])
                     check("duplicate-attack", attack, encodings=["gzip", "gzip"])
                     # Force encoded collection across buffer and temp-file boundaries.

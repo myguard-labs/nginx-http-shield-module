@@ -1915,7 +1915,7 @@ account:
         return rc;
     }
 
-    if (too_large && encoding == 1 && slcf->gzip) {
+    if (too_large && encoding == 1 && slcf->gzip && slcf->max_body != 0) {
         reason = NGX_HTTP_SHIELD_BODY_ENCODING;
         goto count;
     }
@@ -1923,7 +1923,8 @@ account:
         reason = (ngx_uint_t) decode_reason;
         goto count;
     }
-    if (encoding != 0 && !(encoding == 1 && slcf->gzip && !too_large)) {
+    if (encoding != 0 && !(encoding == 1 && slcf->gzip
+                           && (!too_large || slcf->max_body == 0))) {
         reason = NGX_HTTP_SHIELD_BODY_ENCODING;
         goto count;
     }
