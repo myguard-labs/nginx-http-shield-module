@@ -1,4 +1,4 @@
-# sync-sha: 38236e20b3907f01c1d04f552881bb5c1430018b6b28a5d456bd62694fe2d254
+# sync-sha: 6dd14a0c3120f752af16f1b756919dc77208802def8bc088339422179ae2a601
 name: Build and Test
 
 env:
@@ -545,6 +545,30 @@ jobs:
           [ -x "$binary" ] || binary="$build/angie"
           python3 ci/tests/test_php_boundary.py --nginx "$binary" \
             --output "$PWD/.build/php-boundary"
+
+      - name: Check final FastCGI handoff
+        if: matrix.mode == 'debug'
+        env:
+          MATRIX_FLAVOR: ${{ matrix.flavor }}
+          MATRIX_MODE: ${{ matrix.mode }}
+        run: |
+          build="$PWD/.build/${MATRIX_FLAVOR}-${VER}-${MATRIX_MODE}/objs"
+          binary="$build/nginx"
+          [ -x "$binary" ] || binary="$build/angie"
+          module=()
+          if [ -f "$build/ngx_http_shield_module.so" ]; then
+            module=(--module "$build/ngx_http_shield_module.so")
+          fi
+          python3 ci/tests/test_final_handoff.py --nginx "$binary" \
+            "${module[@]}" --output "$PWD/.build/final-handoff"
+          if python3 ci/tests/test_final_handoff.py --disable-enforcement \
+            ProtocolTests.test_final_generated_privileged_value_is_blocked \
+            > "$PWD/.build/final-handoff-negative.log" 2>&1; then
+            echo "disabled final-handoff enforcement passed the blocking oracle" >&2
+            exit 1
+          fi
+          grep -F "FAILED (failures=1)" "$PWD/.build/final-handoff-negative.log"
+          grep -F "403 Forbidden" "$PWD/.build/final-handoff-negative.log"
 
       - name: Check private filesystem destinations
         if: matrix.mode == 'debug'
