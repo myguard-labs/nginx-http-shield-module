@@ -1,13 +1,13 @@
 # 2025–2026 web application CVE survey
 
-Reviewed 10 November 2026. This is a targeted survey of HTTP-reachable
+Reviewed 13 November 2026. This is a targeted survey of HTTP-reachable
 application/framework issues, prioritizing October 2026 PHP disclosures; it is
 not an exhaustive CVE inventory. Shield accepts attack-only byte patterns,
 not bans on normal application endpoints or protocol features.
 
 ## Added: React2Shell reference gadgets
 
-CVE-2025-55182 affects React Server Components deserialization. Add two
+CVE-2025-55182 affects React Server Components deserialization. Shield carries two
 `deserial` signatures: `:__proto__:then` and `:constructor:constructor`.
 These match the property-chain suffix regardless of the Flight chunk number.
 The first targets prototype access to the chunk's then method; the second
@@ -18,10 +18,13 @@ Sources: [React advisory](https://react.dev/blog/2025/12/03/critical-security-vu
 and [researcher's payload reference](https://github.com/freeqaz/react2shell/blob/master/PAYLOAD_REFERENCE.md).
 The fixtures contain inert references without executable commands.
 
-Coverage is for these literal gadget families in inspected buffers, including
-normal percent decoding and case folding. It is not complete CVE protection:
-JSON Unicode escapes are not decoded, body inspection can be disabled, binary
-media types are excluded, and only the configured body prefix is scanned.
+Generic coverage is for these literal gadget families in inspected buffers,
+including normal percent decoding and case folding. It is not complete CVE
+protection: JSON Unicode escapes are not decoded by the generic scan, body
+inspection can be disabled, binary media types are excluded, and only the
+configured body prefix is scanned. The separate opt-in `json_escapes` profile
+adds one bounded JSON string-escape view for the same two suffixes; it is not a
+general Flight decoder.
 The gadgets need not appear in every possible exploit. Upgrade React/Next.js.
 These additions do not claim coverage for the separate 2026 RSC DoS bugs.
 
@@ -62,7 +65,7 @@ rejection limit.
 
 | CVE | Primary source | Disposition |
 | --- | --- | --- |
-| CVE-2025-29927 | [Next.js middleware authorization bypass](https://github.com/vercel/next.js/security/advisories/GHSA-f82v-jwr5-mffw) | No literal added. Upstream recommends preventing external `x-middleware-subrequest` headers from reaching the app. Shield's value matcher does not enforce header-name policy; blocking the word `middleware` would be too broad. |
+| CVE-2025-29927 | [Next.js middleware authorization bypass](https://github.com/vercel/next.js/security/advisories/GHSA-f82v-jwr5-mffw) | No literal was added. The separate opt-in `nextjs_middleware` profile implements the vendor's header-name workaround for an application-scoped location. Blocking the word `middleware` in arbitrary values would be too broad. |
 | CVE-2025-3248 | [Langflow code validation RCE](https://github.com/langflow-ai/langflow/security/advisories/GHSA-rvqx-wpfh-mfx7) | No endpoint ban. `/api/v1/validate/code` is also a legitimate authenticated operation; arbitrary submitted Python has no single mandatory attack-only byte pattern. |
 | CVE-2026-33017 | [Langflow public flow build RCE](https://github.com/langflow-ai/langflow/security/advisories/GHSA-vwmf-pq79-vjvx) | No endpoint ban. Public flow building is a product feature. Exploitability depends on attacker-supplied executable flow data, not the path alone. |
 | CVE-2026-21858 | [n8n webhook file access](https://github.com/n8n-io/n8n/security/advisories/GHSA-v4pr-fm98-w9pg) | No blanket webhook/form ban. The advisory supplies no attack-only literal; legitimate workflows use these endpoints. |
