@@ -217,8 +217,18 @@ case_ 0 "bump-actions respects selected-actions exact SHA policy" \
     bash ci/tests/test_bump_actions.sh
 case_ 0 "bump dry-run propagates failures and change markers" \
     bash ci/tests/test_bump_versions_dry_run.sh
+case_ 0 "source bumps synchronize the advisory inventory" \
+    python3 ci/tests/test_sync_source_inventory.py -v
 case_ 0 "Semgrep bump updates and audits every pin form" \
     bash ci/tests/test_bump_tools_semgrep.sh
+case_ 0 "pre-commit avoids duplicate scanners without losing either gate" \
+    bash ci/tests/test_pre_commit_hook.sh
+case_ 0 "lint file discovery preserves producer failures" \
+    bash ci/tests/test_lint_file_discovery.sh
+case_ 0 "dependency inventory keeps clean, hit, and unavailable controls" \
+    python3 ci/tests/test_dependency_inventory.py -v
+case_ 0 "first-party Semgrep accounts for inputs and catches its control" \
+    bash ci/tests/test_semgrep_first_party.sh
 case_ 0 "curl secret headers stay out of argv" \
     bash ci/tests/test_curl_secret_header.sh
 case_ 0 "shell lint rejects formatter drift and accepts formatted input" \

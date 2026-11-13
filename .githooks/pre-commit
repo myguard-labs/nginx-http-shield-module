@@ -47,28 +47,85 @@ if [ ! -f "$ROOT/.pre-commit-config.yaml" ]; then
     exit 2
 fi
 
-ci/linter/run-all.sh --staged
-rc=$?
-if [ "$rc" -eq 2 ]; then
-    echo "pre-commit: missing linters -- run ci/linter/install-linters.sh" >&2
-    exit 2
-elif [ "$rc" -ne 0 ]; then
-    echo "pre-commit: lint failed -- fix, or commit with --no-verify" >&2
-    exit "$rc"
-fi
-
 if ! command -v pre-commit >/dev/null 2>&1; then
     echo "pre-commit: pre-commit is not installed -- pipx install pre-commit" >&2
     exit 2
 fi
 # No `pre-commit install` needed and none is wanted: that command writes to
 # .git/hooks/, which core.hooksPath has already taken out of the picture.
-pre-commit run --hook-stage pre-commit
-rc=$?
-if [ "$rc" -ne 0 ]; then
+#
+# run-all and the non-overlapping pre-commit hooks are independent on a clean
+# candidate, so run them together.  A fixer mutation still makes pre-commit
+# return non-zero; the concurrent lint result cannot turn that red result green.
+# Buffer both transcripts so findings never interleave.
+BUF="$(mktemp -d "${TMPDIR:-/tmp}/shield-pre-commit.XXXXXX")"
+lint_pid=""
+pre_commit_pid=""
+# shellcheck disable=SC2317  # cleanup is invoked indirectly by trap.
+cleanup() {
+    status=$?
+    trap - EXIT INT TERM
+    for pid in "$lint_pid" "$pre_commit_pid"; do
+        [ -n "$pid" ] || continue
+        kill -TERM -- "-$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
+    rm -rf "$BUF"
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+run_lint() {
+    ci/linter/run-all.sh --staged >"$BUF/lint.out" 2>&1
+    echo "$?" >"$BUF/lint.rc"
+}
+run_pre_commit() {
+    # These three system hooks duplicate lint-c over the same staged C files.
+    # A direct `pre-commit run` still runs them.
+    SKIP="flawfinder,cppcheck,semgrep${SKIP:+,$SKIP}" \
+        pre-commit run --hook-stage pre-commit >"$BUF/pre-commit.out" 2>&1
+    echo "$?" >"$BUF/pre-commit.rc"
+}
+
+if git diff --quiet && command -v setsid >/dev/null 2>&1; then
+    # The positional parameters intentionally expand in the owned child shell.
+    # shellcheck disable=SC2016
+    setsid bash -c 'ci/linter/run-all.sh --staged >"$1/lint.out" 2>&1; echo "$?" >"$1/lint.rc"' \
+        _ "$BUF" &
+    lint_pid=$!
+    skip_hooks="flawfinder,cppcheck,semgrep${SKIP:+,$SKIP}"
+    # shellcheck disable=SC2016
+    setsid bash -c 'SKIP="$2" pre-commit run --hook-stage pre-commit >"$1/pre-commit.out" 2>&1; echo "$?" >"$1/pre-commit.rc"' \
+        _ "$BUF" "$skip_hooks" &
+    pre_commit_pid=$!
+    wait "$lint_pid" "$pre_commit_pid"
+    lint_pid=""
+    pre_commit_pid=""
+else
+    # pre-commit temporarily stashes unstaged changes. Keep lint sequential in
+    # that case so it never reads a file while pre-commit rewrites/restores it.
+    run_lint
+    run_pre_commit
+fi
+
+cat "$BUF/lint.out" "$BUF/pre-commit.out"
+lint_rc="$(cat "$BUF/lint.rc" 2>/dev/null || echo 1)"
+pre_commit_rc="$(cat "$BUF/pre-commit.rc" 2>/dev/null || echo 1)"
+if [ "$pre_commit_rc" -ne 0 ]; then
     echo "pre-commit: .pre-commit-config.yaml hooks failed -- fix, or commit" \
         "with --no-verify. Fixer hooks may have rewritten files; re-stage." >&2
-    exit "$rc"
+    if [ "$lint_rc" -ne 0 ]; then
+        echo "pre-commit: concurrent lint also failed (exit $lint_rc); see its transcript above" >&2
+    fi
+    exit "$pre_commit_rc"
+elif [ "$lint_rc" -eq 2 ]; then
+    echo "pre-commit: lint could not run (exit 2); repair the discovery," \
+        "configuration, or missing-tool error reported above" >&2
+    exit 2
+elif [ "$lint_rc" -ne 0 ]; then
+    echo "pre-commit: lint failed -- fix, or commit with --no-verify" >&2
+    exit "$lint_rc"
 fi
 
 exit 0

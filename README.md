@@ -1024,7 +1024,7 @@ Windows toolchains; `windows-build.yml` also remains manually dispatchable.
 |---|---|---|
 | `build-test.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
 | `lint.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | `ci/linter/run-all.sh` — shellcheck/shfmt, cppcheck-adjacent C style, Python (ruff), Perl (perlcritic), YAML (yamllint/actionlint), spelling (codespell) and the docs-drift/CI-policy checks below, plus `ci/linter/selftest.sh`'s negative controls on the gate itself |
-| `security-scanners.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), GCC `-fanalyzer` (advisory), and semgrep |
+| `security-scanners.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), GCC `-fanalyzer` (advisory), C plus fully accounted first-party semgrep, online zizmor workflow auditing, and an OSV sweep of the machine-readable pinned-dependency inventory |
 | `fuzzing.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 120s `fuzz_scan`, 60s `fuzz_xff`, and 60s `fuzz_gzip`; committed corpora replay first |
 | `valgrind.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |
 | `codeql.yml` | monthly + `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | CodeQL `security-extended` C/C++ analysis |

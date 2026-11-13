@@ -1,4 +1,4 @@
-# sync-sha: 56ff41f6f07cff24b596fc35876b1af8526e80521697b68b7f7460a7ec5d73a5
+# sync-sha: d14d6e904b8140fbf9597f97e620b4d377e1876f900664ab6e9acaac9bbfd1a9
 name: Build and Test
 
 env:
@@ -108,7 +108,7 @@ jobs:
           # Pinned: an unpinned scanner is both a supply-chain risk and a
           # source of surprise CI breakage. Fails the job on any finding, so a
           # reintroduced template injection cannot merge.
-          pip install --quiet 'zizmor==1.30.1'
+          pip install --quiet 'zizmor==1.31.1'
           zizmor --no-progress .github/workflows/
 
   build:

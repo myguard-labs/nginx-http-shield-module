@@ -12,8 +12,10 @@ make_fixture() {
         ci/tools/bump-tools.sh \
         .github/workflows/security-scanners.yml \
         .github/workflows/ci-deep.yml \
+        .github/workflows/build-test.yml \
         ci/linter/install-linters.sh \
         ci/linter/lint-c.sh \
+        ci/dependency-inventory.json \
         ci/tests/test_bump_tools_semgrep.sh; do
         mkdir -p "$fixture/$(dirname "$file")"
         cp "$root/$file" "$fixture/$file"
@@ -40,6 +42,34 @@ for file in \
         exit 1
     fi
 done
+jq -e '.dependencies[] | select(.id == "semgrep") | .version == "9.9.9"' \
+    "$good/ci/dependency-inventory.json" >/dev/null
+for file in \
+    .github/workflows/build-test.yml \
+    .github/workflows/security-scanners.yml \
+    .github/workflows/ci-deep.yml \
+    ci/linter/install-linters.sh; do
+    old_zizmor=1.31.1
+    new_zizmor=9.9.9
+    grep -q "zizmor==${new_zizmor}\\|ZIZMOR_VERSION: \"${new_zizmor}\"" "$good/$file"
+    if grep -q "zizmor==${old_zizmor}\\|ZIZMOR_VERSION: \"${old_zizmor}\"" "$good/$file"; then
+        echo "stale zizmor pin remained in $file" >&2
+        exit 1
+    fi
+done
+jq -e '.dependencies[] | select(.id == "zizmor") | .version == "9.9.9"' \
+    "$good/ci/dependency-inventory.json" >/dev/null
+old_ruff=0.16.1
+new_ruff=9.9.9
+grep -q "ruff==${new_ruff}" "$good/ci/linter/install-linters.sh"
+if grep -q "ruff==${old_ruff}" "$good/ci/linter/install-linters.sh"; then
+    echo "stale Ruff pin remained in ci/linter/install-linters.sh" >&2
+    exit 1
+fi
+jq -e '.dependencies[] | select(.id == "ruff") | .version == "9.9.9"' \
+    "$good/ci/dependency-inventory.json" >/dev/null
+jq -e '.pin_checks[] | select(.pattern | contains("ruff")) | .expected == "9.9.9"' \
+    "$good/ci/dependency-inventory.json" >/dev/null
 
 missing="$tmp/missing"
 make_fixture "$missing"
@@ -60,4 +90,4 @@ if PATH="$stray/bin:$PATH" "$stray/ci/tools/bump-tools.sh" >"$stray/out" 2>&1; t
 fi
 grep -q 'pins disagree after bump' "$stray/out"
 
-printf 'ok   Semgrep bump updates four pins and rejects missing or stray copies\n'
+printf 'ok   tool bumps update Semgrep/zizmor/Ruff pins and reject missing or stray copies\n'

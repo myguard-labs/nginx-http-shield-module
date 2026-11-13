@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -45,6 +47,16 @@ class PolicyTests(unittest.TestCase):
         content = path.read_text()
         self.assertIn(old, content)
         path.write_text(content.replace(old, new, 1))
+
+    def assert_deep_budget(self):
+        workflow = yaml.load(
+            (self.root / ".github/workflows/ci-deep.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["build-flavors"]["strategy"]["max-parallel"], "1")
+        self.assertEqual(jobs["scanners"]["needs"], "build-flavors")
+        self.assertEqual(jobs["scanners"]["if"], "${{ !cancelled() }}")
 
     def test_missing_job(self):
         self.assertEqual(self.policy("coverage").returncode, 0)
@@ -117,6 +129,12 @@ class PolicyTests(unittest.TestCase):
     def test_missing_callee_fails_closed(self):
         self.mutate("ci.yml", "workflows/asan.yml", "workflows/missing.yml")
         self.assertNotEqual(self.runners().returncode, 0)
+
+    def test_deep_ci_stays_within_four_self_hosted_slots(self):
+        self.assert_deep_budget()
+        self.mutate("ci-deep.yml", "      max-parallel: 1", "      max-parallel: 2")
+        with self.assertRaises(AssertionError):
+            self.assert_deep_budget()
 
 
 if __name__ == "__main__":

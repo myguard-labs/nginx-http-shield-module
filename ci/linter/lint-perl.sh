@@ -18,7 +18,8 @@
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
-mapfile -t FILES < <(lint_files '\.(t|pl|pm)$' "$@")
+FILES=()
+lint_files_into FILES '\.(t|pl|pm)$' "$@"
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-perl: no Perl files to check"
     exit 0

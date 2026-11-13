@@ -203,12 +203,62 @@ for pin in "${PINS[@]}"; do
     CHANGED=1
     [ "$DRY_RUN" = 1 ] && continue
 
+    # Validate the inventory owner before touching any workflow. A missing or
+    # stale entry must leave both sides at the old commit, not fail after the
+    # workflow has already been rewritten.
+    python3 - "$repo" "$sha" "$new_sha" <<'PY'
+import json, sys
+from pathlib import Path
+
+repo, old, new = sys.argv[1:]
+data = json.loads(Path("ci/dependency-inventory.json").read_text(encoding="utf-8"))
+matches = [
+    dependency
+    for dependency in data["dependencies"]
+    if dependency.get("upstream") == f"https://github.com/{repo}"
+]
+if len(matches) != 1:
+    raise SystemExit(f"action inventory entry missing or ambiguous: {repo}")
+dependency = matches[0]
+current = dependency.get("resolved_commit")
+query_commit = dependency.get("osv_query", {}).get("commit")
+if current not in (old, new) or query_commit != current:
+    raise SystemExit(f"action inventory pin disagrees before bump: {repo}")
+PY
+
     # Rewrite sha AND comment as one unit. Anchored on the exact old sha so a
     # second action pinned to a different sha in the same file is untouched.
     # `--` before the paths: a filename could otherwise be read as an option.
     while IFS= read -r f; do
         perl -pi -e "s{\Q$path\E\@\Q$sha\E # \Q$tag\E}{$path\@$new_sha # $new_tag}g" "$f"
     done < <(grep -rlF "$path@$sha" .github/ -- 2>/dev/null || grep -rlF "$path@$sha" .github/)
+
+    # The advisory inventory is the machine-readable owner of this action
+    # commit too. Move both its identity and the exact OSV commit query in the
+    # same transaction as the workflow pin; a split update would either query
+    # the old code or leave every scanner job red after an automated bump.
+    python3 - "$repo" "$sha" "$new_sha" <<'PY'
+import json, sys
+from pathlib import Path
+
+repo, old, new = sys.argv[1:]
+path = Path("ci/dependency-inventory.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+matches = [
+    dependency
+    for dependency in data["dependencies"]
+    if dependency.get("upstream") == f"https://github.com/{repo}"
+]
+dependency = matches[0]
+current = dependency.get("resolved_commit")
+query = dependency.get("osv_query", {})
+if current == new and query.get("commit") == new:
+    raise SystemExit(0)
+dependency["version"] = new
+dependency["resolved_commit"] = new
+query["commit"] = new
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
 done
 
 # The header comments in several workflows repeat the pin as documentation

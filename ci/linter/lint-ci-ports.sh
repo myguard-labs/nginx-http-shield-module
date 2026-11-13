@@ -25,7 +25,8 @@
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
-mapfile -t FILES < <(lint_files '^\.github/workflows/.*\.ya?ml$' "$@")
+FILES=()
+lint_files_into FILES '^\.github/workflows/.*\.ya?ml$' "$@"
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-ci-ports: no workflow files to check"
     exit 0

@@ -1,0 +1,40 @@
+rules:
+  - id: first-party-curl-pipe-shell
+    message: Do not pipe a network response directly into a shell.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      exclude: [/ci/semgrep/fixtures/**]
+    pattern-regex: '(?i)curl[^\n|]*\|\s*(?:ba)?sh(?:\s|$)'
+
+  - id: first-party-unpinned-action
+    message: Third-party GitHub Actions must use a full commit SHA.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ['**/.github/workflows/**', '**/.github/actions/**']
+    pattern-regex: 'uses:\s*["'']?[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@(?![0-9a-f]{40}(?:["'']?\s|$))[A-Za-z0-9_.-]+'
+
+  - id: first-party-python-shell-true
+    message: subprocess shell=True requires a dedicated, reviewed wrapper.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ['**/*.py']
+    pattern-regex: 'subprocess\.(?:run|call|Popen|check_call|check_output)\([^\n]*shell\s*=\s*True'
+
+  - id: first-party-c-unsafe-string-api
+    message: Unbounded C string APIs are forbidden in first-party code.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ['**/*.c', '**/*.h']
+    pattern-regex: '\b(?:gets|strcpy|strcat|sprintf|vsprintf)\s*\('
+
+  - id: first-party-unsafe-yaml-load
+    message: Use a safe YAML loader for repository-controlled tooling.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ['**/*.py']
+    pattern-regex: '(?:yaml|YAML)\.load\([^\n]*(?:Loader\s*=\s*yaml\.Loader|Loader\s*=\s*yaml\.UnsafeLoader)'

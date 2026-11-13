@@ -52,7 +52,9 @@ if [ "$DRY_RUN" = 0 ]; then
     # bootstrapping (or regenerating after a delete) should report "changed"
     # rather than dying here under set -e.
     before="$(cat "$VERSIONS_FILE" 2>/dev/null || true)"
+    inventory_before="$(cat ci/dependency-inventory.json 2>/dev/null || true)"
     bash .github/scripts/compute-versions.sh
+    python3 ci/tools/sync-source-inventory.py
     if [ "$before" != "$(cat "$VERSIONS_FILE")" ]; then
         echo "--- versions.env changed ---"
         git --no-pager diff -- "$VERSIONS_FILE" || true
@@ -60,16 +62,30 @@ if [ "$DRY_RUN" = 0 ]; then
     else
         echo "versions.env already up to date"
     fi
+    if [ "$inventory_before" != "$(cat ci/dependency-inventory.json)" ]; then
+        echo "--- dependency inventory changed ---"
+        git --no-pager diff -- ci/dependency-inventory.json || true
+        CHANGED=1
+    fi
 else
     # Regenerate into a scratch copy so the working tree is untouched.
     scratch="$(mktemp -d)"
     trap 'rm -rf "$scratch"' EXIT
     cp -a .github "$scratch/.github"
+    mkdir -p "$scratch/ci"
+    cp ci/dependency-inventory.json "$scratch/ci/dependency-inventory.json"
     (cd "$scratch" && bash .github/scripts/compute-versions.sh >/dev/null)
+    python3 ci/tools/sync-source-inventory.py \
+        --versions "$scratch/.github/versions.env" \
+        --inventory "$scratch/ci/dependency-inventory.json"
     if diff -u "$VERSIONS_FILE" "$scratch/$VERSIONS_FILE"; then
         echo "(dry-run: versions.env already up to date)"
     else
         echo "(dry-run: versions.env would change as shown above)"
+        CHANGED=1
+    fi
+    if ! diff -u ci/dependency-inventory.json "$scratch/ci/dependency-inventory.json"; then
+        echo "(dry-run: dependency inventory would change as shown above)"
         CHANGED=1
     fi
 fi

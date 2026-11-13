@@ -1,9 +1,10 @@
-# sync-sha: 732c40c982e5dbfd2160131c1a1f226d5b8ea4f2453a9291182deed4c68530f6
+# sync-sha: b3dc4d6ceceb31f365463ed3979bf11656e7ffdb5bff871e242b14ecdc17290c
 name: Security scanners
 
 # Static/security scanners gate on every PR/push — flawfinder (gate on >=4),
-# clang-tidy (cert-*, security.*) and semgrep over src/. Same job as the
-# monthly ci-deep.yml scanners run.
+# clang-tidy (cert-*, security.*), complete first-party Semgrep accounting,
+# online workflow auditing, and dependency advisories. Same job as the monthly
+# ci-deep.yml scanners run.
 #
 # Action pin (keep in sync with build-test.yml):
 # actions/checkout@v5.1.0        -> fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -13,6 +14,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Pinned so a scanner release cannot silently change the gate.
   SEMGREP_VERSION: "1.184.0"
+  ZIZMOR_VERSION: "1.31.1"
 
 on:
   workflow_dispatch: {}
@@ -48,10 +50,11 @@ jobs:
           # the system Python on the Ubuntu 24.04 self-hosted runner).
           if command -v pipx >/dev/null; then
             pipx install --quiet "semgrep==${SEMGREP_VERSION}"
+            pipx install --quiet "zizmor==${ZIZMOR_VERSION}"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           else
             pip3 install --quiet --user --break-system-packages \
-              "semgrep==${SEMGREP_VERSION}"
+              "semgrep==${SEMGREP_VERSION}" "zizmor==${ZIZMOR_VERSION}"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
       - name: Restore module build cache
@@ -103,16 +106,16 @@ jobs:
         run: |
           python3 ci/tests/test_fanalyzer_args.py -v
           bash ci/tools/fanalyzer.sh "$GITHUB_WORKSPACE"
-      - name: semgrep (gate)
-        run: |
-          # --error makes a finding a non-zero exit; without it (and with the
-          # old `|| true`) both findings and a scanner crash produced a green
-          # job, so the advertised gate could not fail. set -o pipefail keeps
-          # `tee` from swallowing that status.
-          set -euo pipefail
-          semgrep scan --error --config p/c --config p/security-audit \
-            --jobs=1 --metrics=off \
-            "$GITHUB_WORKSPACE/src/" 2>&1 | tee semgrep.log
+      - name: Complete first-party Semgrep accounting
+        run: python3 ci/tools/semgrep-first-party.py --output semgrep-first-party.json
+      - name: Online workflow security scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --persona=pedantic --no-progress .github/workflows
+      - name: Dependency advisory sweep (OSV)
+        # Live and fail-closed by design: new advisories block stale pins, and
+        # an OSV outage must not produce false clean evidence.
+        run: python3 ci/tools/check-advisories.py --output advisory-receipt.json
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
@@ -122,5 +125,6 @@ jobs:
             ${{ github.workspace }}/flawfinder.log
             ${{ github.workspace }}/clang-tidy.log
             ${{ github.workspace }}/fanalyzer.log
-            ${{ github.workspace }}/semgrep.log
+            ${{ github.workspace }}/semgrep-first-party.json
+            ${{ github.workspace }}/advisory-receipt.json
           retention-days: 14

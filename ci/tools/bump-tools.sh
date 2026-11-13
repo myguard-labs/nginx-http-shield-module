@@ -33,11 +33,16 @@ FAILED=0
 # globbing keeps a stray match in a .md or a lockfile from being rewritten.
 TOOLS=(
     "semgrep:.github/workflows/security-scanners.yml .github/workflows/ci-deep.yml ci/linter/install-linters.sh ci/linter/lint-c.sh"
+    "zizmor:.github/workflows/build-test.yml .github/workflows/security-scanners.yml .github/workflows/ci-deep.yml ci/linter/install-linters.sh"
+    "ruff:ci/linter/install-linters.sh"
 )
 
 pin_versions() {
-    grep -hoE 'SEMGREP_VERSION: "[0-9]+(\.[0-9]+)*"|semgrep==[0-9]+(\.[0-9]+)*' "$@" |
-        sed -E 's/.*(SEMGREP_VERSION: "|semgrep==)([0-9]+(\.[0-9]+)*).*/\2/' |
+    local pkg="$1" env_name
+    shift
+    env_name="${pkg^^}_VERSION"
+    grep -hoE "${env_name}: \"[0-9]+(\.[0-9]+)*\"|${pkg}==[0-9]+(\.[0-9]+)*" "$@" |
+        sed -E "s/.*(${env_name}: \"|${pkg}==)([0-9]+(\.[0-9]+)*).*/\2/" |
         sort -u
 }
 
@@ -77,7 +82,7 @@ for entry in "${TOOLS[@]}"; do
     cur=""
     disagree=0
     for f in $files; do
-        v="$(pin_versions "$f" || true)"
+        v="$(pin_versions "$pkg" "$f" || true)"
         if [ -z "$v" ]; then
             echo "FAILED ${pkg}: no pin found in listed file '${f}'" >&2
             FAILED=1
@@ -101,9 +106,28 @@ for entry in "${TOOLS[@]}"; do
     if [ "$disagree" = 1 ]; then
         echo "FATAL: ${pkg} pins disagree across its listed files BEFORE any bump:" >&2
         for f in $files; do
-            v="$(pin_versions "$f" || true)"
+            v="$(pin_versions "$pkg" "$f" || true)"
             [ -n "$v" ] && echo "  $f: $v" >&2
         done
+        exit 1
+    fi
+
+    inventory_cur="$(
+        python3 - "$pkg" <<'PY'
+import json, sys
+data = json.load(open("ci/dependency-inventory.json", encoding="utf-8"))
+matches = [d["version"] for d in data["dependencies"] if d["id"] == sys.argv[1]]
+if len(matches) != 1:
+    raise SystemExit(1)
+print(matches[0])
+PY
+    )" || {
+        echo "FAILED ${pkg}: dependency inventory entry missing or ambiguous" >&2
+        FAILED=1
+        continue
+    }
+    if [ "$inventory_cur" != "$cur" ]; then
+        echo "FATAL: ${pkg} inventory pin ${inventory_cur} disagrees with tool pin ${cur}" >&2
         exit 1
     fi
 
@@ -120,10 +144,30 @@ for entry in "${TOOLS[@]}"; do
         CHANGED=1
         if [ "$DRY_RUN" = 0 ]; then
             for f in $files; do
+                env_name="${pkg^^}_VERSION"
                 perl -pi -e \
-                    "s{SEMGREP_VERSION: \"\Q${cur}\E\"}{SEMGREP_VERSION: \"${new}\"}g; s{semgrep==\Q${cur}\E}{semgrep==${new}}g" \
+                    "s{${env_name}: \"\Q${cur}\E\"}{${env_name}: \"${new}\"}g; s{${pkg}==\Q${cur}\E}{${pkg}==${new}}g" \
                     "$f"
             done
+            python3 - "$pkg" "$cur" "$new" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path("ci/dependency-inventory.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+pkg, old, new = sys.argv[1:]
+for dependency in data["dependencies"]:
+    if dependency["id"] != pkg:
+        continue
+    dependency["version"] = new
+    query = dependency.get("osv_query", {})
+    if query.get("version") == old:
+        query["version"] = new
+for check in data["pin_checks"]:
+    if pkg in check["pattern"].lower() and check["expected"] == old:
+        check["expected"] = new
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
         fi
     fi
 
@@ -136,11 +180,12 @@ for entry in "${TOOLS[@]}"; do
     # ci/tools/bump-{tools,actions,versions}.sh are excluded because they are
     # ABOUT pins: any version literal in them is prose in a comment, not a pin
     # to keep in step.
-    stray="$(grep -rhoE 'SEMGREP_VERSION: "[0-9]+(\.[0-9]+)*"|semgrep==[0-9]+(\.[0-9]+)*' \
+    env_name="${pkg^^}_VERSION"
+    stray="$(grep -rhoE "${env_name}: \"[0-9]+(\.[0-9]+)*\"|${pkg}==[0-9]+(\.[0-9]+)*" \
         --include='*.yml' --include='*.yaml' --include='*.sh' \
         --exclude='bump-tools.sh' --exclude='bump-actions.sh' \
         --exclude='bump-versions.sh' \
-        .github ci 2>/dev/null | pin_versions /dev/stdin | grep -vx "${new}" || true)"
+        .github ci 2>/dev/null | pin_versions "$pkg" /dev/stdin | grep -vx "${new}" || true)"
     if [ -n "$stray" ]; then
         echo "FATAL: ${pkg} pins disagree after bump:" >&2
         printf '  %s\n' "$stray" >&2

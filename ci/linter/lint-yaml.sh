@@ -52,7 +52,9 @@
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
-mapfile -t FILES < <(lint_files '\.ya?ml$' "$@" | drop_generated_vendor_rules)
+FILES=()
+lint_files_into FILES '\.ya?ml$' "$@"
+drop_generated_vendor_files FILES
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-yaml: no YAML files to check"
     exit 0
