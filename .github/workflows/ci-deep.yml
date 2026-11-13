@@ -1,4 +1,4 @@
-# sync-sha: 0f99d106a99ae25bc1ce95ae3fb8ad7059178e4d2e125b92bfa97330922817e7
+# sync-sha: 6f4981ddaa9bfc7b79abf5de112e786ac5d0eef3184458de1f19d2c0572fbd5c
 name: CI Deep
 
 # Exhaustive dynamic analysis — monthly cron + on-demand only, NEVER on PR.
@@ -321,7 +321,8 @@ jobs:
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
           msg="🔴 ${GH_REPOSITORY} — CI Deep / fuzz FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
           payload="$(jq -n --arg content "$msg" '{content: $content}')"
-          curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+          .github/scripts/curl-secret-header.sh \
+            Authorization Bot DISCORD_BOT_TOKEN -- -fsS -X POST \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
             -d "$payload" || true
@@ -363,7 +364,8 @@ jobs:
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
           msg="🔴 ${GH_REPOSITORY} — CI Deep / memcheck FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
           payload="$(jq -n --arg content "$msg" '{content: $content}')"
-          curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+          .github/scripts/curl-secret-header.sh \
+            Authorization Bot DISCORD_BOT_TOKEN -- -fsS -X POST \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
             -d "$payload" || true
@@ -405,7 +407,8 @@ jobs:
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
           msg="🔴 ${GH_REPOSITORY} — CI Deep / helgrind FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
           payload="$(jq -n --arg content "$msg" '{content: $content}')"
-          curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+          .github/scripts/curl-secret-header.sh \
+            Authorization Bot DISCORD_BOT_TOKEN -- -fsS -X POST \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
             -d "$payload" || true
@@ -455,7 +458,7 @@ jobs:
             --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null
       - name: flawfinder (gate on >=4)
         run: bash ci/tools/flawfinder-gate.sh
-      - name: clang-tidy (cert-*, security.*)
+      - name: clang-tidy (pinned profile)
         run: |
           set -euo pipefail
           N="$RUNNER_TEMP/nginx-src"
@@ -467,8 +470,6 @@ jobs:
             echo "--- clang-tidy: $(basename "$src") ---"
             # shellcheck disable=SC2086
             clang-tidy "$src" \
-              --checks='-*,cert-*,clang-analyzer-security.*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling' \
-              --warnings-as-errors='*' \
               -- $INCLUDES 2>&1 | tee -a clang-tidy.log || status=1
           done
           exit "$status"
@@ -480,6 +481,7 @@ jobs:
           # `tee` from swallowing that status.
           set -euo pipefail
           semgrep scan --error --config p/c --config p/security-audit \
+            --jobs=1 --metrics=off \
             "$GITHUB_WORKSPACE/src/" 2>&1 | tee semgrep.log
       - name: Upload reports
         if: always()

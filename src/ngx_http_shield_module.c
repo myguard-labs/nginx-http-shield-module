@@ -9,11 +9,11 @@
  * the false-positive rate near zero and makes it safe to enable in front of a
  * large, mixed, not-fully-patched customer base.
  *
- * Signatures live in ngx_http_shield_patterns.h. The engine here normalizes
- * each input (percent-decode once, lowercase, '+' -> space) and matches every
- * signature against it in a single Aho-Corasick pass, plus four structural
- * checks (httpoxy Proxy header, Apache-Killer Range, encoded C0 controls,
- * dotfile path segments) -- see the call block in
+ * Signatures live in ngx_http_shield_patterns.h. The engine here lowercases
+ * each input, percent-decodes once, and folds raw '+' only in query/form
+ * contexts before matching every signature in a single Aho-Corasick pass,
+ * plus four structural checks (httpoxy Proxy header, Apache-Killer Range,
+ * encoded C0 controls, dotfile path segments) -- see the call block in
  * ngx_http_shield_inspect_prebody(), which is the authoritative list.
  * Scan cost is O(bytes)
  * and independent of the size of the signature set.
@@ -140,7 +140,7 @@ static ngx_int_t ngx_http_shield_check_dotfile(ngx_http_request_t *r,
  * the only place that knows both sides: it allocates the two scratch buffers
  * from r->pool and fails closed if it cannot, so the seam never has to. */
 static ngx_int_t ngx_http_shield_scan_r(ngx_http_request_t *r, u_char *data,
-    size_t len, const char *source, uint64_t skip,
+    size_t len, const char *source, size_t form_offset, uint64_t skip,
     ngx_http_shield_hit_t *hit);
 static ngx_int_t ngx_http_shield_scannable_body(ngx_http_request_t *r);
 static ngx_int_t ngx_http_shield_header_name_is(ngx_table_elt_t *h,
@@ -1232,7 +1232,9 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
 {
     ngx_int_t         rc;
     ngx_uint_t        i;
+    size_t            header_form_offset;
     uint64_t          allowed, generic_allowed, header_skip;
+    u_char           *q;
     const char       *source;
     ngx_list_part_t  *part;
     ngx_table_elt_t  *header;
@@ -1289,21 +1291,21 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
      * xss/sensitive_file in the query are masked out of pass 1 and outside the
      * buffer of pass 2, so they are deliberately not detected there. */
     if (r->unparsed_uri.len) {
-        u_char  *q;
         size_t   path_len;
-
-        rc = ngx_http_shield_scan_r(
-                 r, r->unparsed_uri.data, r->unparsed_uri.len,
-                 NGX_HTTP_SHIELD_SOURCE_URI,
-                 slcf->skip | ngx_http_shield_no_query_mask(), hit);
-        if (rc != NGX_DECLINED) {
-            return rc;
-        }
 
         q = ngx_strlchr(r->unparsed_uri.data,
                         r->unparsed_uri.data + r->unparsed_uri.len, '?');
         path_len = (q == NULL) ? r->unparsed_uri.len
                                : (size_t) (q - r->unparsed_uri.data);
+
+        rc = ngx_http_shield_scan_r(
+                 r, r->unparsed_uri.data, r->unparsed_uri.len,
+                 NGX_HTTP_SHIELD_SOURCE_URI,
+                 q == NULL ? r->unparsed_uri.len : path_len + 1,
+                 slcf->skip | ngx_http_shield_no_query_mask(), hit);
+        if (rc != NGX_DECLINED) {
+            return rc;
+        }
 
         /* Recover the query-ineligible categories in the path only. Skip the
          * second pass entirely when they are not part of the effective mask
@@ -1313,7 +1315,7 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
         {
             rc = ngx_http_shield_scan_r(
                      r, r->unparsed_uri.data, path_len,
-                     NGX_HTTP_SHIELD_SOURCE_URI,
+                     NGX_HTTP_SHIELD_SOURCE_URI, path_len,
                      slcf->skip | ~ngx_http_shield_no_query_mask(), hit);
             if (rc != NGX_DECLINED) {
                 return rc;
@@ -1326,8 +1328,8 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
      * or CGI environment variables. Their signatures are punctuation-rich,
      * so scanning opaque Authorization/API-key values for these two categories
      * does not create the random short-token collisions that a full-table scan
-     * would ("ro0ab", "p0wny", and similar five-byte signatures are real
-     * examples). URI-bearing headers get the full table; Cookie gets the
+     * would (opaque base64 fragments can resemble malware names). URI-bearing
+     * headers get the full table; Cookie gets the
      * injection-shaped categories, but not opaque-token categories. */
     generic_allowed = ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_TEMPLATE)
                       | ((uint64_t) 1 << NGX_HTTP_SHIELD_CAT_SHELLSHOCK);
@@ -1371,6 +1373,7 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
         source = NGX_HTTP_SHIELD_SOURCE_HEADER;
         allowed = generic_allowed;
         header_skip = slcf->skip | ~allowed;
+        header_form_offset = header[i].value.len;
 
         /* Preserve the existing named scans and their stable log labels.
          *
@@ -1392,7 +1395,12 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
                                                   sizeof("Referer") - 1))
         {
             source = NGX_HTTP_SHIELD_SOURCE_REFERER;
-            header_skip = slcf->skip;
+            /* Referer is attribution, not the target nginx is serving. A
+             * repository page such as /.env.example is legitimate here and
+             * is still protected when requested as the actual target. */
+            header_skip = slcf->skip
+                          | ((uint64_t) 1
+                             << NGX_HTTP_SHIELD_CAT_SENSITIVE_FILE);
 
         } else if (ngx_http_shield_header_name_is(&header[i], "Content-Type",
                                                   sizeof("Content-Type") - 1))
@@ -1421,6 +1429,11 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
                                                       sizeof("X-Rewrite-URL")
                                                           - 1))
         {
+            q = ngx_strlchr(header[i].value.data,
+                            header[i].value.data + header[i].value.len, '?');
+            if (q != NULL) {
+                header_form_offset = (size_t) (q - header[i].value.data) + 1;
+            }
             header_skip = slcf->skip;
 
         } else if (ngx_http_shield_header_name_is(&header[i], "Cookie",
@@ -1443,7 +1456,7 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
 
         rc = ngx_http_shield_scan_r(r, header[i].value.data,
                                     header[i].value.len, source,
-                                    header_skip, hit);
+                                    header_form_offset, header_skip, hit);
         if (rc != NGX_DECLINED) {
             return rc;
         }
@@ -1531,7 +1544,8 @@ ngx_http_shield_content_type_value_scannable(ngx_str_t v)
  */
 static ngx_int_t
 ngx_http_shield_scan_r(ngx_http_request_t *r, u_char *data, size_t len,
-    const char *source, uint64_t skip, ngx_http_shield_hit_t *hit)
+    const char *source, size_t form_offset, uint64_t skip,
+    ngx_http_shield_hit_t *hit)
 {
     u_char                       *scratch_lc, *scratch_dec;
     ngx_http_shield_main_conf_t  *smcf;
@@ -1553,7 +1567,8 @@ ngx_http_shield_scan_r(ngx_http_request_t *r, u_char *data, size_t len,
     }
 
     return ngx_http_shield_scan_input(&smcf->automata, data, len, scratch_lc,
-                                      scratch_dec, source, skip, hit);
+                                      scratch_dec, source, form_offset, skip,
+                                      hit);
 }
 
 
@@ -1658,7 +1673,7 @@ ngx_http_shield_content_type_suffix(ngx_str_t *v, const char *suffix,
 static ngx_int_t
 ngx_http_shield_collect_body(ngx_http_request_t *r, size_t max, ngx_str_t *out)
 {
-    off_t         off;
+    off_t         off, file_len;
     size_t        len, total, done;
     ssize_t       rn;
     u_char       *p;
@@ -1701,10 +1716,12 @@ ngx_http_shield_collect_body(ngx_http_request_t *r, size_t max, ngx_str_t *out)
             total += len;
 
         } else if (b->in_file && b->file != NULL) {
-            len = (size_t) (b->file_last - b->file_pos);
-            if (len > max - total) {
-                len = max - total;
+            file_len = b->file_last - b->file_pos;
+            if (file_len < 0) {
+                return NGX_ERROR;
             }
+            len = file_len > (off_t) (max - total)
+                  ? max - total : (size_t) file_len;
 
             /* A partial scan is not a clean scan: an attack could sit in the
              * bytes we failed to read. Loop short reads, and treat a read
@@ -1793,7 +1810,10 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
     ngx_str_t                   body;
     ngx_int_t                   rc;
     ngx_uint_t                  reason, too_large, has_body, encoding;
-    size_t                      remaining, len, input_cap;
+    size_t                      remaining, len, input_cap, form_offset;
+    size_t                      decode_cap, full_decode_cap;
+    off_t                       file_len;
+    ngx_table_elt_t            *ct;
     u_char                     *decoded, *arena;
     ngx_shield_gzip_result_t    gzip;
     ngx_int_t                  decode_reason = -1;
@@ -1823,7 +1843,15 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
         if (ngx_buf_in_memory(b)) {
             len = (size_t) (b->last - b->pos);
         } else if (b->in_file && b->file != NULL) {
-            len = (size_t) (b->file_last - b->file_pos);
+            file_len = b->file_last - b->file_pos;
+            if (file_len > 0) {
+                has_body = 1;
+            }
+            if (file_len > (off_t) remaining) {
+                too_large = 1;
+                break;
+            }
+            len = (size_t) file_len;
         } else {
             continue;
         }
@@ -1849,15 +1877,36 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
 
     if (slcf->gzip && encoding == 1 && slcf->max_body != 0) {
         /* One extra byte distinguishes an exact fit from an output cap.
-         * Original body chains and offsets remain unchanged. */
-        decoded = ngx_pnalloc(r->pool, slcf->max_body + 1);
+         * Start at 64 KiB so a large operator cap does not reserve its full
+         * virtual address range for every tiny gzip request. Only output that
+         * reaches this prefix cap is decoded a second time at the full cap;
+         * original body chains and offsets remain unchanged. */
+        full_decode_cap = slcf->max_body + 1;
+        decode_cap = full_decode_cap;
+        if (decode_cap > NGX_SHIELD_GZIP_INITIAL_OUTPUT + 1) {
+            decode_cap = NGX_SHIELD_GZIP_INITIAL_OUTPUT + 1;
+        }
+        decoded = ngx_pnalloc(r->pool, decode_cap);
         arena = ngx_palloc(r->pool, NGX_SHIELD_GZIP_ARENA);
         if (decoded == NULL || arena == NULL) {
             rc = NGX_ERROR;
             goto account;
         }
         gzip = ngx_shield_gzip_decode(body.data, body.len, decoded,
-                    slcf->max_body + 1, arena, NGX_SHIELD_GZIP_ARENA);
+                    decode_cap, arena, NGX_SHIELD_GZIP_ARENA);
+        if (gzip.state == NGX_SHIELD_GZIP_LIMIT
+            && decode_cap < full_decode_cap)
+        {
+            (void) ngx_pfree(r->pool, decoded);
+            decoded = ngx_pnalloc(r->pool, full_decode_cap);
+            if (decoded == NULL) {
+                (void) ngx_pfree(r->pool, arena);
+                rc = NGX_ERROR;
+                goto account;
+            }
+            gzip = ngx_shield_gzip_decode(body.data, body.len, decoded,
+                        full_decode_cap, arena, NGX_SHIELD_GZIP_ARENA);
+        }
         (void) ngx_pfree(r->pool, arena);
         if (gzip.state == NGX_SHIELD_GZIP_ERROR) {
             rc = NGX_ERROR;
@@ -1891,10 +1940,21 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
         }
     }
 
+    form_offset = body.len;
+    for (ct = r->headers_in.content_type; ct != NULL; ct = ct->next) {
+        if (ngx_http_shield_content_type_is(&ct->value,
+                "application/x-www-form-urlencoded",
+                sizeof("application/x-www-form-urlencoded") - 1))
+        {
+            form_offset = 0;
+            break;
+        }
+    }
+
     /* Fold the body-unsafe categories into the skip mask for this scan only.
      * They still match at full strength in the request target and headers. */
     rc = ngx_http_shield_scan_r(r, body.data, body.len,
-                                NGX_HTTP_SHIELD_SOURCE_BODY,
+                                NGX_HTTP_SHIELD_SOURCE_BODY, form_offset,
                                 slcf->skip | ngx_http_shield_no_body_mask(),
                                 hit);
     if (rc == NGX_DECLINED) {

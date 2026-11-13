@@ -1,11 +1,13 @@
 # nginx-http-shield-module
 
 [![Build&Test](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml)
+[![Lint](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/lint.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/lint.yml)
 [![Security Scanners](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml)
 [![Fuzzing](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/fuzzing.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/fuzzing.yml)
 [![Valgrind](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/valgrind.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/valgrind.yml)
 [![CodeQL](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml)
 [![A/UBSan](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/asan.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/asan.yml)
+[![Windows](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/windows-build.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/windows-build.yml)
 [![CI Deep](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml)
 [![Bump versions](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/bump.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/bump.yml)
 
@@ -35,8 +37,9 @@ and [upload-progress](https://www.php.net/archive/2026.php#2026-10-23-1) issues
 provided no reliable attack-only literal to add here. The
 [Brotli issue](https://github.com/google/brotli/releases/tag/v1.2.1) also
 affects [backends that decompress incoming request bodies](https://github.com/dotnet/runtime/security/advisories/GHSA-p3jp-9v83-76w9).
-Shield does not decompress those bodies or inspect responses. Remediate affected
-runtimes and dependencies upstream; these signatures do not make them safe.
+Shield's opt-in gzip inspection does not cover Brotli-encoded bodies or inspect
+responses. Remediate affected runtimes and dependencies upstream; these
+signatures do not make them safe.
 
 ## PHP execution boundaries
 
@@ -63,7 +66,7 @@ terms, matched case-insensitively after percent-decoding:
 | `crlf` | `%0d%0a`, response-splitting `\r\nSet-Cookie:` |
 | `nullbyte` | `%00`, `%u0000`, double- and triple-encoded `.` / `/` / `\` (`%252e`, `%25252f`, `%25%32%65`) |
 | `template` | `${jndi:` + `jndi:ldap/rmi/dns/iiop`, `${env:`, `${::-`, nested `${${` |
-| `deserial` | Java stream magic, gadget classes (`jdbcRowSetImpl`, `TemplatesImpl`, commons-collections), Fastjson `@type` autotype, WebLogic/XStream, Joomla obj-injection (CVE-2015-8562), XXE `<!entity` |
+| `deserial` | Contextual Java object-stream prefix (`rO0ABXN`), gadget classes (`jdbcRowSetImpl`, `TemplatesImpl`, commons-collections), Fastjson `@type` autotype, WebLogic/XStream, Joomla obj-injection (CVE-2015-8562), and external-entity `SYSTEM`/`PUBLIC` references |
 | `shellshock` | the exported-function prologue with a **shell** body — `() { :;}` and its spacing variants, `() { echo`, `() { /bin/`, CVE-2014-6278's `() { _;} >_[$($())]`. Not the bare `() {`: that is also JavaScript's anonymous-function token, and this module scans `text/*` and JSON bodies |
 | `php_rce` | PHP-CGI `-d allow_url_include` (CVE-2012-1823), PHPUnit `eval-stdin.php`, ThinkPHP |
 | `java_rce` | Struts OGNL `%{(#` (CVE-2017-5638), Spring4Shell `class.module.classloader`, Confluence OGNL `@java.lang.runtime@getruntime().exec(` (CVE-2022-26134) |
@@ -85,10 +88,11 @@ terms, matched case-insensitively after percent-decoding:
 | `ssti` | template-probe forms `{{7*7}}`, `${7*7}`, `{{''.__class__`, `<%= 7*7`, `#set($` |
 | `exploit_path` | fixed n-day paths: `/wls-wsat/`, `/remote/fgt_lang`…`sslvpn_websession`, `/actuator/gateway/routes`, `/_ignition/execute-solution`, `/api/jsonws/invoke`, F5 `/tmui/login.jsp/..;/` (CVE-2020-5902), vCenter `uploadova` (CVE-2021-21972), Citrix `/vpn/../vpns/` (CVE-2019-19781), OFBiz `/webtools/control/xmlrpc`, Ivanti `user-backup-code/..`, GPON/HNAP/Zyxel probes |
 
-What is inspected: the request line and query string; `User-Agent` and
-`Referer` with the full ruleset; `Content-Type` for header-borne exploits such
-as Struts OGNL; URI-bearing `Destination`, `X-Original-URL` and `X-Rewrite-URL`
-with the full ruleset; injection-shaped cookie values; and every other
+What is inspected: the request line and query string; `User-Agent` with the
+full ruleset; `Referer` with sensitive-file matches excluded; `Content-Type`
+for header-borne exploits such as Struts OGNL; URI-bearing `Destination`,
+`X-Original-URL` and `X-Rewrite-URL` with the full ruleset; injection-shaped
+cookie values; and every other
 request-header value for Log4Shell and Shellshock. Opaque header values
 deliberately do not run short gadget/webshell tokens that would eventually
 collide with random credentials or multipart boundary entropy. When enabled,
@@ -158,7 +162,7 @@ probe is blocked.
 Or use the helper for a throwaway build:
 
 ```sh
-ci/tools/ci-build.sh nginx 1.31.3        # dynamic .so under .build/
+ci/tools/ci-build.sh                     # uses .github/versions.env; debug .so under .build/
 ```
 
 ## Configuration
@@ -198,7 +202,9 @@ http {
 | `shield` | http, server, location | `off` | `off` disables; `detect` logs only; `block` rejects. |
 | `shield_cve` | http, server, location | `off` | Opt-in application policies; see below. |
 | `shield_body` | http, server, location | `on` | Inspect the request body (text-shaped content types only). |
-| `shield_max_body` | http, server, location | `8k` | Maximum bytes scanned from the start of an eligible body. For larger bodies, the remainder is not inspected; this limit does not enforce upload size. **Raise with care:** scan cost is linear in this value and the body is attacker-controlled (see [Cost](#cost)). |
+| `shield_max_body` | http, server, location | `8k` | Decoded/output inspection budget from the start of an eligible body (maximum `16m` when gzip inspection is enabled). For larger bodies, the remainder is not inspected; this does not enforce upload size. |
+| `shield_gzip` | http, server, location | `off` | Decode and inspect a single gzip request representation under the strict backend contract below. |
+| `shield_max_encoded_body` | http, server, location | `64k` | Encoded gzip input inspection budget (maximum `16m`); does not enforce upload size. |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus the structural checks `httpoxy`, `range_dos`, `ctrl_char` and `dotfile`). A child block that sets `shield_skip` **replaces** the inherited list wholesale (masks do not merge); a child that omits it inherits the parent's. An empty child cannot clear an inherited skip — to un-skip, re-state the categories you still want disabled. |
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
@@ -256,9 +262,10 @@ the inspection error and preserves the response. Each view is scanned at most
 once regardless of the number of Content-Type headers. Complete
 JSON tokens before a malformed or truncated string remain inspected. This is an inspection
 view, not a complete JSON or multipart validator: it does not alter forwarded
-bytes, recursively decode string values, decompress bodies, inspect binary
+bytes, recursively decode string values, inspect binary
 uploads, or enforce a request-size limit. Non-ASCII JSON code points cannot
 join the ASCII gadget tokens. JSON and percent-decoding views are separate.
+With `shield_gzip on`, these views run on the successfully decoded prefix.
 
 Coverage is for the listed forms, not complete protection for any CVE.
 Alternate gadgets, XML entity encodings, backend parsing differences and
@@ -666,14 +673,20 @@ every hit, in both `block` and `detect` mode:
 {"ts":"2026-07-17T14:22:05+02:00","ip":"203.0.113.7","cat":"sqli","src":"uri","mode":"block","status":403,"req":"GET /?id=1 union select pw HTTP/1.1"}
 ```
 
-Fields: `ts` (ISO-8601 with timezone — AbuseIPDB's `timestamp`), `ip` (the peer;
-map `X-Forwarded-For` in the reporter if behind a trusted proxy), `cat` shield
+Fields: `ts` (ISO-8601 with timezone — AbuseIPDB's `timestamp`), `ip` (nginx's
+connection address), `cat` shield
 category, `src` where it matched (`uri`/`user-agent`/`body`/…), `mode`, `status`
 (0 in detect mode), and `req` the request line. `req` is the only
-attacker-controlled field: it is JSON-string-escaped (`"`, `\`, and every byte
-below `0x20` become `\uXXXX`), so a hostile request line can neither inject a
+attacker-controlled field: JSON uses short escapes for quote, backslash, LF,
+CR and TAB, and `\u00XX` for other control and non-ASCII bytes, so a hostile
+request line can neither inject a
 second record nor break the JSON. The file is reopened on `SIGUSR1`
 (logrotate-safe).
+
+Behind a trusted proxy, configure nginx's real-IP module first, for example
+with a narrowly scoped `set_real_ip_from` plus `real_ip_header X-Forwarded-For`.
+Shield then logs nginx's validated connection address. The reporter does not
+read or trust a raw forwarded header; never map arbitrary client-supplied XFF.
 
 **No `| command` form.** shield runs in `PRECONTENT` on every request inside
 root-started workers; piping attacker-influenced bytes into a forked shell would
@@ -738,13 +751,19 @@ also runs as a CI gate.
 
 ## How it works
 
-The module runs in the `PRECONTENT` phase. For each request it builds two
-normalized copies of every inspected input — a lowercased raw copy and a
-percent-decoded (once), `+`→space, lowercased copy — and runs every enabled
-category's patterns over them in a **single Aho-Corasick pass per buffer**. Four
+The module runs in the `PRECONTENT` phase. The literal-signature engine builds
+two normalized copies of every inspected
+input — a lowercased raw copy and a percent-decoded-once, lowercased copy — and
+runs every enabled category's patterns over them in a **single Aho-Corasick
+pass per buffer**. A raw `+`
+becomes a space only in request/proxy-target queries and URL-encoded form
+bodies; percent-encoded `%2B` and plus signs in other inputs remain literal in
+this engine. Opt-in application policies use a separate legacy form-style view
+that folds `+` after percent-decoding. Four
 categories (`httpoxy`, `range_dos`, `ctrl_char`, `dotfile`) are structural checks
-rather than literal matches. There is no regex and no per-request allocation beyond the two
-scratch buffers per inspected value, so the cost is a few microseconds on
+rather than literal matches. There is no regex. Normalization allocates two
+scratch buffers per inspected value; body/gzip and application-policy views use
+additional bounded request-pool buffers, so the cost is a few microseconds on
 typical request sizes.
 
 Body inspection reads the buffered request body (up to `shield_max_body`) and
@@ -778,9 +797,9 @@ asset manifest carrying `{"path":"../logo.png"}` is not an attack. In a request
 target the same token has no benign reading.
 
 Every other category is scanned in the body too, and that is where the body scan
-earns its keep — SQL injection in a form POST, the Java deserialization gadget
-classes, SSI injection, webshell names, and the encoding-evasion categories.
-None of those have a benign reading in a body either.
+earns its keep — SQL injection in a form POST, contextual Java deserialization
+gadgets, SSI injection, contextual webshell filenames, and encoding evasions.
+Short opaque names are deliberately excluded because they collide with base64.
 
 This narrows *where* a category applies, never *whether* it matches: a
 body-exempt category still blocks at full strength in the request target and in
@@ -796,10 +815,10 @@ from the body scan without also exempting `../`.
 ### AND-rules
 
 Some exploits are only distinguishable from ordinary traffic by a *combination*
-of tokens. Grafana's path-traversal CVE-2021-43798 rides on `/public/plugins/`
-— which is also how every Grafana instance serves its plugin assets on every
-page load. As a plain signature it blocks the product; left out, the exploit is
-uncovered. Neither is acceptable for a near-zero-FP floor.
+of tokens. Each retained rule below pairs terms that travel in one inspected
+buffer and whose co-occurrence is attack-specific; broad historical pairs such
+as a Grafana asset path plus traversal were removed in favor of the standalone
+encoded traversal coverage.
 
 An **AND-rule** requires a *set* of terms to co-occur in the same buffer before
 its category fires:
@@ -905,8 +924,8 @@ a table, and one row in `ngx_http_shield_categories[]`; no engine change.
 ## Testing
 
 ```sh
-ci/tools/ci-build.sh nginx 1.31.3
-bash ci/tools/run-tests.sh nginx 1.31.3
+ci/tools/ci-build.sh
+bash ci/tools/run-tests.sh
 ```
 
 `ci/tools/run-tests.sh` sets the `TEST_NGINX_*` variables for you and, more
@@ -915,15 +934,15 @@ usefully, binds an **ephemeral port instead of Test::Nginx's fixed default of
 two checkouts, or a stray nginx left by a crashed run — collide and the second
 dies with `bind() to 127.0.0.1:1984 failed (98: Address already in use)` …
 `still could not bind()`. That reads like a module regression and is not one.
-Pass extra arguments straight through to `prove` (`… nginx 1.31.3 -v`), pin a
+Pass extra arguments straight through to `prove` (`… nginx 1.31.8 -v`), pin a
 port with `TEST_NGINX_PORT=9999`, and set `TEST_NGINX_SERVROOT` to run two
 suites concurrently.
 
 The equivalent by hand, if you want the variables in your own shell:
 
 ```sh
-export TEST_NGINX_BINARY="$PWD/.build/nginx-1.31.3/objs/nginx"
-export TEST_NGINX_LOAD_MODULES="$PWD/.build/nginx-1.31.3/objs/ngx_http_shield_module.so"
+export TEST_NGINX_BINARY="$PWD/.build/nginx-1.31.8-debug/objs/nginx"
+export TEST_NGINX_LOAD_MODULES="$PWD/.build/nginx-1.31.8-debug/objs/ngx_http_shield_module.so"
 export TEST_NGINX_TIMEOUT=20
 export TEST_NGINX_PORT=$((1984 + RANDOM % 20000))   # avoid the fixed-default clash
 prove ci/t/
@@ -932,10 +951,11 @@ prove ci/t/
 Fuzz locally:
 
 ```sh
-ci/tools/ci-build.sh nginx 1.31.3          # populate .build/ (fuzz needs headers)
+ci/tools/ci-build.sh                       # populate .build/ (fuzz needs headers)
 CC=clang bash ci/fuzz/build.sh
 ci/fuzz/fuzz_scan -max_total_time=60 -dict=ci/fuzz/fuzz.dict ci/fuzz/corpus/fuzz_scan
 ci/fuzz/fuzz_xff -max_total_time=60 ci/fuzz/corpus/fuzz_xff
+ci/fuzz/fuzz_gzip -max_total_time=60 ci/fuzz/corpus/fuzz_gzip
 ```
 
 `ci/fuzz/fuzz.dict` is GENERATED from the `NGX_HTTP_SHIELD_SIG(...)` literals
@@ -957,13 +977,14 @@ not a table signature belongs in `EXTRA_TOKENS` in the generator.
 
 ### What is fuzzed, and what is not
 
-Two targets, one per seam that takes attacker-controlled bytes and links
+Three targets, one per seam that takes attacker-controlled bytes and links
 outside nginx:
 
 | Target | Surface | Oracle |
 |---|---|---|
 | `fuzz_scan` | normalize + Aho-Corasick scan of any inspected buffer (URI, query, User-Agent, Referer, Content-Type, body), over the real signature tables and nginx's real `ngx_unescape_uri()` | naive per-signature `memmem` reference, differential against the shipped engine |
 | `fuzz_xff` | the `X-Forwarded-For` rightmost-token parse that selects the ban key | forward-walking reference, differential on both offset and length, plus a bounds assertion |
+| `fuzz_gzip` | bounded gzip member/header/trailer decoding | repeat-call determinism, immutable input, output/arena/member/call bounds, ASan and UBSan |
 
 Deliberately not fuzzed, with reasons:
 
@@ -986,8 +1007,8 @@ Deliberately not fuzzed, with reasons:
 Soak under Valgrind locally:
 
 ```sh
-ci/tools/ci-build.sh nginx 1.31.3 debug
-USE_VALGRIND=1 ci/tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
+ci/tools/ci-build.sh nginx 1.31.8 debug
+USE_VALGRIND=1 ci/tools/soak.sh .build/nginx-1.31.8-debug/objs/nginx 120 4
 ```
 
 ## CI
@@ -995,24 +1016,31 @@ USE_VALGRIND=1 ci/tools/soak.sh .build/nginx-1.31.3/objs/nginx 120 4
 A failure surfaces as a red run plus the uploaded artifact — no chat
 notifications wired.
 
-`ci.yml` is the Linux `pull_request` entry point. Its seven `workflow_call`
-members run as parallel jobs with no `needs:` chaining. `windows-build.yml`
-has its own path-filtered `pull_request` trigger because its hosted Windows
-runners and native build artifacts do not share that Linux job contract.
+`ci.yml` is the sole `pull_request` entry point. Its eight `workflow_call`
+members run as parallel jobs with no `needs:` chaining, including both hosted
+Windows toolchains; `windows-build.yml` also remains manually dispatchable.
 
 | Workflow | Trigger | Gates |
 |---|---|---|
 | `build-test.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
 | `lint.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | `ci/linter/run-all.sh` — shellcheck/shfmt, cppcheck-adjacent C style, Python (ruff), Perl (perlcritic), YAML (yamllint/actionlint), spelling (codespell) and the docs-drift/CI-policy checks below, plus `ci/linter/selftest.sh`'s negative controls on the gate itself |
-| `security-scanners.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), semgrep |
-| `fuzzing.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 120s libFuzzer run of `fuzz_scan` (real normalize + Aho-Corasick core, differentially checked against a naive reference matcher) plus a 60s run of `fuzz_xff` over the ban-key token parse; each replays its committed corpus first |
+| `security-scanners.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), GCC `-fanalyzer` (advisory), and semgrep |
+| `fuzzing.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 120s `fuzz_scan`, 60s `fuzz_xff`, and 60s `fuzz_gzip`; committed corpora replay first |
 | `valgrind.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | 60s Memcheck soak of a mixed attack/benign request storm against the debug build |
 | `codeql.yml` | monthly + `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | CodeQL `security-extended` C/C++ analysis |
 | `asan.yml` | `workflow_call` only (PR via `ci.yml`) | 60s ASan+UBSan request-storm soak against the static build — distinct from `build-test.yml`'s single-pass Test::Nginx-under-sanitizer job |
-| `windows-build.yml` | path-filtered PR + `workflow_dispatch` | native MSVC static and MinGW-w64 dynamic builds; module registration, directive positive/negative controls, and live benign/blocked request checks |
+| `windows-build.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | native MSVC static and MinGW-w64 dynamic builds; module registration, directive positive/negative controls, and live benign/blocked request checks |
 | `ci-deep.yml` | monthly + `workflow_dispatch` | 4h fuzz, 10 min Memcheck **and** Helgrind soaks, nginx mainline+stable+angie build matrix |
-| `bump.yml` | weekly + `workflow_dispatch` | checks nginx.org/angie.software for newer pins, moves Action sha pins and linter versions; opens a PR via `BUMP_PR_TOKEN` rather than pushing to `main` directly (a required-pull-request ruleset blocks direct pushes). Unlike the skeleton, this repo has no `ci/vendor/nginx-tests` submodule to update. **`BUMP_PR_TOKEN` is not yet provisioned** for this repo, so the scheduled run fails fast and loud at the token-check step by design — not a bug |
+| `bump.yml` | weekly + `workflow_dispatch` | checks nginx.org/angie.software for newer pins, moves Action sha pins and linter versions, and opens a review-gated PR via the provisioned `BUMP_PR_TOKEN`. Source-archive authenticity must be independently verified and recorded before merge. |
 | `ci/tools/check-workflow-runners.sh` | pre-commit + local gate (no workflow, no badge) | enforces the runner trust boundary: fails the build if any `pull_request`-triggered workflow is set to run on a self-hosted runner, since that would hand a fork PR author code execution on the build host |
+
+## Linting
+
+Run `ci/linter/run-all.sh` before opening a pull request. The gate covers the
+tracked C, shell, Python, Perl, YAML/workflow, documentation and generated-file
+surfaces, and exits nonzero when a required tool or selection is missing. See
+[`ci/linter/README.md`](ci/linter/README.md) for the checker inventory, focused
+`LINT_ONLY` runs, installation checks and negative controls.
 
 ### Build caching
 
@@ -1041,4 +1069,6 @@ package state is deliberately never cached — see the comment in
 
 ## License
 
-BSD-2-Clause (same terms as nginx and Angie). See [LICENSE](LICENSE).
+First-party code is BSD-2-Clause (same terms as nginx and Angie); see
+[LICENSE](LICENSE). Vendored ast-grep rules retain Apache-2.0 under
+[`ci/ast-grep/rules/vendor/LICENSE`](ci/ast-grep/rules/vendor/LICENSE).

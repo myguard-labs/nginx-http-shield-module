@@ -264,7 +264,14 @@ class Suppressor:
             self._day = st.get("day")
             self._count = count
             self._last = last
-        except (FileNotFoundError, ValueError, KeyError, TypeError, OverflowError):
+        except (
+            FileNotFoundError,
+            ValueError,
+            KeyError,
+            TypeError,
+            OverflowError,
+            RecursionError,
+        ):
             pass
 
     def _save(self) -> None:
@@ -285,7 +292,6 @@ class Suppressor:
         if today != self._day:
             self._day = today
             self._count = 0
-            self._last.clear()
 
     def _prune(self, now: float) -> None:
         """Drop entries older than the dedup window so the map stays bounded."""
@@ -435,7 +441,14 @@ def load_offset(state_path: str, log_path: str) -> tuple[int, int]:
             offset = _state_int(st.get("offset", 0), 0, MAX_STATE_OFFSET)
             inode = _state_int(st.get("inode", -1), -1, MAX_STATE_INODE)
             return offset, inode
-    except (FileNotFoundError, ValueError, KeyError, TypeError, OverflowError):
+    except (
+        FileNotFoundError,
+        ValueError,
+        KeyError,
+        TypeError,
+        OverflowError,
+        RecursionError,
+    ):
         pass
     return 0, -1
 
@@ -464,7 +477,7 @@ def process_line(
         return True
     try:
         entry = json.loads(line)
-    except ValueError:
+    except (ValueError, RecursionError):
         log("skip: malformed JSON")
         return True  # never parseable; do not retry
 

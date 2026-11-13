@@ -60,7 +60,7 @@ cppcheck --quiet --error-exitcode=1 \
 if [ -n "${LINT_SKIP_SEMGREP:-}" ]; then
     warn "semgrep SKIPPED via LINT_SKIP_SEMGREP -- CI still gates on it"
 else
-    need semgrep "pipx install semgrep==1.169.0"
+    need semgrep "pipx install semgrep==1.184.0"
     say "semgrep (gate on any finding, matches security-scanners.yml)"
     # --quiet is deliberately absent: it hides semgrep-core's own crash text
     # (io_uring/RLIMIT_MEMLOCK) and turns a diagnosable failure into a bare

@@ -661,7 +661,7 @@ duplicate "__shield_metric_zone_0" variable
 --- error_log
 shield metric marker variable is reserved
 
-=== TEST 30: counters-only storage cannot be used as a ban zone
+=== TEST 33: counters-only storage cannot be used as a ban zone
 --- http_config
     shield_stats_zone stats30 32k;
 --- config

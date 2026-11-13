@@ -47,7 +47,7 @@ export PROBER_ROOT
 # (.build/<flavor>-<version>-<mode>/) -- point the harness at the right one
 # instead of letting it default to the unsuffixed (nonexistent) path.
 FLAVOR="${1:-nginx}"
-VERSION="${2:-1.31.3}"
+VERSION="${2:-1.31.8}"
 NGX_BUILD_MODE="${NGX_BUILD_MODE:-debug}"
 PROBER_BUILD="${PROBER_BUILD:-$PROBER_ROOT/.build/${FLAVOR}-${VERSION}-${NGX_BUILD_MODE}}"
 export PROBER_BUILD
@@ -55,11 +55,11 @@ export PROBER_BUILD
 # NOT setting PROBER_ALLOW_LOG on purpose. 04-fault.rule drives the slab
 # allocator to failure, which is the kind of thing that usually has to be
 # exempted from the harness's [alert]/[crit]/[emerg] gate -- but shield logs
-# its zone-full path at [warn] (ngx_http_shield_ban_record_locked) and nginx
+# its zone-full path at [error] (ngx_http_shield_ban_record) and nginx
 # core logs nothing at all when a module's own slab_alloc returns NULL, so
 # there is nothing to exempt. Verified by scraping the log across a full fault
 # run, 2026-07-18. An allowlist here would be a blanket exemption for a
 # condition that does not occur, and would silently cover a real [crit] the
 # day one appears.
 
-exec ../harness/ci/prober/run.sh "$@"
+exec ../harness/ci/prober/run.sh "$FLAVOR" "$VERSION"

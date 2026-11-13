@@ -1,0 +1,13 @@
+prompt_version: 11444ada79d08ada7698830d7e732c5c173b4d3df4a0fe6fc1bbae00b6b0981c
+skeleton_sha:   c948ea022afaaa9a6fd217eaa53a78f980851cc5
+adopted_date:   2026-11-13
+steps_degraded: 13,15,28,38,42
+
+# Step 13 deliberately keeps pull-request work on GitHub-hosted runners rather
+# than exposing the repository pool selector to fork code. Step 15 lacks the
+# historical double-run transition proof; the current sole-entry topology is
+# mechanically enforced. Step 28's full hook measured 9.84 seconds, above the
+# prompt's approximate two-second target, without skipped checks. Step 38 did
+# not dispatch the dependency-bump workflow because it can open an outward PR.
+# Step 42's superrepository gitlink update is the release owner's later step and
+# is explicitly outside this release-preparation run.

@@ -157,11 +157,18 @@ static const ngx_http_shield_sig_t  ngx_http_shield_sqli[] = {
     NGX_HTTP_SHIELD_SIG("select/**/sleep("),
     NGX_HTTP_SHIELD_SIG("' or 1=1"),
     NGX_HTTP_SHIELD_SIG("\" or 1=1"),
+    /* SQL tokenization accepts unary plus without whitespace. Keep encoded
+     * plus literal during normalization, but cover the attack grammar here. */
+    NGX_HTTP_SHIELD_SIG("' or+1=1"),
+    NGX_HTTP_SHIELD_SIG("\" or+1=1"),
     NGX_HTTP_SHIELD_SIG("or '1'='1"),
     NGX_HTTP_SHIELD_SIG("or \"1\"=\"1"),
     NGX_HTTP_SHIELD_SIG("or 1=1--"),
     NGX_HTTP_SHIELD_SIG("or 1=1#"),
     NGX_HTTP_SHIELD_SIG("or 1=1/*"),
+    NGX_HTTP_SHIELD_SIG("or+1=1--"),
+    NGX_HTTP_SHIELD_SIG("or+1=1#"),
+    NGX_HTTP_SHIELD_SIG("or+1=1/*"),
     NGX_HTTP_SHIELD_SIG(") or ('1'='1"),
     NGX_HTTP_SHIELD_SIG("' or ''='"),
     NGX_HTTP_SHIELD_SIG("' and '1'='1"),
@@ -513,7 +520,8 @@ static const ngx_http_shield_sig_t  ngx_http_shield_deserial[] = {
      * See ci/definitions-2025-2026.md for sources and coverage limits. */
     NGX_HTTP_SHIELD_SIG(":__proto__:then"),
     NGX_HTTP_SHIELD_SIG(":constructor:constructor"),
-    NGX_HTTP_SHIELD_SIG("ro0ab"),         /* base64 of Java stream header    */
+    NGX_HTTP_SHIELD_SIG("ro0abxn"),       /* Java stream + object descriptor */
+    NGX_HTTP_SHIELD_SIG("ro0abxv"),       /* Java stream + array descriptor  */
     NGX_HTTP_SHIELD_SIG("aced0005"),      /* hex of Java stream header       */
     NGX_HTTP_SHIELD_SIG("o:21:\"jdatabasedrivermysqli\""),
                         /* Joomla 2015-8562 */
@@ -882,7 +890,7 @@ static const ngx_http_shield_sig_t  ngx_http_shield_webshell[] = {
     NGX_HTTP_SHIELD_SIG("c99.php"),
     NGX_HTTP_SHIELD_SIG("r57.php"),
     NGX_HTTP_SHIELD_SIG("wso.php"),
-    NGX_HTTP_SHIELD_SIG("b374k"),
+    NGX_HTTP_SHIELD_SIG("b374k.php"),
     NGX_HTTP_SHIELD_SIG("alfa.php"),
     NGX_HTTP_SHIELD_SIG("/shell.php?cmd="),
     NGX_HTTP_SHIELD_SIG("/cmd.php?cmd="),
@@ -891,12 +899,13 @@ static const ngx_http_shield_sig_t  ngx_http_shield_webshell[] = {
     NGX_HTTP_SHIELD_SIG("/tunnel.jsp"),
     NGX_HTTP_SHIELD_SIG("filesman"),
     NGX_HTTP_SHIELD_SIG("indoxploit"),
-    NGX_HTTP_SHIELD_SIG("p0wny"),
+    NGX_HTTP_SHIELD_SIG("p0wny.php"),
+    NGX_HTTP_SHIELD_SIG("p0wny-shell.php"),
     NGX_HTTP_SHIELD_SIG("weevely"),
     NGX_HTTP_SHIELD_SIG("antsword"),
     NGX_HTTP_SHIELD_SIG("behinder"),
     NGX_HTTP_SHIELD_SIG("regeorg"),
-    NGX_HTTP_SHIELD_SIG("gel4y"),
+    NGX_HTTP_SHIELD_SIG("gel4y.php"),
     NGX_HTTP_SHIELD_SIG("aspxspy"),
     NGX_HTTP_SHIELD_SIG("wshell.php"),
     NGX_HTTP_SHIELD_SIG("mini.php?"),
@@ -904,9 +913,9 @@ static const ngx_http_shield_sig_t  ngx_http_shield_webshell[] = {
     NGX_HTTP_SHIELD_SIG("bloodsec"),
     NGX_HTTP_SHIELD_SIG("marijuana_shell"),
     NGX_HTTP_SHIELD_SIG("kacak_shell"),
-    NGX_HTTP_SHIELD_SIG("wpyii2"),
-    NGX_HTTP_SHIELD_SIG("smevk"),
-    NGX_HTTP_SHIELD_SIG("xleet"),
+    NGX_HTTP_SHIELD_SIG("wpyii2.php"),
+    NGX_HTTP_SHIELD_SIG("smevk.php"),
+    NGX_HTTP_SHIELD_SIG("xleet.php"),
     /* SharePoint "ToolShell" (CVE-2025-53770) post-exploitation: the attacker
      * drops this ASPX shell into the LAYOUTS directory and then fetches it at
      * /_layouts/15/spinstall0.aspx. The name is attacker-invented -- no
@@ -1461,14 +1470,14 @@ static const ngx_http_shield_sig_t
 #define NGX_HTTP_SHIELD_RULE(c, nm, arr, m)                                   \
     { (c), (nm), (arr), sizeof(arr) / sizeof((arr)[0]), (m) },
 
-/* Reported as deserial, NOT exploit_path: the Metabase attack is delivered
+/* Reported as deserial, NOT exploit_path: the H2 INIT attack is delivered
  * in a POST BODY (an H2 JDBC connection string with an INIT script), and
  * exploit_path now carries NO_BODY so a rule reported under it would be
  * skipped on the body scan -- which is the only place this attack appears.
  * deserial is the right home anyway: an H2 JDBC INIT-script RCE is a
  * JDBC/deserialization-class gadget, and deserial stays body-scanning. The
- * setup-validate path is still matched in the target by exploit_path; this
- * rule adds the body-gadget half. */
+ * Endpoint selection belongs to deployment routing; this rule recognizes the
+ * complete attack-specific H2 body gadget without relying on a path term. */
 /* This list creates both the rule table and its compile-time term count. A new
  * rule cannot be present in the table while absent from the mask bound. */
 #define NGX_HTTP_SHIELD_FOR_EACH_RULE(X)                                      \

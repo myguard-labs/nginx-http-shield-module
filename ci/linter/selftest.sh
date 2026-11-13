@@ -217,6 +217,20 @@ case_ 0 "bump-actions respects selected-actions exact SHA policy" \
     bash ci/tests/test_bump_actions.sh
 case_ 0 "bump dry-run propagates failures and change markers" \
     bash ci/tests/test_bump_versions_dry_run.sh
+case_ 0 "curl secret headers stay out of argv" \
+    bash ci/tests/test_curl_secret_header.sh
+case_ 0 "scan fuzz corpus uses the current nine-byte layout" \
+    python3 ci/tests/test_fuzz_seed_layout.py
+case_ 0 "directive docs have positive and negative controls" \
+    python3 ci/tests/test_directive_docs.py
+case_ 0 "documented build paths match the pinned debug tree" \
+    python3 ci/tests/test_documented_build_paths.py
+case_ 0 "local and CI Semgrep pins agree" \
+    python3 ci/tests/test_semgrep_pin.py
+case_ 0 "vendored rules retain Apache-2.0" \
+    python3 ci/tests/test_vendor_license.py
+case_ 0 "soak propagates failed load workers" \
+    bash ci/tests/test_soak_worker_failures.sh
 case_ 0 "actionlint adapter preserves self-repository validation" \
     bash ci/tests/test_actionlint_compat.sh
 

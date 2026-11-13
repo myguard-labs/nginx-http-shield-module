@@ -132,7 +132,8 @@ for capability in 1 0; do
     if [ "$capability" = 0 ]; then
         # Select nginx's actual Unix fallback backend on this x64 test host.
         CONFIG_CAP_FLAGS="-DNGX_HAVE_GCC_ATOMIC=0 -DNGX_HAVE_LIBATOMIC=0
-            -DNGX_DARWIN_ATOMIC=0 -U__amd64__ -U__amd64"
+            -DNGX_DARWIN_ATOMIC=0 -U__amd64__ -U__amd64
+            -U__i386__ -U__i386 -U_M_IX86"
     fi
     # shellcheck disable=SC2086
     # This counterfactual whole-module TU uses O2 and a different atomic

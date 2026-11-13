@@ -1,14 +1,8 @@
-# sync-sha: 7add9a8ea311a3f80f4b57309181be0610077a1e8574634eafa4a5fc637e90d3
+# sync-sha: 6a3543c28ef7388bb290056848f884663e268a4c61f41f0b64cb7582897eb439
 name: Windows build
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'config'
-      - '.github/versions.env'
-      - '.github/workflows/windows-build.yml'
+  workflow_call: {}
   workflow_dispatch: {}
 
 concurrency:
@@ -19,10 +13,10 @@ permissions:
   contents: read
 
 env:
-  PCRE_VERSION: '10.44'
-  PCRE_SHA256: '86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b'
-  ZLIB_VERSION: '1.3.1'
-  ZLIB_SHA256: '9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23'
+  PCRE_VERSION: '10.49'
+  PCRE_SHA256: '929f0b20e62879252a15886b06c89f1edef61a363cbd5826fb041080a5e557ae'
+  ZLIB_VERSION: '1.4'
+  ZLIB_SHA256: '02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584'
 
 jobs:
   msvc:
@@ -106,11 +100,13 @@ jobs:
           copy /y src\pcre2.h.generic src\pcre2.h || exit /b 1
           copy /y src\pcre2_chartables.c.dist src\pcre2_chartables.c || exit /b 1
           cl -c -O2 -MT -DHAVE_CONFIG_H -DPCRE2_CODE_UNIT_WIDTH=8 -DPCRE2_STATIC -Isrc ^
-            src\pcre2_auto_possess.c src\pcre2_chartables.c src\pcre2_compile.c ^
+            src\pcre2_auto_possess.c src\pcre2_chartables.c src\pcre2_chkdint.c ^
+            src\pcre2_compile.c src\pcre2_compile_cgroup.c src\pcre2_compile_class.c ^
             src\pcre2_config.c src\pcre2_context.c src\pcre2_convert.c ^
             src\pcre2_dfa_match.c src\pcre2_error.c src\pcre2_extuni.c ^
-            src\pcre2_find_bracket.c src\pcre2_maketables.c src\pcre2_match.c ^
-            src\pcre2_match_data.c src\pcre2_newline.c src\pcre2_ord2utf.c ^
+            src\pcre2_find_bracket.c src\pcre2_jit_compile.c src\pcre2_maketables.c ^
+            src\pcre2_match.c src\pcre2_match_data.c src\pcre2_match_next.c ^
+            src\pcre2_newline.c src\pcre2_ord2utf.c ^
             src\pcre2_pattern_info.c src\pcre2_script_run.c src\pcre2_serialize.c ^
             src\pcre2_string_utils.c src\pcre2_study.c src\pcre2_substitute.c ^
             src\pcre2_substring.c src\pcre2_tables.c src\pcre2_ucd.c ^

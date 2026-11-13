@@ -75,7 +75,7 @@ for entry in "${TOOLS[@]}"; do
     done
 
     # Collect the pin from EVERY listed file BEFORE any up-to-date shortcut.
-    # The pin here is a workflow env var (SEMGREP_VERSION: "1.169.0"), not a
+    # The pin here is a workflow env var (SEMGREP_VERSION: "1.184.0"), not a
     # bare `pkg==ver` literal, so match the quoted version string. Reading only
     # the first file (the old behavior) let a later file's stale pin hide
     # behind an early exit -- see F2 in PR review.

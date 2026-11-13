@@ -245,3 +245,45 @@ GET /t?id=1%20union%20select%20pw
 to shield_log "/dev/full" failed
 --- no_error_log
 [emerg]
+
+=== TEST 14: raw X-Forwarded-For does not replace the logged peer
+--- config
+    location /t {
+        shield block;
+        shield_log $TEST_NGINX_SERVER_ROOT/logs/hit14.json;
+        empty_gif;
+    }
+    location /dump {
+        alias $TEST_NGINX_SERVER_ROOT/logs/hit14.json;
+        default_type text/plain;
+    }
+--- request eval
+["GET /t?id=1%20union%20select%20pw", "GET /dump"]
+--- more_headers eval
+["X-Forwarded-For: 198.51.100.7", ""]
+--- error_code eval
+[403, 200]
+--- response_body_like eval
+[qr//, qr/"ip":"127\.0\.0\.1"/]
+
+=== TEST 15: nginx real-IP processing supplies the trusted logged client
+--- config
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+    location /t {
+        shield block;
+        shield_log $TEST_NGINX_SERVER_ROOT/logs/hit15.json;
+        empty_gif;
+    }
+    location /dump {
+        alias $TEST_NGINX_SERVER_ROOT/logs/hit15.json;
+        default_type text/plain;
+    }
+--- request eval
+["GET /t?id=1%20union%20select%20pw", "GET /dump"]
+--- more_headers eval
+["X-Forwarded-For: 198.51.100.7", ""]
+--- error_code eval
+[403, 200]
+--- response_body_like eval
+[qr//, qr/"ip":"198\.51\.100\.7"/]

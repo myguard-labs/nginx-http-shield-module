@@ -480,11 +480,9 @@ Content-Type: application/json
 Content-Type: application/json
 --- error_code: 405
 
-=== TEST 54: a security writeup body naming known webshell tool names is webshell
-# webshell sigs are malware NAMES, not code -- unlike sensitive_file they are
-# body-scanned by design (session 9). A blog post naming these tools in prose
-# IS expected to fire; this pins that the new session-13 names behave the same
-# as the pre-existing ones (weevely/antsword), not a silent NO_BODY regression.
+=== TEST 54: short webshell names in prose do not collide with opaque body data
+# Short alphanumeric names occur in base64 and security prose. Detection keeps
+# the executable .php filename context; bare names must not block a body.
 --- config
     location /t { shield block; shield_body on; empty_gif; }
 --- request eval
@@ -492,7 +490,7 @@ Content-Type: application/json
 {\"post\":\"Incident review: attacker dropped smevk on the box, same crew linked to xleet marketplace listings.\"}"
 --- more_headers
 Content-Type: application/json
---- error_code: 403
+--- error_code: 405
 
 === TEST 55: a security writeup body naming session-13 n-day paths is not exploit_path
 # Same NO_BODY guarantee (see TEST 50/51) for the paths added in the
@@ -775,3 +773,39 @@ GET /t/_layouts/15/spinstall.aspx
 --- request
 GET /t/assets/turkish-locale.php
 --- error_code: 200
+
+=== TEST 84: base64-like body fragments do not collide with short signatures
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t\n{\"data\":\"rO0ABb374kp0wnygel4ywpyii2smevkxleet\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 405
+
+=== TEST 85: Java serialization object context remains detected in a body
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t\n{\"data\":\"rO0ABXNyABNqYXZhLnV0aWwuSGFzaE1hcA==\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 403
+
+=== TEST 86: Java serialization array context remains detected in a body
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t\n{\"data\":\"rO0ABXVyABNbTGphdmEubGFuZy5PYmplY3Q7\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 403
+
+=== TEST 87: contextual webshell filename remains detected in a body
+--- config
+    location /t { shield block; shield_body on; empty_gif; }
+--- request eval
+"POST /t\n{\"path\":\"/uploads/b374k.php\"}"
+--- more_headers
+Content-Type: application/json
+--- error_code: 403

@@ -4,7 +4,7 @@
 #
 #   ci/tools/ci-build.sh [flavor] [version] [mode]
 #     flavor : nginx (default) | angie
-#     version: source version, e.g. 1.31.3 (default: the pin in
+#     version: source version, e.g. 1.31.8 (default: the pin in
 #              .github/versions.env for the chosen flavor)
 #     mode   : debug (default, dynamic .so) | asan (static, sanitizers)
 #              | module (dynamic .so only, nginx core NOT compiled)
@@ -254,7 +254,7 @@ cd "$ROOT/$DIR"
 # change any flag -- including TEST_HARNESS's -DNGX_TEST_HARNESS, which is
 # folded into CC_OPT above -- or config content, get a reconfigure.
 MODULE_CONFIG_SHA=$(sha256sum "$MODULE_DIR/config" | awk '{print $1}')
-CONF_ARGS="module_config_sha=${MODULE_CONFIG_SHA} --with-compat --with-cc=${WITH_CC} --with-cc-opt=${CC_OPT} --with-ld-opt=${LD_OPT} ${ADD_MODULE}"
+CONF_ARGS="module_config_sha=${MODULE_CONFIG_SHA} --with-compat --with-http_realip_module --with-cc=${WITH_CC} --with-cc-opt=${CC_OPT} --with-ld-opt=${LD_OPT} ${ADD_MODULE}"
 STAMP="objs/.conf-stamp"
 
 # --- eatmydata ----------------------------------------------------------
@@ -280,6 +280,7 @@ if [ "$NO_CACHE" != "1" ] && [ -f objs/Makefile ] && [ -f "$STAMP" ] &&
 else
     $EATMYDATA ./configure \
         --with-compat \
+        --with-http_realip_module \
         --with-cc="$WITH_CC" \
         --with-cc-opt="$CC_OPT" \
         --with-ld-opt="$LD_OPT" \

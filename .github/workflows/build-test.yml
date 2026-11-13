@@ -1,4 +1,4 @@
-# sync-sha: 867c59432ae32af505838fe0ee827449848eb01e762da01a94ab30629bfed01f
+# sync-sha: 56ff41f6f07cff24b596fc35876b1af8526e80521697b68b7f7460a7ec5d73a5
 name: Build and Test
 
 env:
@@ -370,7 +370,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang curl libpcre2-dev zlib1g-dev
+          sudo apt-get install -y build-essential gcc-multilib clang curl libpcre2-dev zlib1g-dev
 
       # The ban shared-memory state engine (src/ngx_http_shield_ban.c) is driven
       # by a direct-call harness with synthetic addresses + a synthetic clock --
@@ -396,6 +396,9 @@ jobs:
       # runs in well under a second.
       - name: Build and run scan-core unit tests
         run: bash ci/tests/unit/run.sh
+
+      - name: Exercise atomic fallback fixture (i386)
+        run: bash ci/tests/test_atomic_fallback_i386.sh
 
   prober:
     name: Prober rules (${{ matrix.flavor }}, ${{ matrix.mode }})

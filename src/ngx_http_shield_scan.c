@@ -346,7 +346,8 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
  * Two normalized copies are built from the raw input:
  *   - a lowercased copy of the raw bytes, for categories that must see the
  *     still-encoded form (overlong UTF-8, %00, %0d%0a, double-encoding);
- *   - a percent-decoded, '+'->space, lowercased copy for everything else.
+ *   - a lowercased, percent-decoded copy for everything else, with raw '+'
+ *     changed to space only in the form/query region given by form_offset.
  *
  * Both scratch buffers are supplied by the caller and must each hold at least
  * `len` bytes. ngx_unescape_uri never grows the buffer, so `len` is always
@@ -357,7 +358,8 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
 ngx_int_t
 ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
     u_char *data, size_t len, u_char *scratch_lc, u_char *scratch_dec,
-    const char *source, uint64_t skip, ngx_http_shield_hit_t *hit)
+    const char *source, size_t form_offset, uint64_t skip,
+    ngx_http_shield_hit_t *hit)
 {
     size_t                           i, dlen;
     u_char                          *raw_lc, *dec, *dst, *src;
@@ -372,18 +374,9 @@ ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
 
     ngx_strlow(raw_lc, data, len);
 
-    dst = dec;
-    src = data;
-    ngx_unescape_uri(&dst, &src, len, 0);
-    dlen = dst - dec;
-
-    for (i = 0; i < dlen; i++) {
-        if (dec[i] == '+') {
-            dec[i] = ' ';
-        }
-    }
-    ngx_strlow(dec, dec, dlen);
-
+    /* Raw signatures must see the untouched spelling, including percent
+     * escapes and literal plus signs. Reuse this scratch only after that
+     * scan. */
     cat = ngx_http_shield_ac_scan(&automata->raw, raw_lc, len, skip);
     if (cat != NULL) {
         hit->category = cat->name;
@@ -391,6 +384,19 @@ ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
         hit->source = source;
         return NGX_OK;
     }
+
+    /* Form/query '+' means space before percent decoding. A decoded %2B
+     * remains a literal plus; paths and opaque headers preserve both forms. */
+    for (i = form_offset; i < len; i++) {
+        if (raw_lc[i] == '+') {
+            raw_lc[i] = ' ';
+        }
+    }
+    dst = dec;
+    src = raw_lc;
+    ngx_unescape_uri(&dst, &src, len, 0);
+    dlen = dst - dec;
+    ngx_strlow(dec, dec, dlen);
 
     cat = ngx_http_shield_ac_scan(&automata->decoded, dec, dlen, skip);
     if (cat != NULL) {

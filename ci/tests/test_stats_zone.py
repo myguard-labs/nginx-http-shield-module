@@ -59,6 +59,23 @@ http {{
 """
 
 
+def wait_until_ready(process, stderr, port: int, timeout: float = 10) -> None:
+    """Wait for readiness while enforcing one deadline on every retry path."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if process.poll() is not None:
+            stderr.seek(0)
+            raise RuntimeError(stderr.read())
+        if time.monotonic() >= deadline:
+            raise TimeoutError("nginx did not start")
+        try:
+            if request(port, "/ready") == (200, b"before"):
+                return
+        except ConnectionRefusedError:
+            pass
+        time.sleep(0.02)
+
+
 @contextmanager
 def server(
     binary: Path, module: Path | None, *, kind: str = "stats", mixed: bool = True
@@ -94,19 +111,7 @@ def server(
                 stderr=stderr,
             )
             try:
-                deadline = time.monotonic() + 10
-                while True:
-                    if process.poll() is not None:
-                        stderr.seek(0)
-                        raise RuntimeError(stderr.read())
-                    try:
-                        if request(port, "/ready") == (200, b"before"):
-                            break
-                    except ConnectionRefusedError:
-                        time.sleep(0.02)
-                        continue
-                    assert time.monotonic() < deadline, "nginx did not start"
-                    time.sleep(0.02)
+                wait_until_ready(process, stderr, port)
                 yield port, process, root
             finally:
                 if process.poll() is None:

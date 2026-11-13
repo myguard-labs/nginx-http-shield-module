@@ -399,6 +399,7 @@ REQUIRED_JOBS = {
         "asan-soak",
         "security-scanners",
         "codeql",
+        "windows",
     },
     "build-test.yml": {
         "validation",
@@ -429,6 +430,7 @@ REQUIRED_CALLS = {
     "asan-soak": "asan.yml",
     "security-scanners": "security-scanners.yml",
     "codeql": "codeql.yml",
+    "windows": "windows-build.yml",
 }
 
 
@@ -444,7 +446,6 @@ def check_coverage() -> int:
             errors.append(f"{name}:{job}: required job missing")
     required_events = {
         "ci.yml": {"pull_request"},
-        "windows-build.yml": {"pull_request"},
         "bump.yml": {"schedule"},
         "ci-deep.yml": {"schedule"},
         "codeql.yml": {"schedule", "workflow_call"},

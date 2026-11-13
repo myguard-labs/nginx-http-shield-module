@@ -95,9 +95,9 @@
 #          copied verbatim no longer matches. Every DECODED-only check stays
 #          green, confirming the two lowercasing calls are independent code
 #          paths this file exercises separately.
-#   * '+' -> space fold disabled -- change the
-#     `if (dec[i] == '+') { dec[i] = ' '; }` loop's condition to
-#     `dec[i] == '+' && 0` in ngx_http_shield_scan_input()
+#   * context-specific '+' -> space fold disabled -- change the
+#     `if (raw_lc[i] == '+') { raw_lc[i] = ' '; }` loop's condition to
+#     `raw_lc[i] == '+' && 0` in ngx_http_shield_scan_input()
 #       -> both "'+' folds to a literal space, completing the sqli
 #          signature" and "'+'-folded sqli hit reports CAT_SQLI" FAIL: with
 #          '+' left as a literal, "or+1=1--" never forms the sqli signature

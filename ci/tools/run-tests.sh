@@ -18,7 +18,7 @@
 # Usage:
 #   bash ci/tools/run-tests.sh                  # nginx, default version
 #   bash ci/tools/run-tests.sh angie 1.12.0     # pick flavor + version
-#   bash ci/tools/run-tests.sh nginx 1.31.3 -v  # extra args go to prove
+#   bash ci/tools/run-tests.sh nginx 1.31.8 -v  # extra args go to prove
 #   TEST_NGINX_PORT=9999 bash ci/tools/run-tests.sh # honoured, not overridden
 #
 # Needs a build: ci/tools/ci-build.sh <flavor> <version> [mode]

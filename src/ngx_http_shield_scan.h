@@ -89,6 +89,9 @@ ngx_int_t ngx_http_shield_ac_capacity(ngx_log_t *log, size_t *cap,
  *
  * `skip` is the shield_skip mask; a set bit disables that category.
  * `source` is a static string recorded on the hit for logging.
+ * `form_offset` starts form/query plus-to-space normalization in raw bytes:
+ * zero for form input, the byte after ? for a request target, len for literal
+ * input (path, header, JSON/text body). Percent-encoded plus stays literal.
  *
  * Returns NGX_OK and fills *hit on a match, or NGX_DECLINED when clean.
  * Never returns NGX_ERROR: with the scratch supplied there is nothing left
@@ -97,7 +100,7 @@ ngx_int_t ngx_http_shield_ac_capacity(ngx_log_t *log, size_t *cap,
 ngx_int_t ngx_http_shield_scan_input(
     const ngx_http_shield_automata_t *automata, u_char *data, size_t len,
     u_char *scratch_lc, u_char *scratch_dec, const char *source,
-    uint64_t skip, ngx_http_shield_hit_t *hit);
+    size_t form_offset, uint64_t skip, ngx_http_shield_hit_t *hit);
 
 
 #endif /* NGX_HTTP_SHIELD_SCAN_H_INCLUDED_ */

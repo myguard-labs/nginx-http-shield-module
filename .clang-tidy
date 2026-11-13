@@ -1,0 +1,47 @@
+# Copyright (C) 2026 Thijs Eilander
+# SPDX-License-Identifier: BSD-2-Clause
+#
+# The clang-tidy check set, pinned in the tree rather than passed on a CI
+# command line.
+#
+# Why this file exists: the check list used to live only in
+# .github/workflows/security-scanners.yml. That made the lens unreproducible
+# off the runner -- anyone running clang-tidy by hand, in an editor, or from a
+# future local hook got upstream's DEFAULT checks, which are a different set
+# entirely. "clang-tidy is clean" then meant two different things depending on
+# who ran it. clang-tidy reads this file by walking up from each translation
+# unit, so every caller now gets one set with no flag to remember.
+#
+# The workflow no longer passes --checks; it relies on this file. If you put
+# --checks back on that command line it OVERRIDES this file silently and the
+# pin becomes decoration -- change the list here instead.
+#
+# The list itself is unchanged from what the workflow carried, so this commit
+# moves the checks without re-tuning them:
+#
+#   cert-*                        the CERT C rules
+#   clang-analyzer-security.*     the security slice of the static analyser
+#
+#   -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+#     disabled: it flags every memcpy/sprintf in existence, nginx's own idioms
+#     included, which makes the check unusable rather than safer.
+#
+# The leading `-*` disables clang-diagnostic-* along with everything else, so
+# compiler warnings carried by the replayed argv -- including the build's
+# `-Werror` -- are never raised as clang-tidy findings. That is deliberate: it
+# means an nginx bump introducing a clang-only diagnostic in upstream headers
+# cannot redden this gate. Adding clang-diagnostic-* here breaks that property,
+# so scope WarningsAsErrors in the same commit if you ever do.
+Checks: >
+  -*,
+  cert-*,
+  clang-analyzer-security.*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+
+# Everything that survives the filter above is an error. See the note on `-*`:
+# this is narrower than it looks, because clang-diagnostic-* is already off.
+WarningsAsErrors: '*'
+
+# Header diagnostics stay suppressed. Empty = report on the main file only,
+# which keeps the gate on OUR code instead of on nginx's headers.
+HeaderFilterRegex: ''
