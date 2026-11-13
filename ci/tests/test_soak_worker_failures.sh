@@ -19,34 +19,50 @@ while True:
 SCRIPT
 cat >"$tmp/curl" <<'SCRIPT'
 #!/usr/bin/env bash
-counter="${SOAK_FAKE_COUNTER:?}"
-exec 9>>"$counter.lock"
+state="${SOAK_FAKE_STATE:?}"
+exec 9>>"$state/lock"
 flock 9
-count=0
-[ ! -s "$counter" ] || read -r count <"$counter"
-count=$((count + 1))
-printf '%s\n' "$count" >"$counter"
-if [ "$count" -gt 80 ]; then
+
+# Readiness does not use -w. Wait until load traffic has established both the
+# benign and blocked controls, then make the next worker request fail. The
+# duration is only a safety bound; injection no longer depends on throughput.
+case " $* " in
+    *" -w "*) worker=1 ;;
+    *) worker=0 ;;
+esac
+if [ "$worker" -eq 1 ] && [ -e "$state/pass" ] && [ -e "$state/block" ] \
+    && [ ! -e "$state/failed" ]; then
+    : >"$state/failed"
     exit 7
 fi
 case " $* " in
-    *" /ok "*) printf '200' ;;
-    *" -X POST "*) printf '403' ;;
-    *union*|*passwd*|*jndi*|*shell.php*|*.env*|*.git*) printf '403' ;;
-    *) printf '200' ;;
+    *" -X POST "*) code=403 ;;
+    *union*|*passwd*|*jndi*|*shell.php*|*.env*|*.git*) code=403 ;;
+    *) code=200 ;;
 esac
+if [ "$worker" -eq 1 ]; then
+    [ "$code" = 403 ] && : >"$state/block"
+    [ "$code" = 200 ] && : >"$state/pass"
+fi
+printf '%s' "$code"
 SCRIPT
 chmod +x "$tmp/nginx" "$tmp/curl"
 python3 -m py_compile "$tmp/nginx"
-export SOAK_CURL="$tmp/curl" SOAK_FAKE_COUNTER="$tmp/count"
+mkdir "$tmp/state"
+export SOAK_CURL="$tmp/curl" SOAK_FAKE_STATE="$tmp/state"
 rc=0
-RANDOM=1 bash "$root/ci/tools/soak.sh" "$tmp/nginx" 2 1 >"$tmp/out" 2>&1 || rc=$?
+RANDOM=1 bash "$root/ci/tools/soak.sh" "$tmp/nginx" 5 1 >"$tmp/out" 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || {
     cat "$tmp/out"
     echo "soak accepted a failed worker" >&2
     exit 1
 }
 grep -q 'load worker(s) saw a curl transport failure' "$tmp/out"
+[ -e "$tmp/state/failed" ] || {
+    cat "$tmp/out"
+    echo "fake curl did not inject the transport failure" >&2
+    exit 1
+}
 if grep -q 'no attack was blocked\|no benign request passed' "$tmp/out"; then
     cat "$tmp/out"
     echo "fake traffic did not establish both positive controls" >&2

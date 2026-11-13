@@ -48,6 +48,11 @@ class FanalyzerArgsTest(unittest.TestCase):
         source = Path.cwd() / "src/ngx_http_shield_scan.c"
         self.assertEqual(self.run_helper([], source), b"")
 
+    def test_driver_keeps_object_in_its_private_scratch_directory(self) -> None:
+        driver = Path("ci/tools/fanalyzer.sh").read_text(encoding="utf-8")
+        self.assertIn('-o "$tmpdir/fanalyzer.o"', driver)
+        self.assertNotIn("-o /tmp/fanalyzer.o", driver)
+
 
 if __name__ == "__main__":
     unittest.main()

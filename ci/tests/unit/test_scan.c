@@ -719,6 +719,7 @@ static void
 case_plus_context(void)
 {
     ngx_http_shield_hit_t hit;
+    uint64_t body_skip = ngx_http_shield_no_body_mask();
     static const struct {
         const char *input;
         size_t offset;
@@ -750,6 +751,16 @@ case_plus_context(void)
     check(scan_str_mode("chmod+%2Bx",
               (uint64_t) 1 << NGX_HTTP_SHIELD_CAT_CMDI, 0, &hit)
               == NGX_DECLINED, "cmdi normalization preserves skip");
+    check(scan_str_mode("cmd=chmod +x", body_skip, 0, &hit) == NGX_DECLINED,
+          "body policy skips cmdi after form plus normalization");
+    check(scan_str_mode("cmd=chmod +x", body_skip, strlen("cmd=chmod +x"),
+                        &hit) == NGX_DECLINED,
+          "body policy skips cmdi with a literal plus");
+    check(scan_str_mode("id=x' or+1=1--", body_skip, 0, &hit) == NGX_OK,
+          "body-enabled sqli hits after form plus normalization");
+    check(scan_str_mode("id=x' or+1=1--", body_skip,
+                        strlen("id=x' or+1=1--"), &hit) == NGX_OK,
+          "body-enabled sqli hits with a literal unary plus");
 }
 
 

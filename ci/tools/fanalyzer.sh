@@ -98,7 +98,7 @@ for src in "$ROOT"/src/*.c; do
     # error, which is a broken replay and must not read as clean.
     out=""
     out="$( (cd "$dir" && gcc -fanalyzer -c "${args[@]}" \
-        -o /tmp/fanalyzer.o) 2>&1)" || status=1
+        -o "$tmpdir/fanalyzer.o") 2>&1)" || status=1
     printf '%s\n' "$out" | tee -a fanalyzer.log
     case "$out" in
         *'[-Wanalyzer-'*) status=1 ;;
