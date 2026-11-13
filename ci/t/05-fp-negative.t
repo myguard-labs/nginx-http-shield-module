@@ -699,8 +699,8 @@ Content-Type: application/json
 --- error_code: 405
 
 === TEST 74: a benign internal XML entity declaration is not XXE
-# XXE is an entity declaration paired with an EXTERNAL reference (SYSTEM/PUBLIC
-# with a file:/http: URI) -- caught by the "system \"file:" / "system \"http:"
+# XXE is an entity declaration paired with an external SYSTEM reference with a
+# file:/http: URI -- caught by the "system \"file:" / "system \"http:"
 # signatures. A purely internal entity ("<!ENTITY company \"Acme\">", no SYSTEM)
 # is an ordinary XML construct: SOAP templates, XHTML, config files, docs. Bare
 # "<!ENTITY" is not a signature on its own.

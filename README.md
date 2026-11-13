@@ -66,7 +66,7 @@ terms, matched case-insensitively after percent-decoding:
 | `crlf` | `%0d%0a`, response-splitting `\r\nSet-Cookie:` |
 | `nullbyte` | `%00`, `%u0000`, double- and triple-encoded `.` / `/` / `\` (`%252e`, `%25252f`, `%25%32%65`) |
 | `template` | `${jndi:` + `jndi:ldap/rmi/dns/iiop`, `${env:`, `${::-`, nested `${${` |
-| `deserial` | Contextual Java object-stream prefix (`rO0ABXN`), gadget classes (`jdbcRowSetImpl`, `TemplatesImpl`, commons-collections), Fastjson `@type` autotype, WebLogic/XStream, Joomla obj-injection (CVE-2015-8562), and external-entity `SYSTEM`/`PUBLIC` references |
+| `deserial` | Contextual Java object-stream prefix (`rO0ABXN`), gadget classes (`jdbcRowSetImpl`, `TemplatesImpl`, commons-collections), Fastjson `@type` autotype, WebLogic/XStream, Joomla obj-injection (CVE-2015-8562), and external-entity `SYSTEM` references |
 | `shellshock` | the exported-function prologue with a **shell** body — `() { :;}` and its spacing variants, `() { echo`, `() { /bin/`, CVE-2014-6278's `() { _;} >_[$($())]`. Not the bare `() {`: that is also JavaScript's anonymous-function token, and this module scans `text/*` and JSON bodies |
 | `php_rce` | PHP-CGI `-d allow_url_include` (CVE-2012-1823), PHPUnit `eval-stdin.php`, ThinkPHP |
 | `java_rce` | Struts OGNL `%{(#` (CVE-2017-5638), Spring4Shell `class.module.classloader`, Confluence OGNL `@java.lang.runtime@getruntime().exec(` (CVE-2022-26134) |
