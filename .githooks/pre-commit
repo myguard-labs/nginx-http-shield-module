@@ -61,7 +61,7 @@ fi
 BUF="$(mktemp -d "${TMPDIR:-/tmp}/shield-pre-commit.XXXXXX")"
 lint_pid=""
 pre_commit_pid=""
-# shellcheck disable=SC2317  # cleanup is invoked indirectly by trap.
+# shellcheck disable=SC2317,SC2329  # cleanup is invoked indirectly by trap.
 cleanup() {
     status=$?
     trap - EXIT INT TERM
