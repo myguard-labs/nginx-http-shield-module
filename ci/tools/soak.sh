@@ -19,14 +19,15 @@
 #   USE_HELGRIND=1 ci/tools/soak.sh <nginx-binary> 600 8
 #
 # Build with ASAN for the ASAN path; plain debug for the valgrind path:
-#   CC=clang bash ci/tools/ci-build.sh nginx 1.31.3 asan
-#   bash ci/tools/ci-build.sh nginx 1.31.3 debug
+#   CC=clang bash ci/tools/ci-build.sh nginx 1.31.8 asan
+#   bash ci/tools/ci-build.sh nginx 1.31.8 debug
 
 set -euo pipefail
 
 NGINX="${1:?usage: soak.sh <nginx-binary> [duration] [concurrency]}"
 DURATION="${2:-120}"
 CONC="${3:-8}"
+CURL_BIN="${SOAK_CURL:-curl}"
 # Overridable so two soak.sh callers (e.g. valgrind.yml and asan.yml) never
 # race on the same listener when GitHub Actions schedules their jobs in
 # parallel on the same runner.
@@ -106,7 +107,7 @@ fi
 NGINX_PID=$!
 
 for _ in $(seq 1 100); do
-    curl -fsS -o /dev/null "http://127.0.0.1:$PORT/ok" 2>/dev/null && break
+    "$CURL_BIN" -fsS -o /dev/null "http://127.0.0.1:$PORT/ok" 2>/dev/null && break
     sleep 0.1
 done
 
@@ -199,23 +200,33 @@ BENIGN=(
 # how a soak against a crashed nginx reports "clean". Record it instead, and
 # fail the run if any occurred.
 storm_worker() {
+    local transport_failed=0
     while [ "$(date +%s)" -lt "$END" ]; do
         r=$((RANDOM % 10))
         if [ "$r" -lt 5 ]; then
             u="${ATTACKS[$((RANDOM % ${#ATTACKS[@]}))]}"
-            code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
-                "http://127.0.0.1:$PORT$u" 2>/dev/null)
+            if ! code=$("$CURL_BIN" -s -m 10 -o /dev/null -w '%{http_code}' \
+                "http://127.0.0.1:$PORT$u" 2>/dev/null); then
+                code=000
+                transport_failed=1
+            fi
             code=${code:-000}
         elif [ "$r" -lt 7 ]; then
             b="${BODY_ATTACKS[$((RANDOM % ${#BODY_ATTACKS[@]}))]}"
-            code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
+            if ! code=$("$CURL_BIN" -s -m 10 -o /dev/null -w '%{http_code}' \
                 -X POST --data "$b" \
-                "http://127.0.0.1:$PORT/post" 2>/dev/null)
+                "http://127.0.0.1:$PORT/post" 2>/dev/null); then
+                code=000
+                transport_failed=1
+            fi
             code=${code:-000}
         else
             u="${BENIGN[$((RANDOM % ${#BENIGN[@]}))]}"
-            code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
-                "http://127.0.0.1:$PORT$u" 2>/dev/null)
+            if ! code=$("$CURL_BIN" -s -m 10 -o /dev/null -w '%{http_code}' \
+                "http://127.0.0.1:$PORT$u" 2>/dev/null); then
+                code=000
+                transport_failed=1
+            fi
             code=${code:-000}
             # benign: anything that is NOT a 403 block proves pass-through
             # (200/404/405 are all "shield let it through").
@@ -230,6 +241,7 @@ storm_worker() {
             : >"$saw_block" 2>/dev/null || true
         fi
     done
+    return "$transport_failed"
 }
 
 pids=()
@@ -237,7 +249,12 @@ for _ in $(seq 1 "$CONC"); do
     storm_worker &
     pids+=($!)
 done
-for pid in "${pids[@]}"; do wait "$pid" || true; done
+worker_failures=0
+for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+        worker_failures=$((worker_failures + 1))
+    fi
+done
 
 kill -QUIT "$NGINX_PID" 2>/dev/null || true
 for _ in $(seq 1 30); do
@@ -254,6 +271,10 @@ rc=0
 wait "$NGINX_PID" 2>/dev/null || rc=$?
 
 problems=0
+if [ "$worker_failures" -ne 0 ]; then
+    echo "FAIL: $worker_failures load worker(s) saw a curl transport failure"
+    problems=1
+fi
 if ls "$WORK"/logs/asan* >/dev/null 2>&1; then
     echo "FAIL: ASAN/UBSAN report:"
     cat "$WORK"/logs/asan*

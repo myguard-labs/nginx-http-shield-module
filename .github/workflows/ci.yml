@@ -1,4 +1,4 @@
-# sync-sha: 43d59a4c646524fd2af904bf7911755707e8987a22e169632e1f46593a8bfebb
+# sync-sha: 5cee502441c12592ac88fc1fc85eae3d17df8a7817af9febf9d776607a7ded01
 # Single entry point for the PR CI suite. This is the ONLY workflow with a
 # `pull_request:` trigger — the member workflows are reachable on a PR solely
 # as `workflow_call:` jobs from here, so each runs exactly once. Adding a
@@ -68,3 +68,9 @@ jobs:
       contents: read
       security-events: write  # CodeQL uploads its SARIF to code scanning
       actions: read  # the CodeQL action reads run metadata to attribute results
+
+  windows:
+    name: Windows
+    uses: $/.github/workflows/windows-build.yml
+    permissions:
+      contents: read

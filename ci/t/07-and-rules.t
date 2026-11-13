@@ -1,7 +1,8 @@
-# AND-rules: a category that fires only when a SET of terms co-occurs in one
-# buffer. Every term here is, on its own, ordinary traffic -- t/05 TESTS 30-34
-# pin that each one alone must NOT block. These tests pin the other half: the
-# full term set together IS the attack and must block.
+# Standalone-signature regression controls plus AND-rules, where a category
+# fires only when a SET of terms co-occurs in one buffer. Every AND-rule term
+# here is, on its own, ordinary traffic -- t/05 TESTS 30-34 pin that each one
+# alone must NOT block. These tests pin the other half: the full term set
+# together IS the attack and must block.
 #
 # The pair is the whole point of the primitive. A signature engine that can
 # only match one token at a time has to choose between blocking the product
@@ -14,14 +15,14 @@ run_tests();
 
 __DATA__
 
-=== TEST 1: Grafana plugin path + traversal gadget (CVE-2021-43798)
+=== TEST 1: standalone traversal signature blocks a Grafana exploit shape
 --- config
     location /t { shield block; empty_gif; }
 --- request
 GET /t?url=/public/plugins/graph/../../../../etc/passwd
 --- error_code: 403
 
-=== TEST 2: the Grafana rule reports the traversal category
+=== TEST 2: standalone traversal reports the traversal category
 --- config
     location /t { shield block; empty_gif; }
 --- request
@@ -86,18 +87,18 @@ Content-Type: application/json
 category=deserial
 --- error_code: 403
 
-=== TEST 5: time-based SQLi -- sleep( paired with a SELECT
+=== TEST 5: standalone time-based SQLi signature remains covered
 --- config
     location /t { shield block; empty_gif; }
 --- request
 GET /t?id=1%20and%20(select%20sleep(5))
 --- error_code: 403
 
-=== TEST 6: shield_skip on a rule's category disables the rule too
+=== TEST 6: shield_skip traversal disables the standalone signature
 --- config
     location /t { shield block; shield_skip traversal; empty_gif; }
 --- request
-GET /t?url=/public/plugins/graph/x/y/z/module.js
+GET /t?url=..%2fetc/passwd
 --- error_code: 200
 
 === TEST 7: terms split across different requests never accumulate

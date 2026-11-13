@@ -24,7 +24,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BIN_DIR="$REPO_ROOT/ci/fuzz"
 
 if [ "${1:-}" = "clean" ]; then
-    rm -f "$BIN_DIR/fuzz_scan" "$BIN_DIR/fuzz_xff"
+    rm -f "$BIN_DIR/fuzz_scan" "$BIN_DIR/fuzz_xff" "$BIN_DIR/fuzz_gzip"
     echo "fuzz binaries removed"
     exit 0
 fi
@@ -113,9 +113,19 @@ echo "==> Building fuzz_xff ..."
     "$NGX_SRC/src/os/unix/ngx_alloc.c"
 echo "    OK: $BIN_DIR/fuzz_xff"
 
+# --- Build fuzz_gzip (bounded request-body gzip decoder). -----------------
+echo
+echo "==> Building fuzz_gzip ..."
+# COMMON_CFLAGS is an intentional compiler flag list and must word-split.
+# shellcheck disable=SC2086
+"$CC" $COMMON_CFLAGS -I "$REPO_ROOT/src" \
+    -o "$BIN_DIR/fuzz_gzip" "$REPO_ROOT/ci/fuzz/fuzz_gzip.c" -lz
+echo "    OK: $BIN_DIR/fuzz_gzip"
+
 echo
 echo "Build complete. Binaries in $BIN_DIR/"
 echo
 echo "Quick smoke-run (15 s):"
 echo "  $BIN_DIR/fuzz_scan -max_total_time=15 $REPO_ROOT/ci/fuzz/corpus/fuzz_scan"
 echo "  $BIN_DIR/fuzz_xff -max_total_time=15 $REPO_ROOT/ci/fuzz/corpus/fuzz_xff"
+echo "  $BIN_DIR/fuzz_gzip -max_total_time=15 $REPO_ROOT/ci/fuzz/corpus/fuzz_gzip"

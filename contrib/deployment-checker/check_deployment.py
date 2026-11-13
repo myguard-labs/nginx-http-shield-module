@@ -996,7 +996,17 @@ def inspect(root, config, contract):
         if len(diagnostics) < MAX_DIAGNOSTICS:
             emit("unknown", exc.code, Node("", [], None, exc.file, exc.line))
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
-        emit("unknown", "CONTRACT" if reader else "INPUT")
+        code = "CONTRACT" if reader else "INPUT"
+        if len(diagnostics) >= MAX_DIAGNOSTICS:
+            diagnostics[-1] = {
+                "level": "unknown",
+                "code": "LIMIT",
+                "message": MESSAGES["LIMIT"],
+                "file": 0,
+                "line": 0,
+            }
+        else:
+            emit("unknown", code)
     finally:
         if reader:
             reader.close()

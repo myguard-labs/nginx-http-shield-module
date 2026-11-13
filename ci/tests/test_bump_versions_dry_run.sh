@@ -4,11 +4,22 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/ci/tools" "$tmp/.github/scripts"
+mkdir -p "$tmp/ci/tools" "$tmp/.github/scripts" "$tmp/ci"
 cp "$root/ci/tools/bump-versions.sh" "$tmp/ci/tools/"
 printf 'same\n' >"$tmp/.github/versions.env"
+printf '{"dependencies":[]}\n' >"$tmp/ci/dependency-inventory.json"
 cat >"$tmp/.github/scripts/compute-versions.sh" <<'SCRIPT'
 printf 'same\n' > .github/versions.env
+SCRIPT
+cat >"$tmp/ci/tools/sync-source-inventory.py" <<'SCRIPT'
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+if os.environ.get("SYNC_INVENTORY_CHANGE"):
+    Path("ci/dependency-inventory.json").write_text(
+        '{"dependencies":["changed"]}\n', encoding="utf-8"
+    )
 SCRIPT
 cat >"$tmp/ci/tools/bump-actions.sh" <<'SCRIPT'
 printf 'ACTIONS_CHANGED=%s\n' "${ACTIONS_CHANGED:-0}"
@@ -18,6 +29,11 @@ cat >"$tmp/ci/tools/bump-tools.sh" <<'SCRIPT'
 printf 'TOOLS_CHANGED=%s\n' "${TOOLS_CHANGED:-0}"
 exit "${TOOLS_EXIT:-0}"
 SCRIPT
+cat >"$tmp/ci/tools/sync-stamp.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 0
+SCRIPT
+git -C "$tmp" init -q
 
 run_case() {
     local expected_exit="$1" expected_output="$2"
@@ -35,4 +51,9 @@ run_case 0 CHANGED=1 ACTIONS_CHANGED=1
 run_case 0 CHANGED=1 TOOLS_CHANGED=1
 run_case 17 ACTIONS_CHANGED=0 ACTIONS_EXIT=17
 run_case 19 TOOLS_CHANGED=0 TOOLS_EXIT=19
+(
+    cd "$tmp"
+    SYNC_INVENTORY_CHANGE=1 bash ci/tools/bump-versions.sh
+) >"$tmp/normal-output" 2>&1
+grep -qxF 'CHANGED=1' "$tmp/normal-output"
 printf 'ok   dry-run propagates child failures and change markers\n'

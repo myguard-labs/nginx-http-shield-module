@@ -17,7 +17,8 @@
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
-mapfile -t FILES < <(lint_files '\.py$' "$@")
+FILES=()
+lint_files_into FILES '\.py$' "$@"
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-python: no Python files to check"
     exit 0

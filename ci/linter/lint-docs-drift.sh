@@ -27,7 +27,8 @@
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
-mapfile -t FILES < <(lint_files '^(\.github/workflows/.*\.ya?ml|README\.md)$' "$@")
+FILES=()
+lint_files_into FILES '^(\.github/workflows/.*\.ya?ml|README\.md)$' "$@"
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-docs-drift: no workflow or README changes"
     exit 0

@@ -1100,7 +1100,7 @@ Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8
 Vary: Accept
 --- error_code: 200
 
-=== TEST 30: counters-only zone supports the unchanged JSON schema
+=== TEST 63: counters-only zone supports the unchanged JSON schema
 --- http_config
     shield_stats_zone stats30 32k;
 --- config
@@ -1112,7 +1112,7 @@ GET /status
 Content-Type: application/json
 --- error_code: 200
 
-=== TEST 31: counters-only zone supports negotiated OpenMetrics
+=== TEST 64: counters-only zone supports negotiated OpenMetrics
 --- http_config
     shield_stats_zone stats31 32k;
 --- config

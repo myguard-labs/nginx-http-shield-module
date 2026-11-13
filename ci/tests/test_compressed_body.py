@@ -163,6 +163,7 @@ def run(
                 "skip": "shield_skip deserial;",
                 "no-body": "shield_body off;",
                 "limited": "shield_max_body 8;",
+                "large-cap": "shield_max_body 128k;",
                 "input-cap": "shield_max_encoded_body 12;",
                 "trailer-cap": f"shield_max_encoded_body {len(gzip.compress(ATTACK, mtime=0)) - 1};",
                 "member-cap": f"shield_max_encoded_body {len(gzip.compress(ATTACK, mtime=0))};",
@@ -543,6 +544,19 @@ http {{
                         "partial-attack",
                         gzip.compress(ATTACK + b"a" * 65536, mtime=0),
                         403,
+                    )
+                    adaptive_benign = b"a" * 70000
+                    check(
+                        "adaptive-retry-benign",
+                        gzip.compress(adaptive_benign, mtime=0),
+                        route="large-cap",
+                        expected_decoded=adaptive_benign,
+                    )
+                    check(
+                        "adaptive-retry-attack",
+                        gzip.compress(adaptive_benign + ATTACK, mtime=0),
+                        403,
+                        route="large-cap",
                     )
                     before_limited = snapshot(port)["body_uninspected"]
                     check(

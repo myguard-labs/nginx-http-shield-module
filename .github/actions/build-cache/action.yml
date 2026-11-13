@@ -1,4 +1,4 @@
-# sync-sha: 4ef0a6075c5790461d5e6fab19765835aa8238ed17e0a42de993478ff4cce139
+# sync-sha: f67ca804263ad935e95de76456d140054d7e48b90e43c706ea76f26d89357cbc
 name: Build cache
 description: >-
   Restore the ccache + nginx source/build caches for one build mode. Hybrid by
@@ -13,7 +13,7 @@ inputs:
       ci-build.sh arg.
     required: true
   nginx-version:
-    description: "source version, e.g. 1.31.3 (nginx) or 1.12.0 (angie)"
+    description: "source version, e.g. 1.31.8 (nginx) or 1.12.4 (angie)"
     required: true
   flavor:
     description: "nginx (default) | angie -- MUST match the ci-build.sh arg."

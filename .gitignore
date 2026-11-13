@@ -15,6 +15,7 @@ ci/tests/unit/test_scan
 # Fuzz build outputs (keep sources, corpus seeds, and fuzz.dict)
 ci/fuzz/fuzz_scan
 ci/fuzz/fuzz_xff
+ci/fuzz/fuzz_gzip
 ci/fuzz/crash-*
 ci/fuzz/corpus-min/
 ci/fuzz/leak-*
@@ -23,13 +24,15 @@ ci/fuzz/timeout-*
 
 # libFuzzer corpus growth: every input it keeps is written back to the corpus
 # dir under its SHA1. The hand-written seeds are word-named and stay tracked
-# (16 for fuzz_scan, 10 for fuzz_xff);
+# (16 for fuzz_scan, 10 for fuzz_xff, 2 for fuzz_gzip);
 # these accumulate by the hundred on every run and must never be committed.
 # Both layouts occur: -artifact_prefix/corpus arg points at ci/fuzz/corpus/ in CI,
 # at ci/fuzz/corpus/fuzz_scan/ locally, so ignore the SHA1 form in both.
 ci/fuzz/corpus/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]
 ci/fuzz/corpus/fuzz_scan/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]
 ci/fuzz/corpus/fuzz_xff/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]
+
+ci/fuzz/corpus/fuzz_gzip/????????????????????????????????????????
 
 # Python bytecode (pytest imports the reporter module)
 __pycache__/

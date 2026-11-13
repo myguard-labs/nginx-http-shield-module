@@ -1,4 +1,4 @@
-# sync-sha: 0f99d106a99ae25bc1ce95ae3fb8ad7059178e4d2e125b92bfa97330922817e7
+# sync-sha: 16002027f7f6371b6c77a1a662686bddf71824ea210f75f522b4e479a2e866a7
 name: CI Deep
 
 # Exhaustive dynamic analysis — monthly cron + on-demand only, NEVER on PR.
@@ -39,6 +39,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Pinned so a scanner release cannot silently change the gate.
   SEMGREP_VERSION: "1.184.0"
+  ZIZMOR_VERSION: "1.31.1"
 
 on:
   schedule:
@@ -67,6 +68,9 @@ jobs:
       TEST_BASE_PORT: '19400'
     strategy:
       fail-fast: false
+      # The three matrix cells share the four-slot self-hosted budget with the
+      # independent fuzz, Memcheck and Helgrind lanes.
+      max-parallel: 1
       matrix:
         include:
           - flavor: nginx
@@ -321,7 +325,8 @@ jobs:
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
           msg="🔴 ${GH_REPOSITORY} — CI Deep / fuzz FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
           payload="$(jq -n --arg content "$msg" '{content: $content}')"
-          curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+          .github/scripts/curl-secret-header.sh \
+            Authorization Bot DISCORD_BOT_TOKEN -- -fsS -X POST \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
             -d "$payload" || true
@@ -363,7 +368,8 @@ jobs:
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
           msg="🔴 ${GH_REPOSITORY} — CI Deep / memcheck FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
           payload="$(jq -n --arg content "$msg" '{content: $content}')"
-          curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+          .github/scripts/curl-secret-header.sh \
+            Authorization Bot DISCORD_BOT_TOKEN -- -fsS -X POST \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
             -d "$payload" || true
@@ -405,13 +411,16 @@ jobs:
           [ -n "$DISCORD_BOT_TOKEN" ] || exit 0
           msg="🔴 ${GH_REPOSITORY} — CI Deep / helgrind FAILED. ${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
           payload="$(jq -n --arg content "$msg" '{content: $content}')"
-          curl -fsS -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+          .github/scripts/curl-secret-header.sh \
+            Authorization Bot DISCORD_BOT_TOKEN -- -fsS -X POST \
             -H "Content-Type: application/json" \
             "https://discord.com/api/v10/channels/$DISCORD_CHANNEL_BUILDS/messages" \
             -d "$payload" || true
 
   scanners:
     name: Security scanners
+    needs: build-flavors
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, builder02, lxc]
     timeout-minutes: 20
     steps:
@@ -430,10 +439,11 @@ jobs:
             libpcre2-dev zlib1g-dev
           if command -v pipx >/dev/null; then
             pipx install --quiet "semgrep==${SEMGREP_VERSION}"
+            pipx install --quiet "zizmor==${ZIZMOR_VERSION}"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           else
             pip3 install --quiet --user --break-system-packages \
-              "semgrep==${SEMGREP_VERSION}"
+              "semgrep==${SEMGREP_VERSION}" "zizmor==${ZIZMOR_VERSION}"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
       - name: Generate nginx build headers (for clang-tidy)
@@ -455,7 +465,7 @@ jobs:
             --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null
       - name: flawfinder (gate on >=4)
         run: bash ci/tools/flawfinder-gate.sh
-      - name: clang-tidy (cert-*, security.*)
+      - name: clang-tidy (pinned profile)
         run: |
           set -euo pipefail
           N="$RUNNER_TEMP/nginx-src"
@@ -467,20 +477,19 @@ jobs:
             echo "--- clang-tidy: $(basename "$src") ---"
             # shellcheck disable=SC2086
             clang-tidy "$src" \
-              --checks='-*,cert-*,clang-analyzer-security.*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling' \
-              --warnings-as-errors='*' \
               -- $INCLUDES 2>&1 | tee -a clang-tidy.log || status=1
           done
           exit "$status"
-      - name: semgrep (gate)
-        run: |
-          # --error makes a finding a non-zero exit; without it (and with the
-          # old `|| true`) both findings and a scanner crash produced a green
-          # job, so the advertised gate could not fail. set -o pipefail keeps
-          # `tee` from swallowing that status.
-          set -euo pipefail
-          semgrep scan --error --config p/c --config p/security-audit \
-            "$GITHUB_WORKSPACE/src/" 2>&1 | tee semgrep.log
+      - name: Complete first-party Semgrep accounting
+        run: python3 ci/tools/semgrep-first-party.py --output semgrep-first-party.json
+      - name: Online workflow security scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --persona=pedantic --no-progress .github/workflows
+      - name: Dependency advisory sweep (OSV)
+        # Live and fail-closed by design: new advisories block stale pins, and
+        # an OSV outage must not produce false clean evidence.
+        run: python3 ci/tools/check-advisories.py --output advisory-receipt.json
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
@@ -489,5 +498,6 @@ jobs:
           path: |
             ${{ github.workspace }}/flawfinder.log
             ${{ github.workspace }}/clang-tidy.log
-            ${{ github.workspace }}/semgrep.log
+            ${{ github.workspace }}/semgrep-first-party.json
+            ${{ github.workspace }}/advisory-receipt.json
           retention-days: 14

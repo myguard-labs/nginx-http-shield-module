@@ -536,7 +536,9 @@ def main() -> None:
         ]
         if args.module:
             command.extend(["--module", str(args.module.resolve())])
-        subprocess.run(command, check=True)
+        # `command` is an argv list: the executable and script are repository
+        # paths, values stay separate arguments, and shell=True is never used.
+        subprocess.run(command, check=True)  # nosemgrep
     if args.baseline_module:
         samples: dict[str, list[float]] = {"baseline": [], "candidate": []}
         # Alternate order across rounds to expose scheduling/drift noise.

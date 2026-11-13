@@ -11,7 +11,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from test_stats_zone import config_controls, config_test_environment, reload
+from test_stats_zone import (
+    config_controls,
+    config_test_environment,
+    reload,
+    wait_until_ready,
+)
 
 
 class ConfigEnvironmentTests(unittest.TestCase):
@@ -80,6 +85,39 @@ class ReloadReadiness(unittest.TestCase):
                 reload(1, process, root, "new config")
                 self.assertEqual(sleep.call_count, 2)
             self.assertEqual((root / "nginx.conf").read_text(), "new config")
+
+
+class StartupReadiness(unittest.TestCase):
+    def run_wait(self, request_result, *, poll=None):
+        process = Mock()
+        process.poll.return_value = poll
+        with tempfile.TemporaryFile(mode="w+") as stderr:
+            stderr.write("startup failed")
+            clock = iter((0.0, 0.0, 11.0))
+            with (
+                patch(
+                    "test_stats_zone.time.monotonic",
+                    side_effect=lambda: next(clock),
+                ),
+                patch("test_stats_zone.time.sleep"),
+                patch("test_stats_zone.request", side_effect=request_result),
+            ):
+                return wait_until_ready(process, stderr, 1)
+
+    def test_ready_response_returns(self):
+        self.run_wait([(200, b"before")])
+
+    def test_persistent_refusal_obeys_deadline(self):
+        with self.assertRaises(TimeoutError):
+            self.run_wait([ConnectionRefusedError])
+
+    def test_wrong_response_obeys_deadline(self):
+        with self.assertRaises(TimeoutError):
+            self.run_wait([(503, b"later")])
+
+    def test_early_exit_reports_stderr(self):
+        with self.assertRaisesRegex(RuntimeError, "startup failed"):
+            self.run_wait([], poll=1)
 
 
 if __name__ == "__main__":

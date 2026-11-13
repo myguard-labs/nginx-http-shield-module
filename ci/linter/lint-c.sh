@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # ci/linter/lint-c.sh -- C static analysis for src/*.[ch].
 #
-# Mirrors .github/workflows/security-scanners.yml exactly:
+# Fast local C projection of .github/workflows/security-scanners.yml:
 #   flawfinder  gate at >=4        (below 4 is risky-API grep noise; gating on
 #                                   it trains everyone to --no-verify)
-#   semgrep     gate on ANY finding, p/c + p/security-audit, no --severity
-#               filter -- security-scanners.yml's `semgrep scan --error
-#               --config p/c --config p/security-audit` does not pass
-#               --severity either, so this does not add a WARNING/ERROR floor
-#               the remote job does not have. A --severity filter here would
-#               let a local run pass something CI still fails on.
+#   semgrep     gate on ANY finding from p/c + p/security-audit. CI adds the
+#               complete tracked-input/generic, Python and parse-clean C AST
+#               accounting in ci/tools/semgrep-first-party.py; that broader
+#               repository scan stays remote because it is not a cheap
+#               staged-file hook.
 # plus cppcheck, which CI does not run and which is cheap enough locally.
 #
 # If a threshold moves in that workflow, move it here in the SAME commit --
@@ -31,7 +30,8 @@
 # shellcheck source=ci/linter/lib.sh disable=SC1091
 . "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
 
-mapfile -t FILES < <(lint_files '^src/.*\.[ch]$' "$@")
+FILES=()
+lint_files_into FILES '^src/.*\.[ch]$' "$@"
 [ "${#FILES[@]}" -gt 0 ] || {
     echo "lint-c: no C files to check"
     exit 0
@@ -60,7 +60,7 @@ cppcheck --quiet --error-exitcode=1 \
 if [ -n "${LINT_SKIP_SEMGREP:-}" ]; then
     warn "semgrep SKIPPED via LINT_SKIP_SEMGREP -- CI still gates on it"
 else
-    need semgrep "pipx install semgrep==1.169.0"
+    need semgrep "pipx install semgrep==1.184.0"
     say "semgrep (gate on any finding, matches security-scanners.yml)"
     # --quiet is deliberately absent: it hides semgrep-core's own crash text
     # (io_uring/RLIMIT_MEMLOCK) and turns a diagnosable failure into a bare

@@ -440,6 +440,23 @@ class DeploymentCheckerTests(unittest.TestCase):
             self.assertEqual(len(result["diagnostics"]), 2)
             self.assertEqual(result["status"], "nonclean")
             self.assertIn("LIMIT", self.codes(result))
+
+        class FailingParser:
+            def __init__(self, _reader, emit):
+                self.emit = emit
+
+            def parse(self, _config):
+                self.emit("info", "SKIP_INHERITED")
+                self.emit("info", "SKIP_INHERITED")
+                raise OSError("late read failure")
+
+        with (
+            patch.object(CHECKER, "MAX_DIAGNOSTICS", 2),
+            patch.object(CHECKER, "Parser", FailingParser),
+        ):
+            result = self.run_config(name="safe.conf")
+            self.assertEqual(len(result["diagnostics"]), 2)
+            self.assertIn("LIMIT", self.codes(result))
         self.assertEqual(
             self.run_config(
                 self.simple() + " " * (CHECKER.MAX_FILE - len(self.simple()))

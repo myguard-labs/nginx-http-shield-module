@@ -9,20 +9,11 @@
 #
 # WHY THIS IS NOT A ONE-LINE sed
 #
-# The semgrep pin appears as a workflow `env:` in two files that must agree:
-# .github/workflows/security-scanners.yml (the PR-time scanner gate) and
-# .github/workflows/ci-deep.yml (the monthly/dispatch exhaustive run). They
-# are pinned to the same version ON PURPOSE -- the whole point of the pin is
-# that both gates scan with the identical tool. Bumping one and missing the
-# other does not fail loudly; it just means the two jobs quietly disagree
-# about what "clean" means, which is the exact failure the pin exists to
-# prevent. So this rewrites every occurrence repo-wide and asserts afterwards
-# that one version is left.
-#
-# Unlike the skeleton module this was ported from, shield has no
-# ci/linter/install-linters.sh or ci/linter/lint-c.sh (there is no ci/linter/
-# directory at all) and no ruff pin anywhere -- both were dropped from TOOLS[]
-# below rather than left as a sed that silently matches nothing.
+# The Semgrep pin appears as a workflow `env:` in two files and as a direct
+# `semgrep==` requirement in the local installer and lint hint. All four must
+# agree or local and remote checks use different rule sets. This rewrites both
+# forms and asserts that no stale pin remains, including when PyPI already
+# reports the listed version as newest.
 #
 # Requires: curl, python3. Network: pypi.org.
 
@@ -33,6 +24,9 @@ DRY_RUN=0
 
 cd "$(dirname "$0")/../.."
 
+SCAN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/shield-bump-tools.XXXXXX")"
+trap 'rm -rf "$SCAN_TMP"' EXIT
+
 CHANGED=0
 # See bump-actions.sh: "could not check" must never be reported as "up to
 # date", or an outage/rename leaves the pins rotting behind a green job.
@@ -41,8 +35,19 @@ FAILED=0
 # Package name -> the files allowed to carry its pin. Listing them rather than
 # globbing keeps a stray match in a .md or a lockfile from being rewritten.
 TOOLS=(
-    "semgrep:.github/workflows/security-scanners.yml .github/workflows/ci-deep.yml"
+    "semgrep:.github/workflows/security-scanners.yml .github/workflows/ci-deep.yml ci/linter/install-linters.sh ci/linter/lint-c.sh"
+    "zizmor:.github/workflows/build-test.yml .github/workflows/security-scanners.yml .github/workflows/ci-deep.yml ci/linter/install-linters.sh"
+    "ruff:ci/linter/install-linters.sh"
 )
+
+pin_versions() {
+    local pkg="$1" env_name
+    shift
+    env_name="${pkg^^}_VERSION"
+    grep -hoE "${env_name}: \"[0-9]+(\.[0-9]+)*\"|${pkg}==[0-9]+(\.[0-9]+)*" "$@" |
+        sed -E "s/.*(${env_name}: \"|${pkg}==)([0-9]+(\.[0-9]+)*).*/\2/" |
+        sort -u
+}
 
 newest_on_pypi() {
     # /json returns every release; info.version is the newest NON-prerelease,
@@ -75,16 +80,21 @@ for entry in "${TOOLS[@]}"; do
     done
 
     # Collect the pin from EVERY listed file BEFORE any up-to-date shortcut.
-    # The pin here is a workflow env var (SEMGREP_VERSION: "1.169.0"), not a
-    # bare `pkg==ver` literal, so match the quoted version string. Reading only
-    # the first file (the old behavior) let a later file's stale pin hide
-    # behind an early exit -- see F2 in PR review.
+    # Reading only the first file lets a later stale pin hide behind an early
+    # exit. Each listed file must contain exactly one version.
     cur=""
     disagree=0
     for f in $files; do
-        v="$(grep -hoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" "$f" | head -1 |
-            sed -E 's/.*"([0-9.]+)"/\1/' || true)"
-        [ -n "$v" ] || continue
+        v="$(pin_versions "$pkg" "$f" || true)"
+        if [ -z "$v" ]; then
+            echo "FAILED ${pkg}: no pin found in listed file '${f}'" >&2
+            FAILED=1
+            continue 2
+        fi
+        if [ "$(printf '%s\n' "$v" | wc -l)" -ne 1 ]; then
+            disagree=1
+            continue
+        fi
         if [ -z "$cur" ]; then
             cur="$v"
         elif [ "$v" != "$cur" ]; then
@@ -92,17 +102,35 @@ for entry in "${TOOLS[@]}"; do
         fi
     done
     if [ -z "$cur" ]; then
-        echo "FAILED ${pkg}: no SEMGREP_VERSION pin found in any of its listed files" >&2
+        echo "FAILED ${pkg}: no pin found in its listed files" >&2
         FAILED=1
         continue
     fi
     if [ "$disagree" = 1 ]; then
         echo "FATAL: ${pkg} pins disagree across its listed files BEFORE any bump:" >&2
         for f in $files; do
-            v="$(grep -hoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" "$f" | head -1 |
-                sed -E 's/.*"([0-9.]+)"/\1/' || true)"
+            v="$(pin_versions "$pkg" "$f" || true)"
             [ -n "$v" ] && echo "  $f: $v" >&2
         done
+        exit 1
+    fi
+
+    inventory_cur="$(
+        python3 - "$pkg" <<'PY'
+import json, sys
+data = json.load(open("ci/dependency-inventory.json", encoding="utf-8"))
+matches = [d["version"] for d in data["dependencies"] if d["id"] == sys.argv[1]]
+if len(matches) != 1:
+    raise SystemExit(1)
+print(matches[0])
+PY
+    )" || {
+        echo "FAILED ${pkg}: dependency inventory entry missing or ambiguous" >&2
+        FAILED=1
+        continue
+    }
+    if [ "$inventory_cur" != "$cur" ]; then
+        echo "FATAL: ${pkg} inventory pin ${inventory_cur} disagrees with tool pin ${cur}" >&2
         exit 1
     fi
 
@@ -114,17 +142,39 @@ for entry in "${TOOLS[@]}"; do
 
     if [ "$new" = "$cur" ]; then
         echo "${pkg}: already newest (${cur})"
+    else
+        echo "bump ${pkg}: ${cur} -> ${new}"
+        CHANGED=1
+        if [ "$DRY_RUN" = 0 ]; then
+            for f in $files; do
+                env_name="${pkg^^}_VERSION"
+                perl -pi -e \
+                    "s{${env_name}: \"\Q${cur}\E\"}{${env_name}: \"${new}\"}g; s{${pkg}==\Q${cur}\E}{${pkg}==${new}}g" \
+                    "$f"
+            done
+            python3 - "$pkg" "$cur" "$new" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path("ci/dependency-inventory.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+pkg, old, new = sys.argv[1:]
+for dependency in data["dependencies"]:
+    if dependency["id"] != pkg:
         continue
+    dependency["version"] = new
+    query = dependency.get("osv_query", {})
+    if query.get("version") == old:
+        query["version"] = new
+for check in data["pin_checks"]:
+    if pkg in check["pattern"].lower() and check["expected"] == old:
+        check["expected"] = new
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+        fi
     fi
 
-    echo "bump ${pkg}: ${cur} -> ${new}"
-    CHANGED=1
     [ "$DRY_RUN" = 1 ] && continue
-
-    for f in $files; do
-        [ -f "$f" ] || continue
-        perl -pi -e "s{SEMGREP_VERSION: \"\Q${cur}\E\"}{SEMGREP_VERSION: \"${new}\"}g" "$f"
-    done
 
     # The sync IS the feature -- assert it rather than assume the loop above
     # covered every copy. A pin that reappears somewhere unlisted must fail the
@@ -133,11 +183,24 @@ for entry in "${TOOLS[@]}"; do
     # ci/tools/bump-{tools,actions,versions}.sh are excluded because they are
     # ABOUT pins: any version literal in them is prose in a comment, not a pin
     # to keep in step.
-    stray="$(grep -rhoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" \
-        --include='*.yml' --include='*.yaml' --include='*.sh' \
-        --exclude='bump-tools.sh' --exclude='bump-actions.sh' \
-        --exclude='bump-versions.sh' \
-        .github ci 2>/dev/null | sort -u | grep -v "\"${new}\"\$" || true)"
+    env_name="${pkg^^}_VERSION"
+    # git grep limits this ownership check to Shield's tracked files. A plain
+    # recursive grep crosses initialized gitlinks such as ci/t/harness and
+    # incorrectly treats that independently owned repository's pins as ours.
+    scan_rc=0
+    pin_matches="$(git grep --untracked -h -o -E \
+        "${env_name}: \"[0-9]+(\.[0-9]+)*\"|${pkg}==[0-9]+(\.[0-9]+)*" -- \
+        ':(glob).github/**/*.yml' ':(glob).github/**/*.yaml' \
+        ':(glob)ci/**/*.sh' ':(glob)ci/**/*.yml' ':(glob)ci/**/*.yaml' \
+        ':!ci/tools/bump-tools.sh' ':!ci/tools/bump-actions.sh' \
+        ':!ci/tools/bump-versions.sh' 2>"$SCAN_TMP/git-grep.stderr")" || scan_rc=$?
+    if [ "$scan_rc" -gt 1 ]; then
+        echo "FATAL: ${pkg} stray-pin ownership scan could not run:" >&2
+        sed 's/^/  /' "$SCAN_TMP/git-grep.stderr" >&2
+        exit 1
+    fi
+    stray="$(printf '%s\n' "$pin_matches" |
+        pin_versions "$pkg" /dev/stdin | grep -vx "${new}" || true)"
     if [ -n "$stray" ]; then
         echo "FATAL: ${pkg} pins disagree after bump:" >&2
         printf '  %s\n' "$stray" >&2

@@ -147,7 +147,7 @@ shield_memmem(u_char *haystack, size_t hlen, const char *needle, size_t nlen)
  * both the enabled and skipped paths of the category loop are exercised.
  */
 static int
-shield_scan(u_char *data, size_t len, uint64_t skip)
+shield_scan(u_char *data, size_t len, uint64_t skip, size_t form_offset)
 {
     size_t                           i, j, dlen;
     u_char                          *raw_lc, *dec, *dst, *src;
@@ -168,16 +168,16 @@ shield_scan(u_char *data, size_t len, uint64_t skip)
 
     ngx_strlow(raw_lc, data, len);
 
-    dst = dec;
-    src = data;
-    ngx_unescape_uri(&dst, &src, len, 0);
-    dlen = dst - dec;
-
-    for (i = 0; i < dlen; i++) {
+    ngx_memcpy(dec, data, len);
+    for (i = form_offset; i < len; i++) {
         if (dec[i] == '+') {
             dec[i] = ' ';
         }
     }
+    dst = dec;
+    src = dec;
+    ngx_unescape_uri(&dst, &src, len, 0);
+    dlen = dst - dec;
     ngx_strlow(dec, dec, dlen);
 
     for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
@@ -321,10 +321,11 @@ shield_scan_ac_init(void)
  *
  * "body" is passed as the source string only because the seam requires one;
  * the position folds that actually vary the scan are applied to the skip mask
- * by the caller, as they are in production.
+ * by the caller, as they are in production. form_offset independently selects
+ * literal, form, or whole-target plus normalization.
  */
 static int
-shield_scan_ac(u_char *data, size_t len, uint64_t skip)
+shield_scan_ac(u_char *data, size_t len, uint64_t skip, size_t form_offset)
 {
     int                     hit;
     u_char                 *raw_lc, *dec;
@@ -341,7 +342,7 @@ shield_scan_ac(u_char *data, size_t len, uint64_t skip)
     ngx_memzero(&h, sizeof(h));
 
     hit = (ngx_http_shield_scan_input(&shield_fuzz_automata, data, len,
-                                      raw_lc, dec, "body", skip, &h)
+                                      raw_lc, dec, "body", form_offset, skip, &h)
            == NGX_OK);
 
     free(raw_lc);
@@ -354,6 +355,8 @@ int
 LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     uint64_t   skip = 0;
+    size_t     form_offset;
+    uint8_t    mode;
     u_char    *buf;
     static int built;
 
@@ -391,6 +394,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
      * a category wrongly left out of (or wrongly added to) either mask would
      * otherwise never surface as a differential, since both engines below would
      * just agree on the wrong answer. */
+    mode = data[0];
     if (data[0] & 1) {
         skip |= ngx_http_shield_no_body_mask();
     }
@@ -402,6 +406,15 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     if (size == 0) {
         return 0;
+    }
+
+    /* Independently fuzz form, literal, and whole-target normalization. */
+    form_offset = 0;
+    if (mode & 4) {
+        form_offset = size;
+    } else if (mode & 8) {
+        const uint8_t *q = memchr(data, '?', size);
+        form_offset = q == NULL ? size : (size_t) (q - data) + 1;
     }
 
     /* Copy into a fresh buffer so ngx_strlow/ngx_unescape_uri write in place
@@ -417,8 +430,8 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
      * Both read the same signature table; a divergence is a real bug in the
      * rewrite and aborts so libFuzzer records the input. */
     {
-        int naive = shield_scan(buf, size, skip);
-        int ac = shield_scan_ac(buf, size, skip);
+        int naive = shield_scan(buf, size, skip, form_offset);
+        int ac = shield_scan_ac(buf, size, skip, form_offset);
         if (naive != ac) {
             fprintf(stderr,
                     "SHIELD DIFFERENTIAL: naive=%d ac=%d len=%zu skip=%#llx\n",

@@ -1,10 +1,10 @@
-# sync-sha: 1bbad96b69966fb80ece0ea717a2976040c0a2473e75b830fb8d806e4ffcd839
+# sync-sha: fe7b35f305c74d3dfe483b9098d33a108f925626e2f4797ce2d56b39ff4fb26f
 name: Fuzzing
 
 # Fast fuzz regression gate on every PR — 120s on the scan core (normalize +
 # substring match over the real signature tables, with nginx's real
 # ngx_unescape_uri() decoder linked in) plus 60s on the X-Forwarded-For token
-# parse that selects the ban key. Long fuzz discovery (hours) lives in
+# parse that selects the ban key and 60s on the bounded gzip decoder. Long fuzz discovery (hours) lives in
 # ci-deep.yml (monthly cron + workflow_dispatch).
 #
 # PR member, called from ci.yml (the single `pull_request:` entry point) --
@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   fuzz-regression:
-    name: Fuzz regression (120s scan + 60s xff)
+    name: Fuzz regression (120s scan + 60s xff + 60s gzip)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -109,6 +109,18 @@ jobs:
           set -e
           [ $rc -eq 0 ] || { echo "❌ fuzz_xff crash (exit $rc)"; exit 1; }
           echo "✓ fuzz_xff: no crashes in 60s"
+
+      - name: Run fuzz_gzip 60s
+        run: |
+          set -euo pipefail
+          cd ci/fuzz
+          ./fuzz_gzip -runs=0 corpus/fuzz_gzip
+          ./fuzz_gzip \
+            -max_total_time=60 \
+            -print_final_stats=1 \
+            -artifact_prefix="crash-fuzz_gzip-" \
+            corpus/fuzz_gzip
+          echo "✓ fuzz_gzip: no crashes in 60s"
 
       - name: Upload crash artifacts
         if: failure()

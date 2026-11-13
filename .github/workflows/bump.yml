@@ -1,4 +1,4 @@
-# sync-sha: 34332aeae5a3e5afc8595ee645da50d3894df39685baf5ab088851f07be679cc
+# sync-sha: 5bd6def34e4ae35e03755e30443ed7110333e39868ab1f571afc7e2e27563a09
 name: Bump versions
 
 # Weekly: check nginx.org/angie.software for newer releases than what's
@@ -137,6 +137,6 @@ jobs:
           fi
           gh pr create \
             --title "chore: bump nginx/angie/action/linter pins ($(date -u +%Y-%m-%d))" \
-            --body "Automated weekly version check (ci/tools/bump-versions.sh). Review the diff and let required CI checks gate the merge." \
+            --body "Automated weekly version check (ci/tools/bump-versions.sh). Before merge, independently verify each changed source archive against its upstream signature/key or upstream-published digest and record that evidence here. CI verifies the reviewed SHA on every build." \
             --base main \
             --head "$branch"

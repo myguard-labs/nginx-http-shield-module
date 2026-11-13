@@ -225,11 +225,11 @@ Content-Type: multipart/form-data; boundary=rO0ABp0wny
 # fuzzer cannot reach this: it fuzzes the mask bits directly, so a category
 # wrongly added to (or missing from) a class's `allowed` constant is not
 # expressible as an oracle divergence. These tests PIN the allow-list
-# constants at src/ngx_http_shield_module.c:500-576 by asserting, per class,
+# constants in ngx_http_shield_inspect_prebody() by asserting, per class,
 # one category that MUST fire and one that must NOT.
 #
-# webshell ("b374k") is the MUST-NOT probe for generic/content-type/cookie:
-# it is a short, punctuation-free token not in any of their allow-lists, so
+# webshell ("b374k.php") is the MUST-NOT probe for generic/content-type/cookie:
+# it is a contextual webshell filename not in any of their allow-lists, so
 # a wrongly-widened mask would light it up. It IS in the full ruleset, so it
 # doubles as the MUST-fire probe for URI-bearing / UA / Referer headers.
 --- config
@@ -248,7 +248,7 @@ category=shellshock source=header
 --- request
 GET /t
 --- more_headers
-X-Custom-Debug: b374k
+X-Custom-Debug: b374k.php
 --- error_code: 200
 
 === TEST 25: content-type class -- java_rce MUST fire (added on top of generic)
@@ -268,7 +268,7 @@ category=java_rce source=content-type
 --- request
 GET /t
 --- more_headers
-Content-Type: b374k/form-data
+Content-Type: b374k.php/form-data
 --- error_code: 200
 
 === TEST 27: content-type class -- traversal MUST NOT fire (not in content-type allow-list)
@@ -297,7 +297,7 @@ category=sqli source=header
 --- request
 GET /t
 --- more_headers
-Cookie: session=b374k
+Cookie: session=b374k.php
 --- error_code: 200
 
 === TEST 30: cookie class -- traversal MUST NOT fire (not in the cookie allow-list)
@@ -315,7 +315,7 @@ Cookie: session=../../etc/passwd
 --- request
 GET /t
 --- more_headers
-X-Rewrite-URL: /uploads/b374k
+X-Rewrite-URL: /uploads/b374k.php
 --- error_log
 category=webshell source=header
 --- error_code: 403
@@ -335,7 +335,7 @@ X-Rewrite-URL: /a/../../etc/passwd
 --- request
 GET /t
 --- more_headers
-User-Agent: b374k
+User-Agent: b374k.php
 --- error_log
 category=webshell source=user-agent
 --- error_code: 403
@@ -346,7 +346,7 @@ category=webshell source=user-agent
 --- request
 GET /t
 --- more_headers
-Referer: http://example.com/b374k
+Referer: http://example.com/b374k.php
 --- error_log
 category=webshell source=referer
 --- error_code: 403
@@ -370,7 +370,7 @@ category=java_rce source=content-type
 GET /t
 --- more_headers
 User-Agent: curl/8.0
-User-Agent: b374k
+User-Agent: b374k.php
 --- error_log
 category=webshell source=user-agent
 --- error_code: 403
@@ -382,9 +382,25 @@ category=webshell source=user-agent
 GET /t
 --- more_headers
 Referer: http://example.com/
-Referer: http://example.com/b374k
+Referer: http://example.com/b374k.php
 --- error_log
 category=webshell source=referer
+--- error_code: 403
+
+=== TEST 37b: Referer repository paths do not become sensitive-file targets
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t
+--- more_headers
+Referer: https://example.invalid/repo/blob/main/.env.example
+--- error_code: 200
+
+=== TEST 37c: an actual sensitive file remains blocked as the request target
+--- config
+    location /t { shield block; empty_gif; }
+--- request
+GET /t/.env
 --- error_code: 403
 
 === TEST 38: duplicate Content-Type with only benign values still passes

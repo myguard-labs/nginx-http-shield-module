@@ -148,7 +148,8 @@ build_automata(void)
  * that class of bug instead of silently absorbing it.
  */
 static ngx_int_t
-scan_str_skip(const char *s, uint64_t skip, ngx_http_shield_hit_t *hit)
+scan_str_mode(const char *s, uint64_t skip, size_t form_offset,
+    ngx_http_shield_hit_t *hit)
 {
     u_char                  *buf, *lc, *dec;
     size_t                   n;
@@ -179,7 +180,7 @@ scan_str_skip(const char *s, uint64_t skip, ngx_http_shield_hit_t *hit)
          * scratch pointers at all, so NULL is safe and malloc(0) is avoided
          * (its behaviour is implementation-defined). */
         return ngx_http_shield_scan_input(
-            &test_automata, NULL, 0, NULL, NULL, "test", skip,
+            &test_automata, NULL, 0, NULL, NULL, "test", form_offset, skip,
             hit != NULL ? hit : &local_hit);
     }
 
@@ -192,7 +193,7 @@ scan_str_skip(const char *s, uint64_t skip, ngx_http_shield_hit_t *hit)
     }
     memcpy(buf, s, n);
 
-    rc = ngx_http_shield_scan_input(&test_automata, buf, n, lc, dec, "test",
+    rc = ngx_http_shield_scan_input(&test_automata, buf, n, lc, dec, "test", form_offset,
                                     skip,
                                     hit != NULL ? hit : &local_hit);
 
@@ -201,6 +202,13 @@ scan_str_skip(const char *s, uint64_t skip, ngx_http_shield_hit_t *hit)
     free(dec);
 
     return rc;
+}
+
+
+static ngx_int_t
+scan_str_skip(const char *s, uint64_t skip, ngx_http_shield_hit_t *hit)
+{
+    return scan_str_mode(s, skip, 0, hit);
 }
 
 
@@ -224,7 +232,7 @@ case_clean_baseline(void)
     ngx_http_shield_hit_t  hit;
 
     check(ngx_http_shield_scan_input(&test_automata, NULL, 0, NULL, NULL,
-                                     "test", 0, &hit)
+                                     "test", 0, 0, &hit)
               == NGX_DECLINED,
           "(NULL, 0, ...) is declined, not a crash");
 
@@ -424,11 +432,9 @@ case_percent_decoding(void)
           "overlong hit reports CAT_OVERLONG");
 
     /* '+' folds to a literal space before the decoded scan, matching nginx's
-     * own application/x-www-form-urlencoded convention. "or+1=1--" only forms
-     * the sqli signature "or 1=1--" (space-separated) once the '+' becomes a
-     * space; left as a literal '+' it is not a signature at all in either
-     * form ("or+1=1--" is not listed). */
-    check(scan_str("id=x' or+1=1--", &hit) == NGX_OK,
+     * own application/x-www-form-urlencoded convention. UNION requires a
+     * token separator, so this matches only after the contextual fold. */
+    check(scan_str("id=1+union+select+password", &hit) == NGX_OK,
           "'+' folds to a literal space, completing the sqli signature");
     check(hit.cat == NGX_HTTP_SHIELD_CAT_SQLI,
           "'+'-folded sqli hit reports CAT_SQLI");
@@ -525,7 +531,7 @@ case_malformed_and_embedded_nul(void)
     memcpy(buf, embedded, elen);
 
     rc = ngx_http_shield_scan_input(&test_automata, buf, elen, lc, dec,
-                                    "test", 0, &hit);
+                                    "test", 0, 0, &hit);
     check(rc == NGX_OK,
           "a literal embedded NUL does not truncate the scan -- the sqli "
           "marker AFTER it still matches");
@@ -709,12 +715,122 @@ case_react_flight_gadgets(void)
 }
 
 
+static void
+case_plus_context(void)
+{
+    ngx_http_shield_hit_t hit;
+    uint64_t body_skip = ngx_http_shield_no_body_mask();
+    static const struct {
+        const char *input;
+        size_t offset;
+        ngx_int_t expected;
+    } cases[] = {
+        {"chmod +x", 0, NGX_DECLINED},
+        {"chmod+%2Bx", 0, NGX_OK},
+        {"chmod%20%2bx", 0, NGX_OK},
+        {"chmod%20+x", 0, NGX_DECLINED},
+        {"chmod +x", 8, NGX_OK},
+        {"/chmod%20+x?q=ok", 12, NGX_OK},
+        {"/ok?q=chmod+%2Bx", 4, NGX_OK},
+        {"/ok?q=chmod++x", 4, NGX_DECLINED},
+        {"chmod%20%2", 0, NGX_DECLINED},
+        {"chmod%20%GGx", 0, NGX_DECLINED},
+        {"a+b=ordinary", 0, NGX_DECLINED},
+        {"a+b=ordinary", 12, NGX_DECLINED},
+        {"x' or%2B1=1--", 0, NGX_OK},
+        {"x' or+1=1--", 13, NGX_OK},
+        {"file=report.pdf%00.php", 0, NGX_OK},
+        {"file=report.pdf%00.php", 22, NGX_OK}
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        check(scan_str_mode(cases[i].input, 0, cases[i].offset, &hit)
+                  == cases[i].expected, cases[i].input);
+    }
+    check(scan_str_mode("chmod+%2Bx",
+              (uint64_t) 1 << NGX_HTTP_SHIELD_CAT_CMDI, 0, &hit)
+              == NGX_DECLINED, "cmdi normalization preserves skip");
+    check(scan_str_mode("cmd=chmod +x", body_skip, 0, &hit) == NGX_DECLINED,
+          "body policy skips cmdi after form plus normalization");
+    check(scan_str_mode("cmd=chmod +x", body_skip, strlen("cmd=chmod +x"),
+                        &hit) == NGX_DECLINED,
+          "body policy skips cmdi with a literal plus");
+    check(scan_str_mode("id=x' or+1=1--", body_skip, 0, &hit) == NGX_OK,
+          "body-enabled sqli hits after form plus normalization");
+    check(scan_str_mode("id=x' or+1=1--", body_skip,
+                        strlen("id=x' or+1=1--"), &hit) == NGX_OK,
+          "body-enabled sqli hits with a literal unary plus");
+}
+
+
+static void
+case_body_base64_collisions(void)
+{
+    static const char *bare[] = {
+        "ro0ab", "b374k", "p0wny", "gel4y", "wpyii2", "smevk", "xleet"
+    };
+    static const char *contextual[] = {
+        "ro0abxny", "ro0abxvy", "b374k.php", "p0wny.php", "gel4y.php",
+        "wpyii2.php", "smevk.php", "xleet.php"
+    };
+    static const char *variant = "p0wny-shell.php";
+    static const char alphabet[] =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
+    char sample[8193];
+    ngx_http_shield_hit_t hit;
+    uint32_t state = 0x5eed1234U;
+    uint64_t body_skip = ngx_http_shield_no_body_mask();
+    size_t i, j, context_len, context_offset;
+
+    for (i = 0; i < sizeof(bare) / sizeof(bare[0]); i++) {
+        check(scan_str_mode(bare[i], body_skip, strlen(bare[i]), &hit)
+                  == NGX_DECLINED, "bare base64-collision token is body-clean");
+        check(scan_str_mode(contextual[i], body_skip, strlen(contextual[i]), &hit)
+                  == NGX_OK, "contextual serialization/webshell token still hits");
+    }
+    check(scan_str_mode(variant, body_skip, strlen(variant), &hit) == NGX_OK,
+          "common p0wny-shell filename variant still hits");
+    check(scan_str_mode("ro0abxvy", body_skip, strlen("ro0abxvy"), &hit)
+              == NGX_OK,
+          "Java serialization array-root context still hits");
+    for (i = 0; i < 10000; i++) {
+        for (j = 0; j < sizeof(sample) - 1; j++) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            sample[j] = alphabet[state & 63U];
+        }
+        sample[sizeof(sample) - 1] = '\0';
+        if (scan_str_mode(sample, body_skip, sizeof(sample) - 1, &hit) != NGX_DECLINED) {
+            check(0, "10k seeded 8KiB base64 bodies have zero signature hits");
+            return;
+        }
+        context_len = strlen(contextual[i % (sizeof(contextual)
+                                              / sizeof(contextual[0]))]);
+        context_offset = (i * 7919U) % (sizeof(sample) - 1 - context_len);
+        ngx_memcpy(sample + context_offset,
+                   contextual[i % (sizeof(contextual)
+                                    / sizeof(contextual[0]))],
+                   context_len);
+        if (scan_str_mode(sample, body_skip, sizeof(sample) - 1, &hit) != NGX_OK) {
+            check(0, "10k context-injected base64 bodies all hit");
+            return;
+        }
+    }
+    check(1, "10k seeded 8KiB base64 bodies have zero signature hits");
+    check(1, "10k context-injected base64 bodies all hit");
+}
+
+
 int
 main(void)
 {
     build_automata();
 
     case_clean_baseline();
+    case_plus_context();
+    case_body_base64_collisions();
     case_rule_term_count();
     case_state_capacity();
     case_definition_capacity();

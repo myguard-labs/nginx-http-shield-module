@@ -8,6 +8,9 @@
 #                          staged (default in the git hook) -- staged files only
 #                          all                              -- every tracked file
 #                        and an explicit file list passed in "$@" by run-all.sh.
+#   lint_files_into <array-name> <regex> [explicit files...]
+#                        checked array form; unlike process substitution, this
+#                        preserves a failed git/file-discovery status.
 #   need <tool> <hint>   hard-fail with an install hint when a linter is absent
 #   drop_generated_vendor_rules
 #                        remove generated upstream ast-grep YAML from a list
@@ -55,10 +58,33 @@ lint_files() {
         true
 }
 
+lint_files_into() {
+    local -n output="$1"
+    shift
+    local tmp
+    tmp="$(mktemp "${TMPDIR:-/tmp}/shield-lint-files.XXXXXX")" || die "mktemp failed"
+    if ! lint_files "$@" >"$tmp"; then
+        rm -f "$tmp"
+        die "file discovery failed"
+    fi
+    # shellcheck disable=SC2034  # output is a nameref to the caller's array.
+    mapfile -t output <"$tmp"
+    rm -f "$tmp"
+}
+
 # These files are a byte-for-byte generated upstream snapshot. Their spelling
 # and YAML style are not ours to fix, while rules/own remains first-party and
 # must keep both checks. Call this only from those two prose/style linters;
 # structural and provenance checks still need to see the generated snapshot.
 drop_generated_vendor_rules() {
     grep -Ev '^ci/ast-grep/rules/vendor/' || true
+}
+
+drop_generated_vendor_files() {
+    local -n files="$1"
+    local kept=() file
+    for file in "${files[@]}"; do
+        [[ "$file" == ci/ast-grep/rules/vendor/* ]] || kept+=("$file")
+    done
+    files=("${kept[@]}")
 }

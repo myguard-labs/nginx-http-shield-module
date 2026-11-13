@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sync-sha: 139845e89613ec2a1c9c59e6fdc02e1ea92de37a18add795720a8169304a2602
+# sync-sha: ae09fabb38105311ffbb9677d470e399edc8f28c5dd333b85523d13100c758b0
 # Copyright (C) 2026 Thijs Eilander
 # SPDX-License-Identifier: BSD-2-Clause
 #
@@ -36,7 +36,8 @@ api() {
     # connection must retry, not fail the bump job or hang the runner.
     local -a opts=(-fsSL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 300)
     if [ -n "${GITHUB_TOKEN:-}" ]; then
-        curl "${opts[@]}" -H "Authorization: Bearer $GITHUB_TOKEN" "$url"
+        .github/scripts/curl-secret-header.sh \
+            Authorization Bearer GITHUB_TOKEN -- "${opts[@]}" "$url"
     else
         curl "${opts[@]}" "$url"
     fi
@@ -105,9 +106,11 @@ cat >"$VERSIONS_FILE" <<EOF
 # writer (compute-versions.sh) in one file, so a version can no longer move
 # while its digest stays behind.
 #
-# Each digest below was verified once against the upstream PGP signature (the
-# tarball's .asc, checked with the upstream signing key) before being recorded
-# -- see ci/tools/sources.sha256 history for the original verification.
+# The weekly writer hashes the archive fetched over TLS; that is not independent
+# authenticity proof. Before merging a bump, a reviewer must verify the same
+# archive against the upstream signature/key (or another upstream-published
+# digest) and record that evidence on the PR. The stored SHA then prevents
+# different bytes from being built after review.
 #
 # Regenerate with .github/scripts/compute-versions.sh -- .github/workflows/
 # bump.yml runs it weekly and opens a PR with the diff; run locally to preview

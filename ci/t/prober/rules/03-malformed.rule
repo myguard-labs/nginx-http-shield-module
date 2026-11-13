@@ -24,7 +24,7 @@ send    Content-Type: application/octet-stream\r\n
 send    Content-Type: text/plain\r\n
 send    Content-Length: 35\r\n
 send    Connection: close\r\n\r\n
-send    id=1+union+select+1,2,3--&x=1234567
+send    id=1 union select 1,2,3--&x=1234567
 expect  status=403
 
 name    percent-encoded payload is decoded before matching

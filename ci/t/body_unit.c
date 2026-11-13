@@ -23,22 +23,29 @@ static void *test_main_conf;
 
 static int fail_alloc = 1;
 static int fail_read;
+static int prefix_attack;
+static size_t inspected_len;
 static int fail_nth;
 static int alloc_calls;
+static size_t alloc_sizes[8];
 static int fail_arena = 1;
 static int arena_calls;
 static union {
     ngx_shield_gzip_align_t align;
     u_char bytes[NGX_SHIELD_GZIP_ARENA];
 } arena_storage;
-static u_char storage[32];
+static u_char storage[8][NGX_SHIELD_GZIP_INITIAL_OUTPUT + 1];
 
 void *ngx_pnalloc(ngx_pool_t *pool, size_t size)
 {
     (void) pool;
-    assert(size <= sizeof(storage));
+    assert(size <= sizeof(storage[0]));
     alloc_calls++;
-    return fail_alloc || alloc_calls == fail_nth ? NULL : storage;
+    if ((size_t) alloc_calls <= sizeof(alloc_sizes) / sizeof(alloc_sizes[0])) {
+        alloc_sizes[alloc_calls - 1] = size;
+    }
+    return fail_alloc || alloc_calls == fail_nth
+           ? NULL : storage[(alloc_calls - 1) % 8];
 }
 
 void *ngx_palloc(ngx_pool_t *pool, size_t size)
@@ -62,16 +69,21 @@ ssize_t ngx_read_file(ngx_file_t *file, u_char *buf, size_t size, off_t offset)
         return NGX_ERROR;
     }
     ngx_memset(buf, 'a', size);
+    if (prefix_attack && size >= 4) {
+        ngx_memcpy(buf, "evil", 4);
+    }
     return (ssize_t) size;
 }
 
 ngx_int_t ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
     u_char *data, size_t len, u_char *lc, u_char *dec, const char *source,
-    uint64_t skip, ngx_http_shield_hit_t *hit)
+    size_t form_offset, uint64_t skip, ngx_http_shield_hit_t *hit)
 {
     (void) automata; (void) data; (void) len; (void) lc; (void) dec;
-    (void) source; (void) skip; (void) hit;
-    return NGX_DECLINED;
+    (void) source; (void) form_offset; (void) skip; (void) hit;
+    inspected_len = len;
+    return prefix_attack && len >= 4 && ngx_memcmp(data, "evil", 4) == 0
+           ? NGX_OK : NGX_DECLINED;
 }
 
 int main(void)
@@ -90,6 +102,11 @@ int main(void)
     ngx_http_shield_main_conf_t main_conf;
     ngx_table_elt_t encoding;
     u_char data[] = "abcd";
+    u_char tiny_gzip[] = {
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff,
+        0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x86, 0xa6, 0x10,
+        0x36, 0x05, 0x00, 0x00, 0x00
+    };
 
     ngx_memzero(&r, sizeof(r));
     ngx_memzero(&request_body, sizeof(request_body));
@@ -178,6 +195,45 @@ int main(void)
     buf.file_last = 5;
     assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_DECLINED);
     assert(shared.body_uninspected[NGX_HTTP_SHIELD_BODY_TOO_LARGE] == 2);
+
+    /* Cap large-file spans before narrowing. Test SIZE_MAX/+1/+N where
+     * off_t is wider, and 4-GiB boundaries on native 64-bit builds. */
+    {
+        off_t spans[3];
+        ngx_str_t collected;
+        size_t i;
+        ngx_atomic_uint_t before;
+        uint64_t boundary = sizeof(size_t) < sizeof(off_t)
+                            ? (uint64_t) SIZE_MAX : UINT32_MAX;
+
+        spans[0] = (off_t) boundary;
+        spans[1] = (off_t) (boundary + 1);
+        spans[2] = (off_t) (boundary + 7);
+        conf.max_body = 8;
+        for (i = 0; i < 3; i++) {
+            ngx_memzero(&mark, sizeof(mark));
+            buf.file_pos = 17;
+            buf.file_last = buf.file_pos + spans[i];
+            inspected_len = 0;
+            before = shared.body_uninspected[NGX_HTTP_SHIELD_BODY_TOO_LARGE];
+            assert(ngx_http_shield_inspect_body(&r, &conf, &hit)
+                   == NGX_DECLINED);
+            assert(inspected_len == conf.max_body);
+            assert(shared.body_uninspected[NGX_HTTP_SHIELD_BODY_TOO_LARGE]
+                   == before + 1);
+            ngx_memzero(&mark, sizeof(mark));
+            prefix_attack = 1;
+            assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_OK);
+            assert(inspected_len == conf.max_body);
+            prefix_attack = 0;
+        }
+        buf.file_pos = 17;
+        buf.file_last = 16;
+        assert(ngx_http_shield_collect_body(&r, 8, &collected) == NGX_ERROR);
+        buf.file_pos = 0;
+        buf.file_last = 5;
+        conf.max_body = 4;
+    }
 
     /* A missing zone or detached shared state must never count or crash. */
     ngx_memzero(&mark, sizeof(mark));
@@ -338,6 +394,26 @@ int main(void)
     arena_calls = 0;
     assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_ERROR);
     assert(alloc_calls == 2 && arena_calls == 1); /* arena alone */
+
+    /* A large configured output budget allocates only the bounded prefix for
+     * a tiny complete member. Reaching that prefix is what triggers a full
+     * retry, so this request must not reserve the 16 MiB operator ceiling. */
+    fail_arena = 0;
+    alloc_calls = 0;
+    arena_calls = 0;
+    ngx_memzero(alloc_sizes, sizeof(alloc_sizes));
+    conf.cve = 0;
+    conf.skip = 0;
+    conf.max_encoded_body = sizeof(tiny_gzip);
+    conf.max_body = NGX_SHIELD_GZIP_MAX;
+    r.headers_in.content_length_n = sizeof(tiny_gzip);
+    buf.pos = tiny_gzip;
+    buf.last = tiny_gzip + sizeof(tiny_gzip);
+    assert(ngx_http_shield_inspect_body(&r, &conf, &hit) == NGX_DECLINED);
+    assert(alloc_calls == 4 && arena_calls == 1);
+    assert(alloc_sizes[0] == sizeof(tiny_gzip));
+    assert(alloc_sizes[1] == NGX_SHIELD_GZIP_INITIAL_OUTPUT + 1);
+    assert(alloc_sizes[2] == 5 && alloc_sizes[3] == 5);
     puts("body_unit: errors, boundaries and once-per-zone accounting passed");
     return 0;
 }

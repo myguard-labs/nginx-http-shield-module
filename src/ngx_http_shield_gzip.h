@@ -13,6 +13,7 @@
  * No allocation escapes this aligned, bounded arena or survives the call. */
 #define NGX_SHIELD_GZIP_ARENA 65536
 #define NGX_SHIELD_GZIP_MAX (16 * 1024 * 1024)
+#define NGX_SHIELD_GZIP_INITIAL_OUTPUT (64 * 1024)
 #define NGX_SHIELD_GZIP_MAX_MEMBERS 64
 
 typedef union {

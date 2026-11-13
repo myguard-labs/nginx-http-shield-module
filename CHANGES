@@ -1,5 +1,20 @@
 Changes with the next minor release
 
+    *) Prepare the module for release with one hosted-only pull-request CI
+       entry point, preserved Linux/Windows compatibility coverage, native
+       static-analysis profiles, 32-bit atomic controls, a gzip fuzz target,
+       dependency/license checks and contributor/linter documentation.
+
+    *) In the literal-signature engine, normalize raw plus signs as spaces only
+       in request/proxy-target queries and form-urlencoded bodies while
+       preserving percent-encoded plus signs. Reduce false positives by
+       excluding sensitive-file matches from Referer, requiring contextual
+       Java object/array-stream and PHP webshell filename signatures, and retaining
+       compiled true/false-positive corpus controls.
+
+    *) Bound the common gzip inspection allocation to a 64 KiB decoded prefix,
+       retrying at the configured decoded-body cap only when the prefix fills.
+
     *) Add opt-in shield_gzip request inspection using bounded zlib decoding,
        independent encoded/decoded inspection budgets, unchanged forwarded
        compressed bodies and incomplete-inspection counters.

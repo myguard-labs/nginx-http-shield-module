@@ -44,6 +44,7 @@ SUDO=""
 # tool<TAB>apt package -- checked with command -v <tool>
 APT_TOOLS=(
     "shellcheck:shellcheck" # sh/bash
+    "shfmt:shfmt"           # sh/bash formatting parity with build-test.yml
     "cppcheck:cppcheck"     # C
     "flawfinder:flawfinder" # C, risky-API scan
     "yamllint:yamllint"     # YAML
@@ -75,12 +76,9 @@ PIPX_TOOLS=(
     # an unpinned ruff changes findings under
     # you and local stops matching CI, same
     # reasoning as the semgrep pin below.
-    "zizmor:zizmor" # GitHub Actions security audit. Not
-    # pinned: its rule set is the point, and a
-    # frozen security scanner stops finding
-    # what it was added for. A new rule going
-    # red is a finding to triage, not drift.
-    "semgrep:semgrep==1.169.0" # C, pinned to the CI version on purpose:
+    "zizmor:zizmor==1.31.1" # GitHub Actions security audit, pinned so local,
+    # PR, and deep scans use the same rules.
+    "semgrep:semgrep==1.184.0" # C, pinned to the CI version on purpose:
     # an unpinned semgrep changes findings
     # under you and local stops matching CI.
     "codespell:codespell" # ci/linter/lint-spelling.sh. Unpinned: the

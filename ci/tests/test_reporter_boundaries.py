@@ -4,8 +4,10 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import urllib.error
 from argparse import Namespace
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -519,3 +521,126 @@ def test_network_error_detail_cannot_echo_credential(monkeypatch):
     outcome, detail = reporter.report("8.8.8.8", [21], "comment", "", now=0)
     assert outcome == mod.Reporter.RETRY
     assert "private-token" not in detail
+
+
+@pytest.fixture
+def recursive_json_decoder(monkeypatch):
+    # Use the real Python decoder to exercise recursion handling consistently:
+    # newer CPython C decoders permit deeper input than older supported runtimes.
+    decoder = json.JSONDecoder()
+    decoder.scan_once = json.scanner.py_make_scanner(decoder)
+    monkeypatch.setattr(mod.json, "_default_decoder", decoder)
+
+
+@contextmanager
+def standard_recursion_limit():
+    # pytest can raise this above the interpreter default; exercise the daemon's
+    # normal decoder limit without leaking the setting into other tests.
+    previous = sys.getrecursionlimit()
+    sys.setrecursionlimit(1000)
+    try:
+        yield
+    finally:
+        sys.setrecursionlimit(previous)
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["live", "restart"])
+def test_suppressor_midnight_preserves_window_until_exact_expiry(tmp_path, restart):
+    state = str(tmp_path / "suppress.json")
+    sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
+    reported_at = 86400 - 60  # 23:59 UTC
+    sup.record("8.8.8.8", reported_at)
+    if restart:
+        sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
+
+    assert sup.allow("8.8.8.8", 86400) == (False, "deduped")
+    assert sup._count == 0  # only the daily quota resets at midnight
+    assert sup.allow("8.8.8.8", reported_at + 899) == (False, "deduped")
+    assert sup.allow("8.8.8.8", reported_at + 900) == (True, "")
+    sup.record("9.9.9.9", reported_at + 901)
+    assert sup._last == {"9.9.9.9": reported_at + 901}
+
+
+def test_suppressor_midnight_resets_cap_and_persists_previous_day_dedup(tmp_path):
+    state = str(tmp_path / "suppress.json")
+    sup = mod.Suppressor(window_s=900, daily_cap=1, state_path=state)
+    sup.record("8.8.8.8", 86340)
+    assert sup.allow("9.9.9.9", 86341) == (False, "daily-cap")
+    assert sup.allow("8.8.8.8", 86400) == (False, "deduped")
+    assert sup.allow("9.9.9.9", 86400) == (True, "")
+    sup.record("9.9.9.9", 86400)
+    assert sup.allow("1.1.1.1", 86401) == (False, "daily-cap")
+
+    resumed = mod.Suppressor(window_s=900, daily_cap=1, state_path=state)
+    assert resumed.allow("1.1.1.1", 86401) == (False, "daily-cap")
+    # Raising the cap makes the retained per-IP window independently observable.
+    resumed.daily_cap = 2
+    assert resumed.allow("8.8.8.8", 86401) == (False, "deduped")
+    assert resumed.allow("9.9.9.9", 86401) == (False, "deduped")
+
+
+def test_deep_json_record_is_consumed_as_malformed(recursive_json_decoder):
+    with standard_recursion_limit():
+        line = "[" * 1100 + "]" * 1100
+        assert len(line) < mod.MAX_LOG_LINE
+        sup = mod.Suppressor(window_s=900, daily_cap=1000)
+        reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
+        logs = []
+        assert mod.process_line(line, sup, reporter, 1000, logs.append)
+        assert logs == ["skip: malformed JSON"]
+        assert sup._count == 0
+
+
+def test_deep_json_record_followed_by_valid_line_advances_offset(
+    tmp_path, monkeypatch, recursive_json_decoder
+):
+    with standard_recursion_limit():
+        logfile = tmp_path / "shield.log"
+        poison = "[" * 1100 + "]" * 1100 + "\n"
+        valid = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"}) + "\n"
+        logfile.write_text(poison + valid)
+        args = Namespace(
+            logfile=str(logfile), state=str(tmp_path / "offset.json"), poll=0.01
+        )
+        sup = mod.Suppressor(window_s=900, daily_cap=1000)
+        reporter = mod.Reporter(api_key="", timeout=1, dry_run=True)
+        logs = []
+        monkeypatch.setattr(mod.time, "time", lambda: 1000)
+        monkeypatch.setattr(
+            mod.time, "sleep", lambda _seconds: setattr(mod, "_stop", True)
+        )
+        mod._stop = False
+        try:
+            mod.follow(args, reporter, sup, logs.append)
+        finally:
+            mod._stop = False
+        assert logs.count("skip: malformed JSON") == 1
+        assert sum("reported 8.8.8.8" in message for message in logs) == 1
+        assert sup._count == 1
+        assert mod.load_offset(args.state, args.logfile) == (
+            logfile.stat().st_size,
+            logfile.stat().st_ino,
+        )
+
+
+@pytest.mark.parametrize(
+    "state_kind", ["suppression", "offset"], ids=["suppression", "offset"]
+)
+def test_deep_json_persisted_state_is_ignored(
+    tmp_path, state_kind, recursive_json_decoder
+):
+    with standard_recursion_limit():
+        state = tmp_path / "state.json"
+        state.write_text("[" * 1100 + "]" * 1100)
+        if state_kind == "suppression":
+            sup = mod.Suppressor(window_s=900, daily_cap=1, state_path=str(state))
+            assert sup._count == 0
+            assert sup._last == {}
+            assert sup.allow("8.8.8.8", 1000) == (True, "")
+            sup.record("8.8.8.8", 1000)
+            resumed = mod.Suppressor(window_s=900, daily_cap=1, state_path=str(state))
+            assert resumed.allow("9.9.9.9", 1001) == (False, "daily-cap")
+        else:
+            assert mod.load_offset(str(state), "shield.log") == (0, -1)
+            mod.save_offset(str(state), "shield.log", 42, 7)
+            assert mod.load_offset(str(state), "shield.log") == (42, 7)

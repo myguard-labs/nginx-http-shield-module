@@ -1,9 +1,10 @@
-# sync-sha: 3c1df28aa05756b541aacbb3b4ea01d80c497de85b95cf44bc310ab9509e5aee
+# sync-sha: b3dc4d6ceceb31f365463ed3979bf11656e7ffdb5bff871e242b14ecdc17290c
 name: Security scanners
 
 # Static/security scanners gate on every PR/push — flawfinder (gate on >=4),
-# clang-tidy (cert-*, security.*) and semgrep over src/. Same job as the
-# monthly ci-deep.yml scanners run.
+# clang-tidy (cert-*, security.*), complete first-party Semgrep accounting,
+# online workflow auditing, and dependency advisories. Same job as the monthly
+# ci-deep.yml scanners run.
 #
 # Action pin (keep in sync with build-test.yml):
 # actions/checkout@v5.1.0        -> fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -13,6 +14,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Pinned so a scanner release cannot silently change the gate.
   SEMGREP_VERSION: "1.184.0"
+  ZIZMOR_VERSION: "1.31.1"
 
 on:
   workflow_dispatch: {}
@@ -42,63 +44,78 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            flawfinder clang-tidy python3 python3-pip pipx curl \
-            libpcre2-dev zlib1g-dev
+            flawfinder clang-tidy bear python3 python3-pip pipx curl \
+            build-essential libpcre2-dev zlib1g-dev
           # semgrep: isolate via pipx (PEP 668 blocks a bare pip3 install into
           # the system Python on the Ubuntu 24.04 self-hosted runner).
           if command -v pipx >/dev/null; then
             pipx install --quiet "semgrep==${SEMGREP_VERSION}"
+            pipx install --quiet "zizmor==${ZIZMOR_VERSION}"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           else
             pip3 install --quiet --user --break-system-packages \
-              "semgrep==${SEMGREP_VERSION}"
+              "semgrep==${SEMGREP_VERSION}" "zizmor==${ZIZMOR_VERSION}"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
-      - name: Generate nginx build headers (for clang-tidy)
+      - name: Restore module build cache
+        uses: $/.github/actions/build-cache
+        with:
+          mode: module
+          nginx-version: ${{ env.NGINX_VERSION }}
+
+      - name: Build module and capture real compile flags
         run: |
-          # Pinned to the same NGINX_VERSION the build jobs use, and verified
-          # against the digest in .github/versions.env before extraction:
-          # scraping "latest" and executing its configure script trusts
-          # whatever the origin serves at that moment.
           set -euo pipefail
-          tarball="nginx-${NGINX_VERSION}.tar.gz"
-          bash "$GITHUB_WORKSPACE/.github/scripts/fetch-verify.sh" \
-            "https://nginx.org/download/$tarball" \
-            "$NGINX_VERSION_SHA256" \
-            "$RUNNER_TEMP/$tarball"
-          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
-          mv "$RUNNER_TEMP/nginx-${NGINX_VERSION}" "$RUNNER_TEMP/nginx-src"
-          cd "$RUNNER_TEMP/nginx-src"
-          CC=gcc ./configure --with-compat \
-            --add-dynamic-module="$GITHUB_WORKSPACE" > /dev/null
+          build="$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-module"
+          if [ -d "$build/objs/addon" ]; then
+            find "$build/objs/addon" -type f -name '*.o' -delete
+          fi
+          rm -f "$build"/objs/*.so
+          bear --output compile_commands.json -- \
+            bash ci/tools/ci-build.sh nginx "$NGINX_VERSION" module
+
+      - name: Verify compilation database coverage
+        env:
+          WS: ${{ github.workspace }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          root = pathlib.Path(os.environ["WS"])
+          want = {p.resolve() for p in (root / "src").glob("*.c")}
+          db = json.loads((root / "compile_commands.json").read_text())
+          got = {pathlib.Path(e["file"]).resolve() for e in db}
+          missing = want - got
+          if not want or missing:
+              sys.exit("compile database missing: " + ", ".join(sorted(p.name for p in missing)))
+          print(f"compile database covers {len(want)} source files")
+          PY
       - name: flawfinder (gate on >=4)
         run: bash ci/tools/flawfinder-gate.sh
       - name: clang-tidy (cert-*, security.*)
         run: |
           set -euo pipefail
-          N="$RUNNER_TEMP/nginx-src"
-          INCLUDES="-I$N/src/core -I$N/src/event -I$N/src/event/modules \
-            -I$N/src/os/unix -I$N/objs -I$N/src/http -I$N/src/http/modules \
-            -I$N/src/http/v2 -I$GITHUB_WORKSPACE/src -I/usr/include"
           status=0
           for src in "$GITHUB_WORKSPACE"/src/*.c; do
             echo "--- clang-tidy: $(basename "$src") ---"
-            # shellcheck disable=SC2086
-            clang-tidy "$src" \
-              --checks='-*,cert-*,clang-analyzer-security.*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling' \
-              --warnings-as-errors='*' \
-              -- $INCLUDES 2>&1 | tee -a clang-tidy.log || status=1
+            clang-tidy "$src" -p "$GITHUB_WORKSPACE" \
+              2>&1 | tee -a clang-tidy.log || status=1
           done
           exit "$status"
-      - name: semgrep (gate)
+      - name: gcc -fanalyzer (advisory)
+        continue-on-error: true
         run: |
-          # --error makes a finding a non-zero exit; without it (and with the
-          # old `|| true`) both findings and a scanner crash produced a green
-          # job, so the advertised gate could not fail. set -o pipefail keeps
-          # `tee` from swallowing that status.
-          set -euo pipefail
-          semgrep scan --error --config p/c --config p/security-audit \
-            "$GITHUB_WORKSPACE/src/" 2>&1 | tee semgrep.log
+          python3 ci/tests/test_fanalyzer_args.py -v
+          bash ci/tools/fanalyzer.sh "$GITHUB_WORKSPACE"
+      - name: Complete first-party Semgrep accounting
+        run: python3 ci/tools/semgrep-first-party.py --output semgrep-first-party.json
+      - name: Online workflow security scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --persona=pedantic --no-progress .github/workflows
+      - name: Dependency advisory sweep (OSV)
+        # Live and fail-closed by design: new advisories block stale pins, and
+        # an OSV outage must not produce false clean evidence.
+        run: python3 ci/tools/check-advisories.py --output advisory-receipt.json
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
@@ -107,5 +124,7 @@ jobs:
           path: |
             ${{ github.workspace }}/flawfinder.log
             ${{ github.workspace }}/clang-tidy.log
-            ${{ github.workspace }}/semgrep.log
+            ${{ github.workspace }}/fanalyzer.log
+            ${{ github.workspace }}/semgrep-first-party.json
+            ${{ github.workspace }}/advisory-receipt.json
           retention-days: 14

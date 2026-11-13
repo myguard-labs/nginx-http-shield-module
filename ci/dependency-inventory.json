@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "description": "Pinned source, build, and CI dependencies with supported OSV advisory queries.",
+  "dependencies": [
+    {
+      "id": "nginx-mainline",
+      "version": "1.31.8",
+      "scope": "runtime-build",
+      "archive_sha256": "0652b760b3b772d2ec17b47c2fc15d9a95e6fe35cd5b877eadc1a62d9bc75af1",
+      "upstream": "https://github.com/nginx/nginx",
+      "upstream_ref": "refs/tags/release-1.31.8",
+      "resolved_commit": "140aa942711868a8daeb95810bc9a81f272ada72",
+      "osv_query": {
+        "commit": "140aa942711868a8daeb95810bc9a81f272ada72"
+      }
+    },
+    {
+      "id": "nginx-stable",
+      "version": "1.30.6",
+      "scope": "compatibility-build",
+      "archive_sha256": "3cf46f5ed7504d460125866b7bea99fb357f31d887e2e63b35503310e9b8b6c8",
+      "upstream": "https://github.com/nginx/nginx",
+      "upstream_ref": "refs/tags/release-1.30.6",
+      "resolved_commit": "fb0e979c6dd63c018958b41eeb844947c5c21264",
+      "osv_query": {
+        "commit": "fb0e979c6dd63c018958b41eeb844947c5c21264"
+      }
+    },
+    {
+      "id": "angie",
+      "version": "1.12.4",
+      "scope": "compatibility-build",
+      "archive_sha256": "b236f152adb543fb6e4a94f271b873cdc0d48d570f86b1bd04435f85843f4527",
+      "upstream": "https://github.com/webserver-llc/angie",
+      "upstream_ref": "refs/tags/Angie-1.12.4",
+      "resolved_commit": "99545ea3646779630168c6589b0196c90d44350a",
+      "osv_query": {
+        "commit": "99545ea3646779630168c6589b0196c90d44350a"
+      }
+    },
+    {
+      "id": "pcre2",
+      "version": "10.49",
+      "scope": "windows-build",
+      "archive_sha256": "929f0b20e62879252a15886b06c89f1edef61a363cbd5826fb041080a5e557ae",
+      "upstream": "https://github.com/PCRE2Project/pcre2",
+      "upstream_ref": "refs/tags/pcre2-10.49",
+      "resolved_commit": "6f9d7c1373262c541324a16a358785b33ef116cf",
+      "osv_query": {
+        "commit": "6f9d7c1373262c541324a16a358785b33ef116cf"
+      }
+    },
+    {
+      "id": "zlib",
+      "version": "1.4",
+      "scope": "windows-build",
+      "archive_sha256": "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584",
+      "upstream": "https://github.com/madler/zlib",
+      "upstream_ref": "refs/tags/v1.4",
+      "resolved_commit": "99623ef7097352da7993ba614161fd6a311e046e",
+      "osv_query": {
+        "commit": "99623ef7097352da7993ba614161fd6a311e046e"
+      }
+    },
+    {
+      "id": "actions-checkout",
+      "version": "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+      "scope": "ci-action",
+      "upstream": "https://github.com/actions/checkout",
+      "resolved_commit": "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+      "osv_query": {
+        "commit": "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"
+      }
+    },
+    {
+      "id": "actions-cache",
+      "version": "0057852bfaa89a56745cba8c7296529d2fc39830",
+      "scope": "ci-action",
+      "upstream": "https://github.com/actions/cache",
+      "resolved_commit": "0057852bfaa89a56745cba8c7296529d2fc39830",
+      "osv_query": {
+        "commit": "0057852bfaa89a56745cba8c7296529d2fc39830"
+      }
+    },
+    {
+      "id": "actions-upload-artifact",
+      "version": "330a01c490aca151604b8cf639adc76d48f6c5d4",
+      "scope": "ci-action",
+      "upstream": "https://github.com/actions/upload-artifact",
+      "resolved_commit": "330a01c490aca151604b8cf639adc76d48f6c5d4",
+      "osv_query": {
+        "commit": "330a01c490aca151604b8cf639adc76d48f6c5d4"
+      }
+    },
+    {
+      "id": "github-codeql-action",
+      "version": "33d7b85da1a04171e211befe2c739303b9a4c066",
+      "scope": "ci-action",
+      "upstream": "https://github.com/github/codeql-action",
+      "resolved_commit": "33d7b85da1a04171e211befe2c739303b9a4c066",
+      "osv_query": {
+        "commit": "33d7b85da1a04171e211befe2c739303b9a4c066"
+      }
+    },
+    {
+      "id": "msys2-setup",
+      "version": "66cd2cce69caa17b53920067426061ca1de3a884",
+      "scope": "ci-action",
+      "upstream": "https://github.com/msys2/setup-msys2",
+      "resolved_commit": "66cd2cce69caa17b53920067426061ca1de3a884",
+      "osv_query": {
+        "commit": "66cd2cce69caa17b53920067426061ca1de3a884"
+      }
+    },
+    {
+      "id": "semgrep",
+      "version": "1.184.0",
+      "scope": "security-tool",
+      "upstream": "https://pypi.org/project/semgrep/",
+      "osv_query": {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "semgrep"
+        },
+        "version": "1.184.0"
+      }
+    },
+    {
+      "id": "zizmor",
+      "version": "1.31.1",
+      "scope": "security-tool",
+      "upstream": "https://pypi.org/project/zizmor/",
+      "osv_query": {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "zizmor"
+        },
+        "version": "1.31.1"
+      }
+    },
+    {
+      "id": "ruff",
+      "version": "0.16.1",
+      "scope": "lint-tool",
+      "upstream": "https://pypi.org/project/ruff/",
+      "osv_query": {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "ruff"
+        },
+        "version": "0.16.1"
+      }
+    },
+    {
+      "id": "pre-commit-hooks",
+      "version": "v6.0.0",
+      "scope": "commit-hook",
+      "upstream": "https://github.com/pre-commit/pre-commit-hooks",
+      "upstream_ref": "refs/tags/v6.0.0",
+      "resolved_commit": "3e8a8703264a2f4a69428a0aa4dcb512790b2c8c",
+      "osv_query": {
+        "commit": "3e8a8703264a2f4a69428a0aa4dcb512790b2c8c"
+      }
+    },
+    {
+      "id": "test-nginx",
+      "version": "0.32",
+      "scope": "test-runtime",
+      "archive_sha256": "8b47ac9d3489ab2289cb2d8bbdbf059878b8fef222b6fe74ad6148e1a280a6dc",
+      "upstream": "https://github.com/openresty/test-nginx",
+      "upstream_ref": "refs/tags/v0.32",
+      "resolved_commit": "5a4937410228e74848d5b636a2738492a8f02a92",
+      "osv_query": {
+        "commit": "5a4937410228e74848d5b636a2738492a8f02a92"
+      }
+    }
+  ],
+  "advisory_dispositions": [
+    {
+      "dependency_id": "pcre2",
+      "advisory_id": "OSV-2026-343",
+      "status": "fixed",
+      "fixed_commit": "ec9c286d5c10cf1c388b58a442ccefded42254fd",
+      "reviewed_commit": "6f9d7c1373262c541324a16a358785b33ef116cf",
+      "reason": "The exact OSV testcase causally reproduces the WRITE-4 heap overflow in pcre2_compile_32 on i386 at the introduced and last-bad revisions, then returns PCRE2_ERROR_PATTERN_TOO_LARGE after the upstream compiler-overflow fix. PCRE2 10.49 contains that fix; all 8-, 16-, and 32-bit code-unit replays pass at the pinned commit. OSV's e19e76ad fixed boundary is an unrelated pcre2grep analyzer cleanup and is not used as evidence.",
+      "evidence": [
+        "https://github.com/PCRE2Project/pcre2/commit/ec9c286d5c10cf1c388b58a442ccefded42254fd",
+        "https://github.com/PCRE2Project/pcre2/security/advisories/GHSA-fmgr-6ggq-9859",
+        "https://oss-fuzz.com/download?testcase_id=6378939999387648"
+      ]
+    }
+  ],
+  "pin_checks": [
+    {
+      "path": ".github/versions.env",
+      "pattern": "(?m)^NGINX_VERSION=([^\\n]+)$",
+      "expected": "1.31.8"
+    },
+    {
+      "path": ".github/versions.env",
+      "pattern": "(?m)^NGINX_VERSION_SHA256=([^\\n]+)$",
+      "expected": "0652b760b3b772d2ec17b47c2fc15d9a95e6fe35cd5b877eadc1a62d9bc75af1"
+    },
+    {
+      "path": ".github/versions.env",
+      "pattern": "(?m)^NGINX_STABLE=([^\\n]+)$",
+      "expected": "1.30.6"
+    },
+    {
+      "path": ".github/versions.env",
+      "pattern": "(?m)^NGINX_STABLE_SHA256=([^\\n]+)$",
+      "expected": "3cf46f5ed7504d460125866b7bea99fb357f31d887e2e63b35503310e9b8b6c8"
+    },
+    {
+      "path": ".github/versions.env",
+      "pattern": "(?m)^ANGIE_VERSION=([^\\n]+)$",
+      "expected": "1.12.4"
+    },
+    {
+      "path": ".github/versions.env",
+      "pattern": "(?m)^ANGIE_VERSION_SHA256=([^\\n]+)$",
+      "expected": "b236f152adb543fb6e4a94f271b873cdc0d48d570f86b1bd04435f85843f4527"
+    },
+    {
+      "path": ".github/workflows/windows-build.yml",
+      "pattern": "(?m)^  PCRE_VERSION: '([^']+)'$",
+      "expected": "10.49"
+    },
+    {
+      "path": ".github/workflows/windows-build.yml",
+      "pattern": "(?m)^  PCRE_SHA256: '([^']+)'$",
+      "expected": "929f0b20e62879252a15886b06c89f1edef61a363cbd5826fb041080a5e557ae"
+    },
+    {
+      "path": ".github/workflows/windows-build.yml",
+      "pattern": "-DPCRE2_CODE_UNIT_WIDTH=([0-9]+)",
+      "expected": "8"
+    },
+    {
+      "path": ".github/workflows/windows-build.yml",
+      "pattern": "(?m)^  ZLIB_VERSION: '([^']+)'$",
+      "expected": "1.4"
+    },
+    {
+      "path": ".github/workflows/windows-build.yml",
+      "pattern": "(?m)^  ZLIB_SHA256: '([^']+)'$",
+      "expected": "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584"
+    },
+    {
+      "path": "ci/linter/install-linters.sh",
+      "pattern": "semgrep==([0-9.]+)",
+      "expected": "1.184.0"
+    },
+    {
+      "path": "ci/linter/install-linters.sh",
+      "pattern": "zizmor==([0-9.]+)",
+      "expected": "1.31.1"
+    },
+    {
+      "path": "ci/linter/install-linters.sh",
+      "pattern": "ruff==([0-9.]+)",
+      "expected": "0.16.1"
+    },
+    {
+      "path": ".pre-commit-config.yaml",
+      "pattern": "(?m)^    rev: (v[0-9.]+)$",
+      "expected": "v6.0.0"
+    },
+    {
+      "path": ".github/workflows/build-test.yml",
+      "pattern": "Test-Nginx-([0-9.]+)\\.tar\\.gz",
+      "expected": "0.32"
+    },
+    {
+      "path": ".github/workflows/build-test.yml",
+      "pattern": "TEST_NGINX_SHA256=\"([0-9a-f]{64})\"",
+      "expected": "8b47ac9d3489ab2289cb2d8bbdbf059878b8fef222b6fe74ad6148e1a280a6dc"
+    },
+    {
+      "path": ".github/workflows/ci-deep.yml",
+      "pattern": "TEST_NGINX_VERSION: \"([0-9.]+)\"",
+      "expected": "0.32"
+    },
+    {
+      "path": ".github/workflows/ci-deep.yml",
+      "pattern": "TEST_NGINX_SHA256: \"([0-9a-f]{64})\"",
+      "expected": "8b47ac9d3489ab2289cb2d8bbdbf059878b8fef222b6fe74ad6148e1a280a6dc"
+    }
+  ]
+}
