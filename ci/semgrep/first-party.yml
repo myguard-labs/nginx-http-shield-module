@@ -13,7 +13,7 @@ rules:
     languages: [generic]
     paths:
       include: ['**/.github/workflows/**', '**/.github/actions/**']
-    pattern-regex: 'uses:\s*["'']?[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@(?![0-9a-f]{40}(?:["'']?\s|$))[A-Za-z0-9_.-]+'
+    pattern-regex: 'uses:\s*["'']?[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@(?![0-9a-f]{40}["'']?(?:[\s,}\]]|$))[A-Za-z0-9_.-]+'
 
   - id: first-party-python-shell-true
     message: subprocess shell=True requires a dedicated, reviewed wrapper.

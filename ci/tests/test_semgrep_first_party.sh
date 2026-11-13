@@ -53,15 +53,41 @@ else:
 PY
 
 mkdir -p "$TMP/.github/workflows"
-printf '%s\n' 'jobs: {test: {steps: [{uses: "owner/action@v1"}]}}' \
-    >"$TMP/.github/workflows/quoted.yml"
-if (cd "$TMP" && semgrep scan --config "$ROOT/ci/semgrep/first-party.yml" --error --json \
-    --metrics=off .github/workflows/quoted.yml >"$TMP/quoted.json" 2>/dev/null); then
-    echo 'quoted unpinned-action control did not fire' >&2
+SHA40='0123456789abcdef0123456789abcdef01234567'
+{
+    printf '%s\n' \
+        'jobs:' \
+        '  block:' \
+        '    steps:' \
+        "      - uses: owner/action@$SHA40" \
+        "      - uses: \"owner/action@$SHA40\"" \
+        "      - uses: owner/action/subpath@$SHA40" \
+        "  flow: {steps: [{uses: \"owner/action@$SHA40\"}]}" \
+        "  nested: {steps: [{uses: owner/action@$SHA40, with: {key: value}}]}" \
+        "  sequence: [uses: owner/action@$SHA40]"
+} >"$TMP/.github/workflows/pinned.yml"
+if ! (cd "$TMP" && semgrep scan --config "$ROOT/ci/semgrep/first-party.yml" --error --json \
+    --metrics=off .github/workflows/pinned.yml >"$TMP/pinned.json" 2>/dev/null); then
+    echo 'pinned-action syntax control produced a finding' >&2
+    jq -r '.results[] | [.path, .start.line, .check_id] | @tsv' "$TMP/pinned.json" >&2
     exit 1
 fi
-jq -e '(.errors | length) == 0 and any(.results[]; .check_id | endswith("first-party-unpinned-action"))' \
-    "$TMP/quoted.json" >/dev/null
+jq -e '(.errors | length) == 0 and (.results | length) == 0' "$TMP/pinned.json" >/dev/null
+
+{
+    printf '%s\n' \
+        'jobs: {tag: {steps: [{uses: "owner/action@v1"}]}}' \
+        'jobs: {short: {steps: [{uses: owner/action@0123456789abcdef}]}}' \
+        "jobs: {long: {steps: [{uses: owner/action@${SHA40}0}]}}"
+} >"$TMP/.github/workflows/unpinned.yml"
+if (cd "$TMP" && semgrep scan --config "$ROOT/ci/semgrep/first-party.yml" --error --json \
+    --metrics=off .github/workflows/unpinned.yml >"$TMP/unpinned.json" 2>/dev/null); then
+    echo 'unpinned-action boundary controls did not fire' >&2
+    exit 1
+fi
+jq -e '(.errors | length) == 0 and (.results | length) == 3 and
+    all(.results[]; .check_id | endswith("first-party-unpinned-action"))' \
+    "$TMP/unpinned.json" >/dev/null
 
 printf '%s\n' 'curl -fsS -o archive.tar.gz https://invalid.example/archive.tar.gz' >"$TMP/safe.sh"
 semgrep scan --config "$ROOT/ci/semgrep/first-party.yml" --error \
