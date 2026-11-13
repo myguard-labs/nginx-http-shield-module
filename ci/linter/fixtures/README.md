@@ -18,7 +18,7 @@ tree was ported from, `ci/linter/lint-ci-runners.sh` here wraps the existing
 encodes a bypass that valid YAML used to walk straight through:
 
 | Fixture | Encodes |
-|---|---|
+| --- | --- |
 | `clean/` | a plain, correct workflow — `ports` and `docs` both green |
 | `bypass-yaml-extension/` | `.yaml`, invisible while `workflows()` globbed `*.yml` -- `docs` |
 | `bypass-commented-job-key/` | `runtime:  # comment`, which emptied the job list -- `ports` |

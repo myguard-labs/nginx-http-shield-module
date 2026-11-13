@@ -9,9 +9,10 @@
 #   # history (and briefly in `ps`).
 #   sudo install -m600 /dev/null /etc/shield-abuseipdb.env
 #   sudoedit /etc/shield-abuseipdb.env     # add the line: ABUSEIPDB_API_KEY=...
-#   # Grant the DynamicUser read access to just the shield log via an ACL
-#   # (avoids the broad `adm` group, which can read every system log):
-#   sudo setfacl -m u:shield-reporter:r /var/log/nginx/shield.json   # see note below
+#   # Grant access to just the shield log. With the shipped DynamicUser setting,
+#   # use a dedicated group shared by nginx and SupplementaryGroups below.
+#   # For a per-user ACL instead, disable DynamicUser and create a fixed system
+#   # user first. Do not add this service to the broad `adm` group.
 #   sudo systemctl daemon-reload && sudo systemctl enable --now shield-abuseipdb-reporter
 #
 # The key is NEVER on the command line (visible in `ps`) or in this unit --

@@ -31,7 +31,7 @@ whether a handler intentionally copied a client value into a privileged name.
 It checks that final value regardless of its source. An attacker choosing an
 already approved value receives no additional privilege under this contract.
 
-The no-false-positive justification is exact set membership: a legitimate
+The acceptance argument is exact set membership: a legitimate
 request is one with a declared final script, its declared complete privileged
 vectors, and the supported transport described below. Every such combination
 passes regardless of ordinary header, query or body content. Tests are evidence
