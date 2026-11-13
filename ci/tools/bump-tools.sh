@@ -9,20 +9,11 @@
 #
 # WHY THIS IS NOT A ONE-LINE sed
 #
-# The semgrep pin appears as a workflow `env:` in two files that must agree:
-# .github/workflows/security-scanners.yml (the PR-time scanner gate) and
-# .github/workflows/ci-deep.yml (the monthly/dispatch exhaustive run). They
-# are pinned to the same version ON PURPOSE -- the whole point of the pin is
-# that both gates scan with the identical tool. Bumping one and missing the
-# other does not fail loudly; it just means the two jobs quietly disagree
-# about what "clean" means, which is the exact failure the pin exists to
-# prevent. So this rewrites every occurrence repo-wide and asserts afterwards
-# that one version is left.
-#
-# Unlike the skeleton module this was ported from, shield has no
-# ci/linter/install-linters.sh or ci/linter/lint-c.sh (there is no ci/linter/
-# directory at all) and no ruff pin anywhere -- both were dropped from TOOLS[]
-# below rather than left as a sed that silently matches nothing.
+# The Semgrep pin appears as a workflow `env:` in two files and as a direct
+# `semgrep==` requirement in the local installer and lint hint. All four must
+# agree or local and remote checks use different rule sets. This rewrites both
+# forms and asserts that no stale pin remains, including when PyPI already
+# reports the listed version as newest.
 #
 # Requires: curl, python3. Network: pypi.org.
 
@@ -41,8 +32,14 @@ FAILED=0
 # Package name -> the files allowed to carry its pin. Listing them rather than
 # globbing keeps a stray match in a .md or a lockfile from being rewritten.
 TOOLS=(
-    "semgrep:.github/workflows/security-scanners.yml .github/workflows/ci-deep.yml"
+    "semgrep:.github/workflows/security-scanners.yml .github/workflows/ci-deep.yml ci/linter/install-linters.sh ci/linter/lint-c.sh"
 )
+
+pin_versions() {
+    grep -hoE 'SEMGREP_VERSION: "[0-9]+(\.[0-9]+)*"|semgrep==[0-9]+(\.[0-9]+)*' "$@" |
+        sed -E 's/.*(SEMGREP_VERSION: "|semgrep==)([0-9]+(\.[0-9]+)*).*/\2/' |
+        sort -u
+}
 
 newest_on_pypi() {
     # /json returns every release; info.version is the newest NON-prerelease,
@@ -75,16 +72,21 @@ for entry in "${TOOLS[@]}"; do
     done
 
     # Collect the pin from EVERY listed file BEFORE any up-to-date shortcut.
-    # The pin here is a workflow env var (SEMGREP_VERSION: "1.184.0"), not a
-    # bare `pkg==ver` literal, so match the quoted version string. Reading only
-    # the first file (the old behavior) let a later file's stale pin hide
-    # behind an early exit -- see F2 in PR review.
+    # Reading only the first file lets a later stale pin hide behind an early
+    # exit. Each listed file must contain exactly one version.
     cur=""
     disagree=0
     for f in $files; do
-        v="$(grep -hoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" "$f" | head -1 |
-            sed -E 's/.*"([0-9.]+)"/\1/' || true)"
-        [ -n "$v" ] || continue
+        v="$(pin_versions "$f" || true)"
+        if [ -z "$v" ]; then
+            echo "FAILED ${pkg}: no pin found in listed file '${f}'" >&2
+            FAILED=1
+            continue 2
+        fi
+        if [ "$(printf '%s\n' "$v" | wc -l)" -ne 1 ]; then
+            disagree=1
+            continue
+        fi
         if [ -z "$cur" ]; then
             cur="$v"
         elif [ "$v" != "$cur" ]; then
@@ -92,15 +94,14 @@ for entry in "${TOOLS[@]}"; do
         fi
     done
     if [ -z "$cur" ]; then
-        echo "FAILED ${pkg}: no SEMGREP_VERSION pin found in any of its listed files" >&2
+        echo "FAILED ${pkg}: no pin found in its listed files" >&2
         FAILED=1
         continue
     fi
     if [ "$disagree" = 1 ]; then
         echo "FATAL: ${pkg} pins disagree across its listed files BEFORE any bump:" >&2
         for f in $files; do
-            v="$(grep -hoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" "$f" | head -1 |
-                sed -E 's/.*"([0-9.]+)"/\1/' || true)"
+            v="$(pin_versions "$f" || true)"
             [ -n "$v" ] && echo "  $f: $v" >&2
         done
         exit 1
@@ -114,17 +115,19 @@ for entry in "${TOOLS[@]}"; do
 
     if [ "$new" = "$cur" ]; then
         echo "${pkg}: already newest (${cur})"
-        continue
+    else
+        echo "bump ${pkg}: ${cur} -> ${new}"
+        CHANGED=1
+        if [ "$DRY_RUN" = 0 ]; then
+            for f in $files; do
+                perl -pi -e \
+                    "s{SEMGREP_VERSION: \"\Q${cur}\E\"}{SEMGREP_VERSION: \"${new}\"}g; s{semgrep==\Q${cur}\E}{semgrep==${new}}g" \
+                    "$f"
+            done
+        fi
     fi
 
-    echo "bump ${pkg}: ${cur} -> ${new}"
-    CHANGED=1
     [ "$DRY_RUN" = 1 ] && continue
-
-    for f in $files; do
-        [ -f "$f" ] || continue
-        perl -pi -e "s{SEMGREP_VERSION: \"\Q${cur}\E\"}{SEMGREP_VERSION: \"${new}\"}g" "$f"
-    done
 
     # The sync IS the feature -- assert it rather than assume the loop above
     # covered every copy. A pin that reappears somewhere unlisted must fail the
@@ -133,11 +136,11 @@ for entry in "${TOOLS[@]}"; do
     # ci/tools/bump-{tools,actions,versions}.sh are excluded because they are
     # ABOUT pins: any version literal in them is prose in a comment, not a pin
     # to keep in step.
-    stray="$(grep -rhoE "SEMGREP_VERSION: \"[0-9]+(\.[0-9]+)*\"" \
+    stray="$(grep -rhoE 'SEMGREP_VERSION: "[0-9]+(\.[0-9]+)*"|semgrep==[0-9]+(\.[0-9]+)*' \
         --include='*.yml' --include='*.yaml' --include='*.sh' \
         --exclude='bump-tools.sh' --exclude='bump-actions.sh' \
         --exclude='bump-versions.sh' \
-        .github ci 2>/dev/null | sort -u | grep -v "\"${new}\"\$" || true)"
+        .github ci 2>/dev/null | pin_versions /dev/stdin | grep -vx "${new}" || true)"
     if [ -n "$stray" ]; then
         echo "FATAL: ${pkg} pins disagree after bump:" >&2
         printf '  %s\n' "$stray" >&2
