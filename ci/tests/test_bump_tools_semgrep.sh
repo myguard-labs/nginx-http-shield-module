@@ -20,6 +20,8 @@ make_fixture() {
         mkdir -p "$fixture/$(dirname "$file")"
         cp "$root/$file" "$fixture/$file"
     done
+    git -C "$fixture" init -q
+    git -C "$fixture" add .
     cat >"$fixture/bin/curl" <<'SCRIPT'
 #!/usr/bin/env bash
 printf '%s\n' '{"info":{"version":"9.9.9"}}'
@@ -89,5 +91,32 @@ if PATH="$stray/bin:$PATH" "$stray/ci/tools/bump-tools.sh" >"$stray/out" 2>&1; t
     exit 1
 fi
 grep -q 'pins disagree after bump' "$stray/out"
+
+nogit="$tmp/nogit"
+make_fixture "$nogit"
+mv "$nogit/.git" "$tmp/nogit-git"
+if GIT_CEILING_DIRECTORIES="$tmp" PATH="$nogit/bin:$PATH" \
+    "$nogit/ci/tools/bump-tools.sh" >"$nogit/out" 2>&1; then
+    echo "stray-pin scan without git metadata unexpectedly passed" >&2
+    exit 1
+fi
+grep -q 'stray-pin ownership scan could not run' "$nogit/out"
+
+gitlink="$tmp/gitlink"
+make_fixture "$gitlink"
+mkdir -p "$gitlink/ci/t/harness/.github/workflows"
+gitlink_pin=1.26.1
+printf '%s%s%s\n' 'env: {ZIZMOR_VERSION: "' "$gitlink_pin" '"}' \
+    >"$gitlink/ci/t/harness/.github/workflows/ci.yml"
+git -C "$gitlink/ci/t/harness" init -q
+git -C "$gitlink/ci/t/harness" config user.name test
+git -C "$gitlink/ci/t/harness" config user.email test@example.invalid
+git -C "$gitlink/ci/t/harness" add .
+git -C "$gitlink/ci/t/harness" commit -qm fixture
+git -C "$gitlink" add ci/t/harness 2>/dev/null
+PATH="$gitlink/bin:$PATH" "$gitlink/ci/tools/bump-tools.sh" >"$gitlink/out"
+grep -q 'TOOLS_CHANGED=1' "$gitlink/out"
+grep -q "ZIZMOR_VERSION: \"${gitlink_pin}\"" \
+    "$gitlink/ci/t/harness/.github/workflows/ci.yml"
 
 printf 'ok   tool bumps update Semgrep/zizmor/Ruff pins and reject missing or stray copies\n'

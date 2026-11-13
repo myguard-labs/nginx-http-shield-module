@@ -24,6 +24,9 @@ DRY_RUN=0
 
 cd "$(dirname "$0")/../.."
 
+SCAN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/shield-bump-tools.XXXXXX")"
+trap 'rm -rf "$SCAN_TMP"' EXIT
+
 CHANGED=0
 # See bump-actions.sh: "could not check" must never be reported as "up to
 # date", or an outage/rename leaves the pins rotting behind a green job.
@@ -181,11 +184,23 @@ PY
     # ABOUT pins: any version literal in them is prose in a comment, not a pin
     # to keep in step.
     env_name="${pkg^^}_VERSION"
-    stray="$(grep -rhoE "${env_name}: \"[0-9]+(\.[0-9]+)*\"|${pkg}==[0-9]+(\.[0-9]+)*" \
-        --include='*.yml' --include='*.yaml' --include='*.sh' \
-        --exclude='bump-tools.sh' --exclude='bump-actions.sh' \
-        --exclude='bump-versions.sh' \
-        .github ci 2>/dev/null | pin_versions "$pkg" /dev/stdin | grep -vx "${new}" || true)"
+    # git grep limits this ownership check to Shield's tracked files. A plain
+    # recursive grep crosses initialized gitlinks such as ci/t/harness and
+    # incorrectly treats that independently owned repository's pins as ours.
+    scan_rc=0
+    pin_matches="$(git grep --untracked -h -o -E \
+        "${env_name}: \"[0-9]+(\.[0-9]+)*\"|${pkg}==[0-9]+(\.[0-9]+)*" -- \
+        ':(glob).github/**/*.yml' ':(glob).github/**/*.yaml' \
+        ':(glob)ci/**/*.sh' ':(glob)ci/**/*.yml' ':(glob)ci/**/*.yaml' \
+        ':!ci/tools/bump-tools.sh' ':!ci/tools/bump-actions.sh' \
+        ':!ci/tools/bump-versions.sh' 2>"$SCAN_TMP/git-grep.stderr")" || scan_rc=$?
+    if [ "$scan_rc" -gt 1 ]; then
+        echo "FATAL: ${pkg} stray-pin ownership scan could not run:" >&2
+        sed 's/^/  /' "$SCAN_TMP/git-grep.stderr" >&2
+        exit 1
+    fi
+    stray="$(printf '%s\n' "$pin_matches" |
+        pin_versions "$pkg" /dev/stdin | grep -vx "${new}" || true)"
     if [ -n "$stray" ]; then
         echo "FATAL: ${pkg} pins disagree after bump:" >&2
         printf '  %s\n' "$stray" >&2
