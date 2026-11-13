@@ -114,7 +114,7 @@
     },
     {
       "id": "semgrep",
-      "version": "1.184.0",
+      "version": "1.185.0",
       "scope": "security-tool",
       "upstream": "https://pypi.org/project/semgrep/",
       "osv_query": {
@@ -122,12 +122,12 @@
           "ecosystem": "PyPI",
           "name": "semgrep"
         },
-        "version": "1.184.0"
+        "version": "1.185.0"
       }
     },
     {
       "id": "zizmor",
-      "version": "1.31.1",
+      "version": "1.32.0",
       "scope": "security-tool",
       "upstream": "https://pypi.org/project/zizmor/",
       "osv_query": {
@@ -135,12 +135,12 @@
           "ecosystem": "PyPI",
           "name": "zizmor"
         },
-        "version": "1.31.1"
+        "version": "1.32.0"
       }
     },
     {
       "id": "ruff",
-      "version": "0.16.1",
+      "version": "0.17.5",
       "scope": "lint-tool",
       "upstream": "https://pypi.org/project/ruff/",
       "osv_query": {
@@ -148,7 +148,7 @@
           "ecosystem": "PyPI",
           "name": "ruff"
         },
-        "version": "0.16.1"
+        "version": "0.17.5"
       }
     },
     {
@@ -249,17 +249,17 @@
     {
       "path": "ci/linter/install-linters.sh",
       "pattern": "semgrep==([0-9.]+)",
-      "expected": "1.184.0"
+      "expected": "1.185.0"
     },
     {
       "path": "ci/linter/install-linters.sh",
       "pattern": "zizmor==([0-9.]+)",
-      "expected": "1.31.1"
+      "expected": "1.32.0"
     },
     {
       "path": "ci/linter/install-linters.sh",
       "pattern": "ruff==([0-9.]+)",
-      "expected": "0.16.1"
+      "expected": "0.17.5"
     },
     {
       "path": ".pre-commit-config.yaml",

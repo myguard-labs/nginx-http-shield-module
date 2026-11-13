@@ -1,4 +1,4 @@
-# sync-sha: b3dc4d6ceceb31f365463ed3979bf11656e7ffdb5bff871e242b14ecdc17290c
+# sync-sha: cfcfe4a988b8dcbc25681cd009e106970fbc47a7a399858eadebb6a64deaadc1
 name: Security scanners
 
 # Static/security scanners gate on every PR/push — flawfinder (gate on >=4),
@@ -13,8 +13,8 @@ name: Security scanners
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Pinned so a scanner release cannot silently change the gate.
-  SEMGREP_VERSION: "1.184.0"
-  ZIZMOR_VERSION: "1.31.1"
+  SEMGREP_VERSION: "1.185.0"
+  ZIZMOR_VERSION: "1.32.0"
 
 on:
   workflow_dispatch: {}

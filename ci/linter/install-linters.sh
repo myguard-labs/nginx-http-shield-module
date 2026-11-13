@@ -72,13 +72,13 @@ PY_MODULES=(
 # bare `pip3 install` fails on Debian 12+ and `--break-system-packages` is a
 # worse answer than an isolated venv per tool.
 PIPX_TOOLS=(
-    "ruff:ruff==0.16.1" # Python lint + format check, pinned:
+    "ruff:ruff==0.17.5" # Python lint + format check, pinned:
     # an unpinned ruff changes findings under
     # you and local stops matching CI, same
     # reasoning as the semgrep pin below.
-    "zizmor:zizmor==1.31.1" # GitHub Actions security audit, pinned so local,
+    "zizmor:zizmor==1.32.0" # GitHub Actions security audit, pinned so local,
     # PR, and deep scans use the same rules.
-    "semgrep:semgrep==1.184.0" # C, pinned to the CI version on purpose:
+    "semgrep:semgrep==1.185.0" # C, pinned to the CI version on purpose:
     # an unpinned semgrep changes findings
     # under you and local stops matching CI.
     "codespell:codespell" # ci/linter/lint-spelling.sh. Unpinned: the
