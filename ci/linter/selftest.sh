@@ -13,8 +13,8 @@
 # Usage:  ci/linter/selftest.sh
 # Exit:   0 all controls held, 1 one or more did not.
 #
-# Runs in about a second: no case invokes a real checker (LINT_ONLY values are
-# either bogus or rejected before dispatch), so no linter needs to be installed.
+# Most cases avoid real checkers. The shell-format parity control invokes both
+# tools because it guards the exact local/remote seam.
 #
 # Extend: add a case() line. Keep each case asserting a specific exit status,
 # and prefer a case where the OLD, broken behaviour would have passed.
@@ -219,6 +219,8 @@ case_ 0 "bump dry-run propagates failures and change markers" \
     bash ci/tests/test_bump_versions_dry_run.sh
 case_ 0 "curl secret headers stay out of argv" \
     bash ci/tests/test_curl_secret_header.sh
+case_ 0 "shell lint rejects formatter drift and accepts formatted input" \
+    bash ci/tests/test_lint_sh_format.sh
 case_ 0 "scan fuzz corpus uses the current nine-byte layout" \
     python3 ci/tests/test_fuzz_seed_layout.py
 case_ 0 "directive docs have positive and negative controls" \

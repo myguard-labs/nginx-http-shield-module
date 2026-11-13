@@ -67,7 +67,7 @@ pre-commit run --hook-stage pre-commit
 rc=$?
 if [ "$rc" -ne 0 ]; then
     echo "pre-commit: .pre-commit-config.yaml hooks failed -- fix, or commit" \
-         "with --no-verify. Fixer hooks may have rewritten files; re-stage." >&2
+        "with --no-verify. Fixer hooks may have rewritten files; re-stage." >&2
     exit "$rc"
 fi
 

@@ -11,7 +11,7 @@ Important entry points:
 - `lint-c.sh` and `lint-nginx.sh` — C security and nginx-style checks;
 - `lint-directives.sh` — source-to-README directive parity;
 - `lint-ci-*.sh` — workflow cadence, runner trust, port, and docs policy;
-- language checkers — ShellCheck, Ruff, Perl::Critic, YAML/actionlint/zizmor,
+- language checkers — ShellCheck/shfmt, Ruff, Perl::Critic, YAML/actionlint/zizmor,
   codespell, and generated-asset drift.
 
 Run:

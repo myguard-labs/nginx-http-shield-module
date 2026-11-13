@@ -37,11 +37,20 @@ BUILD_DIR="${1:-${GITHUB_WORKSPACE:-.}}"
 DB="$BUILD_DIR/compile_commands.json"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "${GITHUB_WORKSPACE:-.}")"
 
-command -v gcc >/dev/null || { echo "fanalyzer: gcc missing from PATH" >&2; exit 2; }
-command -v python3 >/dev/null || { echo "fanalyzer: python3 missing from PATH" >&2; exit 2; }
+command -v gcc >/dev/null || {
+    echo "fanalyzer: gcc missing from PATH" >&2
+    exit 2
+}
+command -v python3 >/dev/null || {
+    echo "fanalyzer: python3 missing from PATH" >&2
+    exit 2
+}
 # A missing database is a broken caller, not a clean run: exit 2 so it cannot be
 # mistaken for "analysed everything, found nothing".
-[ -f "$DB" ] || { echo "fanalyzer: no compile_commands.json at $DB" >&2; exit 2; }
+[ -f "$DB" ] || {
+    echo "fanalyzer: no compile_commands.json at $DB" >&2
+    exit 2
+}
 
 : >fanalyzer.log
 status=0
@@ -56,8 +65,7 @@ for src in "$ROOT"/src/*.c; do
     # compile argument survive exactly; command substitution cannot carry NUL.
     entry_file="$tmpdir/entry"
     if ! DB="$DB" SRC="$src" python3 "$ROOT/ci/tools/fanalyzer_args.py" \
-        >"$entry_file"
-    then
+        >"$entry_file"; then
         echo "fanalyzer: failed to read compile_commands entry for $src" >&2
         status=1
         continue
@@ -89,8 +97,8 @@ for src in "$ROOT"/src/*.c; do
     # a finding. A non-zero gcc exit still counts too -- that is a hard compile
     # error, which is a broken replay and must not read as clean.
     out=""
-    out="$( ( cd "$dir" && gcc -fanalyzer -c "${args[@]}" \
-              -o /tmp/fanalyzer.o ) 2>&1 )" || status=1
+    out="$( (cd "$dir" && gcc -fanalyzer -c "${args[@]}" \
+        -o /tmp/fanalyzer.o) 2>&1)" || status=1
     printf '%s\n' "$out" | tee -a fanalyzer.log
     case "$out" in
         *'[-Wanalyzer-'*) status=1 ;;

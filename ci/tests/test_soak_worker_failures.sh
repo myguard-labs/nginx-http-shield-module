@@ -41,7 +41,11 @@ python3 -m py_compile "$tmp/nginx"
 export SOAK_CURL="$tmp/curl" SOAK_FAKE_COUNTER="$tmp/count"
 rc=0
 RANDOM=1 bash "$root/ci/tools/soak.sh" "$tmp/nginx" 2 1 >"$tmp/out" 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || { cat "$tmp/out"; echo "soak accepted a failed worker" >&2; exit 1; }
+[ "$rc" -ne 0 ] || {
+    cat "$tmp/out"
+    echo "soak accepted a failed worker" >&2
+    exit 1
+}
 grep -q 'load worker(s) saw a curl transport failure' "$tmp/out"
 if grep -q 'no attack was blocked\|no benign request passed' "$tmp/out"; then
     cat "$tmp/out"

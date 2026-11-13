@@ -44,6 +44,7 @@ SUDO=""
 # tool<TAB>apt package -- checked with command -v <tool>
 APT_TOOLS=(
     "shellcheck:shellcheck" # sh/bash
+    "shfmt:shfmt"           # sh/bash formatting parity with build-test.yml
     "cppcheck:cppcheck"     # C
     "flawfinder:flawfinder" # C, risky-API scan
     "yamllint:yamllint"     # YAML
