@@ -2254,6 +2254,12 @@ ngx_http_shield_allow(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 break;
             }
         }
+        /* nginx also accepts a single leading colon as an IPv6 separator. */
+        if (value[i].len != 0 && value[i].data[0] == ':'
+            && (value[i].len == 1 || value[i].data[1] != ':'))
+        {
+            rc = NGX_ERROR;
+        }
         if (rc != NGX_ERROR) {
             rc = ngx_ptocidr(&value[i], cidr);
         }

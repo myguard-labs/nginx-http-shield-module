@@ -67,6 +67,25 @@ EMPTY_OCTET_ADDRESSES = [
 ]
 
 
+# A leading colon must introduce "::", even before a valid IPv6 address.
+SINGLE_LEADING_COLON_ADDRESSES = [
+    ":2001:db8:0:0:0:0:0:1",
+    ":2001:db8:0:0:0:0:0:1/128",
+    ":2001:db8:0:0:0:0:0:1/64",
+    ":2001:db8:0:0:0:0:0:1/0",
+    ":2001:db8::1",
+    ":2001:db8::1/128",
+    ":2001:db8::1/64",
+    ":2001:db8::1/0",
+    ":1:2:3:4:5:6:7:8",
+    ":0:0:0:0:0:0:0:1",
+    ":0:0:0:0:0:ffff:192.0.2.1",
+    ":0:0:0:0:0:ffff:192.0.2.1/128",
+    ":0:0:0:0:0:ffff:192.0.2.1/64",
+    ":0:0:0:0:0:ffff:192.0.2.1/0",
+]
+
+
 def request(port, path, *, source="127.0.0.1", headers=None, body=None, unix=None):
     """Complete each response before returning; use a fresh connection per probe."""
     connection = http.client.HTTPConnection(
@@ -121,6 +140,9 @@ def config_controls(binary, module, output):
     valid = [
         "192.0.2.10",
         "192.0.2.0/24",
+        "2001:db8:0:0:0:0:0:1",
+        "::1",
+        "0:0:0:0:0:ffff:192.0.2.10",
         "2001:db8::1",
         "2001:db8::/32",
         "0:0:1::/48",  # Nonzero second word in nginx's V4MAPPED guard.
@@ -141,7 +163,8 @@ def config_controls(binary, module, output):
         ("shield_allow 2001:db8::7/32;", True, "low address bits"),
         ("shield_allow 192.0.2.1; shield_allow 2001:db8::1;", True, ""),
     ]
-    invalid = EMPTY_OCTET_ADDRESSES + [
+    invalid = EMPTY_OCTET_ADDRESSES + SINGLE_LEADING_COLON_ADDRESSES
+    invalid += [
         "",
         "all",
         "localhost",
@@ -156,6 +179,9 @@ def config_controls(binary, module, output):
         "192.0.2.1/24/1",
         "2001:db8::1/129",
         "2001:db8:::1",
+        ":",
+        ":/0",
+        ":::",
         "off 192.0.2.1",
         "192.0.2.1 off",
         "off off",
