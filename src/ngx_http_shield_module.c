@@ -80,6 +80,7 @@ typedef struct {
 
 typedef struct {
     ngx_uint_t   mode;        /* OFF / DETECT / BLOCK                        */
+    ngx_array_t *allow_cidrs; /* UNSET = inherit; NULL = explicit off       */
     ngx_uint_t   cve;         /* opt-in application policies                */
     ngx_flag_t   gzip;        /* opt-in decoded gzip inspection             */
     size_t       max_encoded_body; /* compressed input inspection budget   */
@@ -119,6 +120,10 @@ typedef struct {
 
 
 static ngx_int_t ngx_http_shield_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_shield_allowlisted(ngx_http_request_t *r,
+    ngx_array_t *cidrs);
+static char *ngx_http_shield_allow(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 static void ngx_http_shield_body_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_shield_request_marker(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
@@ -310,6 +315,13 @@ static ngx_command_t  ngx_http_shield_commands[] = {
       0,
       NULL },
 
+    { ngx_string("shield_allow"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      ngx_http_shield_allow,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
     { ngx_string("shield_cve"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_http_shield_cve,
@@ -465,6 +477,31 @@ ngx_http_shield_stats_ctx(ngx_http_request_t *r)
 }
 
 
+/* Match only nginx's effective connection IP. Configuration owns the immutable
+ * CIDRs for this cycle; matching borrows them without allocation or locks. */
+static ngx_int_t
+ngx_http_shield_allowlisted(ngx_http_request_t *r, ngx_array_t *cidrs)
+{
+    struct sockaddr *sa;
+
+    if (cidrs == NULL || r->connection->sockaddr == NULL) {
+        return 0;
+    }
+
+    sa = r->connection->sockaddr;
+    switch (sa->sa_family) {
+    case AF_INET:
+#if (NGX_HAVE_INET6)
+    case AF_INET6:
+#endif
+        return ngx_cidr_match(sa, cidrs) == NGX_OK;
+
+    default:
+        return 0;
+    }
+}
+
+
 static ngx_int_t
 ngx_http_shield_handler(ngx_http_request_t *r)
 {
@@ -481,6 +518,10 @@ ngx_http_shield_handler(ngx_http_request_t *r)
     slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
 
     if (slcf->mode == NGX_HTTP_SHIELD_OFF) {
+        return NGX_DECLINED;
+    }
+
+    if (ngx_http_shield_allowlisted(r, slcf->allow_cidrs)) {
         return NGX_DECLINED;
     }
 
@@ -2033,6 +2074,7 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     }
 
     slcf->mode = NGX_CONF_UNSET_UINT;
+    slcf->allow_cidrs = NGX_CONF_UNSET_PTR;
     slcf->cve = NGX_CONF_UNSET_UINT;
     slcf->gzip = NGX_CONF_UNSET;
     slcf->max_encoded_body = NGX_CONF_UNSET_SIZE;
@@ -2067,6 +2109,7 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_shield_loc_conf_t  *conf = child;
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode, NGX_HTTP_SHIELD_OFF);
+    ngx_conf_merge_ptr_value(conf->allow_cidrs, prev->allow_cidrs, NULL);
     ngx_conf_merge_uint_value(conf->cve, prev->cve, 0);
     ngx_conf_merge_value(conf->gzip, prev->gzip, 0);
     ngx_conf_merge_size_value(conf->max_encoded_body, prev->max_encoded_body,
@@ -2139,6 +2182,112 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             conf->ban_key = prev->ban_key;
             conf->ban_trusted = prev->ban_trusted;
         }
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+/* A local list replaces its parent; repeated local declarations append.
+ * NULL is an explicit clear and cannot be mixed with local addresses. */
+static char *
+ngx_http_shield_allow(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_shield_loc_conf_t *slcf = conf;
+    ngx_str_t                 *value;
+    ngx_cidr_t                *cidr;
+    ngx_uint_t                 i, j;
+    ngx_int_t                  rc;
+#if (NGX_HAVE_INET6)
+    in_addr_t                  addr, mask;
+#endif
+
+    (void) cmd;
+    value = cf->args->elts;
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        if (value[i].len == 3 && ngx_strncmp(value[i].data, "off", 3) == 0) {
+            if (cf->args->nelts != 2
+                || slcf->allow_cidrs != NGX_CONF_UNSET_PTR)
+            {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "shield_allow off must be used alone");
+                return NGX_CONF_ERROR;
+            }
+            slcf->allow_cidrs = NULL;
+            return NGX_CONF_OK;
+        }
+    }
+
+    if (slcf->allow_cidrs == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "shield_allow addresses cannot follow off");
+        return NGX_CONF_ERROR;
+    }
+
+    if (slcf->allow_cidrs == NGX_CONF_UNSET_PTR) {
+        slcf->allow_cidrs = ngx_array_create(cf->pool, cf->args->nelts - 1,
+                                           sizeof(ngx_cidr_t));
+        if (slcf->allow_cidrs == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        cidr = ngx_array_push(slcf->allow_cidrs);
+        if (cidr == NULL) {
+            return NGX_CONF_ERROR;
+        }
+        /* nginx permits empty IPv4 octets, including dotted IPv6 tails.
+         * Require a decimal digit on both sides of every address dot; leave
+         * prefix validation and network normalization to ngx_ptocidr. */
+        rc = NGX_OK;
+        for (j = 0; j < value[i].len && value[i].data[j] != '/'; j++) {
+            if (value[i].data[j] == '.'
+                && (j == 0 || value[i].data[j - 1] < '0'
+                    || value[i].data[j - 1] > '9'
+                    || j + 1 == value[i].len
+                    || value[i].data[j + 1] < '0'
+                    || value[i].data[j + 1] > '9'))
+            {
+                rc = NGX_ERROR;
+                break;
+            }
+        }
+        /* nginx also accepts a single leading colon as an IPv6 separator. */
+        if (value[i].len != 0 && value[i].data[0] == ':'
+            && (value[i].len == 1 || value[i].data[1] != ':'))
+        {
+            rc = NGX_ERROR;
+        }
+        if (rc != NGX_ERROR) {
+            rc = ngx_ptocidr(&value[i], cidr);
+        }
+        if (rc == NGX_ERROR) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid shield_allow address \"%V\"",
+                               &value[i]);
+            return NGX_CONF_ERROR;
+        }
+        if (rc == NGX_DONE) {
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                               "low address bits of \"%V\" are meaningless",
+                               &value[i]);
+        }
+#if (NGX_HAVE_INET6)
+        /* ngx_cidr_match treats mapped client sockets as IPv4. After network
+         * normalization V4MAPPED implies /96 or longer: store those lists in
+         * the same family. Broader IPv6 networks keep nginx's semantics. */
+        if (cidr->family == AF_INET6
+            && IN6_IS_ADDR_V4MAPPED(&cidr->u.in6.addr))
+        {
+            ngx_memcpy(&addr, &cidr->u.in6.addr.s6_addr[12], sizeof(addr));
+            ngx_memcpy(&mask, &cidr->u.in6.mask.s6_addr[12], sizeof(mask));
+            cidr->family = AF_INET;
+            cidr->u.in.addr = addr;
+            cidr->u.in.mask = mask;
+        }
+#endif
     }
 
     return NGX_CONF_OK;

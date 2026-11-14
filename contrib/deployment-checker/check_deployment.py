@@ -4,6 +4,7 @@
 """Bounded, read-only nginx deployment inspection under an explicit site contract."""
 
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -115,6 +116,7 @@ MESSAGES = {
     "SKIP_INHERITED": "This scope inherits this category skip from its parent.",
     "SKIP_REPLACED": "Local category skips replace the entire inherited mask.",
     "COVERAGE": "A required category is skipped or Shield is not in block mode.",
+    "ALLOWLIST": "Effective allowlist bypasses Shield for matching clients; verify they are trusted.",
     "BODY": "A required body category is disabled or has no body scanner.",
     "PUBLIC_INTERNAL": "Keep declared internal routes and status handlers inaccessible through public entry or redirect paths.",
     "ROUTE_UNKNOWN": "Review an unresolved routing transition into the internal-route contract.",
@@ -533,6 +535,7 @@ class Analyzer:
         state["params"] = list(state.get("params", []))
         inherited_skip = set(state.get("skip", ()))
         local_skip, params, seen, children = set(), [], set(), []
+        local_allow = None
         routing = {name: [] for name in (*ROUTING, "return")}
         owner = owner or Node("main", [], None, 1, 1)
         for node in nodes:
@@ -572,9 +575,42 @@ class Analyzer:
             if kind not in ("http", "server", "location") or name not in {
                 *SINGLE,
                 "shield_skip",
+                "shield_allow",
                 "fastcgi_param",
             }:
                 self.emit("unknown", "UNKNOWN", node, scope=scope)
+                continue
+            if name == "shield_allow":
+                if (
+                    not args
+                    or ("off" in args and (args != ["off"] or local_allow is not None))
+                    or (local_allow == [])
+                ):
+                    self.emit("unknown", "UNKNOWN", node, scope=scope)
+                    continue
+                if args == ["off"]:
+                    local_allow = []
+                    continue
+                try:
+                    if any(
+                        "%" in value
+                        or "$" in value
+                        or (
+                            "/" in value
+                            and not re.fullmatch(r"[0-9]+", value.rsplit("/", 1)[1])
+                        )
+                        for value in args
+                    ):
+                        raise ValueError
+                    networks = [
+                        ipaddress.ip_network(value, strict=False) for value in args
+                    ]
+                except ValueError:
+                    self.emit("unknown", "UNKNOWN", node, scope=scope)
+                    continue
+                if local_allow is None:
+                    local_allow = []
+                local_allow.extend(networks)
                 continue
             if name == "shield_skip":
                 if not args or any(v not in CATEGORIES for v in args):
@@ -618,6 +654,8 @@ class Analyzer:
             if args:
                 self.variables(args[0], node, scope)
         state["skip"] = local_skip or inherited_skip
+        if local_allow is not None:
+            state["allow"] = local_allow
         # Index/error-page arrays inherit only in the absence of local entries.
         # Rewrite and try_files do not merge into ordinary child locations.
         for name in ("index", "error_page"):
@@ -644,6 +682,8 @@ class Analyzer:
             )
         if kind in ("server", "location"):
             self.emit("info", "SCOPE", owner, scope=scope)
+            if state.get("allow") and state["shield"] != "off":
+                self.emit("hole", "ALLOWLIST", owner, scope=scope)
             if kind == "server":
                 self.servers += 1
                 self.server = self.servers

@@ -1,5 +1,8 @@
 Changes with the next minor release
 
+    *) Add shield_allow for trusted client IPs and CIDRs, with inherited lists,
+       local replacement and explicit clearing.
+
     *) Prepare the module for release with one hosted-only pull-request CI
        entry point, preserved Linux/Windows compatibility coverage, native
        static-analysis profiles, 32-bit atomic controls, a gzip fuzz target,
