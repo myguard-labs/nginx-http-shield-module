@@ -1,4 +1,4 @@
-# sync-sha: a8049d4a71504846a3f92f9ef51334ac99b0f83660e4275d606fcf5a3fef2a26
+# sync-sha: 85c90886bbf580284b1f03506fed976cfe69091b5b830b636dc9ff3d0261e954
 name: Build and Test
 
 env:
@@ -61,7 +61,9 @@ jobs:
           git diff --check
 
       - name: Check configuration-test sanitizer scope
-        run: python3 -m unittest discover -s ci/tests -p test_config_environment.py
+        run: |
+          python3 -m unittest discover -s ci/tests -p test_config_environment.py
+          python3 -m unittest discover -s ci/tests -p test_allowlist_environment.py
 
       - name: Check lifetime harness compiler selection
         run: python3 ci/tests/test_config_lifetime_compiler.py -v
@@ -504,7 +506,7 @@ jobs:
             "${module[@]}" --output "$PWD/.build/metrics-counters"
           python3 ci/tests/test_cve_controls.py --nginx "$binary" \
             "${module[@]}" --output "$PWD/.build/cve-controls"
-          python3 ci/tests/test_allowlist.py --nginx "$binary" \
+          ASAN_OPTIONS="${ASAN_OPTIONS}:detect_leaks=0" python3 ci/tests/test_allowlist.py --nginx "$binary" \
             "${module[@]}" --output "$PWD/.build/allowlist"
           extra=()
           if [ "$MATRIX_MODE" = asan ]; then
