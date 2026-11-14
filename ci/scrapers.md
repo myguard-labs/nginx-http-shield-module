@@ -1,9 +1,10 @@
 # Scraper compatibility matrix
 
-Run the focused collector matrix on Linux with Python 3.10 or newer and Docker. Build Shield
-first with the same command used by CI, then supply the resulting binary and
-module. The output directory must be new; captures, generated configurations,
-collector logs, values received by Prometheus, and container IDs remain there.
+Run the focused collector matrix on Linux with Python 3.10 or newer and Docker.
+Build Shield first with the same command used by CI, then supply the resulting
+binary and module. The output directory must be new; captures, generated
+configurations, collector logs, values received by Prometheus, and container
+IDs remain there.
 
 ```sh
 bash ci/tools/ci-build.sh nginx 1.31.8

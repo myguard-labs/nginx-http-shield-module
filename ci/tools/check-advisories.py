@@ -11,7 +11,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_INVENTORY = ROOT / "ci/dependency-inventory.json"
@@ -275,7 +275,7 @@ def main() -> int:
             )
         receipt = {
             "schema_version": 1,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "source": OSV_QUERY_BATCH if not args.response else str(args.response),
             "inventory_sha256": hashlib.sha256(raw).hexdigest(),
             "dependency_count": len(dependencies),

@@ -8,7 +8,7 @@ import json
 import pathlib
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "ci/semgrep/first-party.yml"
@@ -216,7 +216,7 @@ def main() -> int:
         )
         receipt = {
             "schema_version": 1,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "gitlinks_excluded": gitlinks,
             "first_party_target_count": len(all_targets),
             "scans": [generic, python, c_ast, c_partial],

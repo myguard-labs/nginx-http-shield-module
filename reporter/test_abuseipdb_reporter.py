@@ -337,13 +337,13 @@ def test_parse_retry_after_delta_seconds():
 def test_parse_retry_after_http_date():
     # 60s in the future relative to the supplied `now`.
     when = "Wed, 21 Oct 2015 07:29:00 GMT"
-    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.timezone.utc).timestamp()
+    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.UTC).timestamp()
     assert mod._parse_retry_after(when, now=now) == 60.0
 
 
 def test_parse_retry_after_past_http_date_is_zero():
     when = "Wed, 21 Oct 2015 07:00:00 GMT"
-    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.timezone.utc).timestamp()
+    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.UTC).timestamp()
     assert mod._parse_retry_after(when, now=now) == 0.0
 
 
@@ -436,7 +436,7 @@ def test_reporter_429_http_date_retry_after(monkeypatch):
     """The HTTP-date form is honoured, not silently downgraded to backoff."""
     import urllib.error
 
-    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.timezone.utc).timestamp()
+    now = dt.datetime(2015, 10, 21, 7, 28, 0, tzinfo=dt.UTC).timestamp()
 
     def boom(req, timeout):
         raise urllib.error.HTTPError(

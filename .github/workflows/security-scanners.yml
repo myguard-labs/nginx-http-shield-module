@@ -1,4 +1,4 @@
-# sync-sha: cfcfe4a988b8dcbc25681cd009e106970fbc47a7a399858eadebb6a64deaadc1
+# sync-sha: d0a8dead94bc3f1612eef1aa4b6485e8d752f167ee47256771a62060c361a8df
 name: Security scanners
 
 # Static/security scanners gate on every PR/push — flawfinder (gate on >=4),
@@ -58,7 +58,7 @@ jobs:
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
       - name: Restore module build cache
-        uses: $/.github/actions/build-cache
+        uses: ./.github/actions/build-cache # zizmor: ignore[self-repository] local action requires ./ syntax
         with:
           mode: module
           nginx-version: ${{ env.NGINX_VERSION }}

@@ -1,4 +1,4 @@
-# sync-sha: 5d85f7c42a512927ba88132ebab7f5be5ecf87f4c163e8c34ddb940939c660a8
+# sync-sha: e36a3b2280daee85fda1e1ceee4e5917cde9879b8902fc3c5ac65500b1c0c70a
 name: Build and Test
 
 env:
@@ -61,7 +61,18 @@ jobs:
           git diff --check
 
       - name: Check configuration-test sanitizer scope
-        run: python3 -m unittest discover -s ci/tests -p test_config_environment.py
+        run: |
+          python3 -m unittest discover -s ci/tests -p test_config_environment.py
+          python3 -m unittest discover -s ci/tests -p test_allowlist_environment.py
+
+      - name: Check lifetime harness compiler selection
+        run: python3 ci/tests/test_config_lifetime_compiler.py -v
+
+      - name: Check allowlist harness compiler selection
+        run: python3 ci/tests/test_allowlist_compiler.py -v
+
+      - name: Check allowlist Python assertion mode
+        run: python3 -m unittest -v ci/tests/test_allowlist_mode.py
 
       - name: Check deployment analysis and diagnostic control
         run: |
@@ -132,7 +143,7 @@ jobs:
             build-essential curl libpcre2-dev zlib1g-dev
 
       - name: Restore build cache (ccache + source + build tree)
-        uses: $/.github/actions/build-cache
+        uses: ./.github/actions/build-cache # zizmor: ignore[self-repository] local action requires ./ syntax
         with:
           mode: debug
           nginx-version: ${{ env.NGINX_VERSION }}
@@ -495,6 +506,13 @@ jobs:
             "${module[@]}" --output "$PWD/.build/metrics-counters"
           python3 ci/tests/test_cve_controls.py --nginx "$binary" \
             "${module[@]}" --output "$PWD/.build/cve-controls"
+          ASAN_OPTIONS="${ASAN_OPTIONS}:detect_leaks=0" python3 ci/tests/test_allowlist.py --nginx "$binary" \
+            "${module[@]}" --output "$PWD/.build/allowlist"
+          extra=()
+          if [ "$MATRIX_MODE" = asan ]; then
+            extra=("-fsanitize=address,undefined" -fno-omit-frame-pointer)
+          fi
+          EXTRA_CFLAGS="${extra[*]}" bash ci/t/run-allowlist-unit.sh "${build%/objs}"
 
       - name: Check gzip inspection and immutable forwarding
         env:
@@ -716,6 +734,11 @@ jobs:
           python3 ci/tests/test_cve_controls.py \
             --nginx "$PWD/.build/nginx-${NGINX_VERSION}-coverage/objs/nginx" \
             --output "$PWD/.build/cve-controls-coverage"
+          python3 ci/tests/test_allowlist.py \
+            --nginx "$PWD/.build/nginx-${NGINX_VERSION}-coverage/objs/nginx" \
+            --output "$PWD/.build/allowlist-coverage"
+          EXTRA_CFLAGS=--coverage bash ci/t/run-allowlist-unit.sh \
+            "$PWD/.build/nginx-${NGINX_VERSION}-coverage"
 
       # The ban state engine's multi-node / eviction / window-slide / expiry
       # paths are unreachable from Test::Nginx (single loopback client, no clock

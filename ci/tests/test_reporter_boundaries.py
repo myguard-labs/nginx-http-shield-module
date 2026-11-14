@@ -8,7 +8,7 @@ import sys
 import urllib.error
 from argparse import Namespace
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -368,7 +368,7 @@ def test_malformed_persisted_state_does_not_crash_or_accept_negative_count(tmp_p
 
 def test_valid_persisted_numeric_boundaries_remain_accepted(tmp_path):
     suppress = tmp_path / "suppress.json"
-    day = datetime.fromtimestamp(1000, timezone.utc).strftime("%Y-%m-%d")
+    day = datetime.fromtimestamp(1000, UTC).strftime("%Y-%m-%d")
     suppress.write_text(
         json.dumps({"day": day, "count": 1, "last": {"8.8.8.8": 1000.0}})
     )

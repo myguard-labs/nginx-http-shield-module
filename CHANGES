@@ -1,5 +1,8 @@
 Changes with the next minor release
 
+    *) Add shield_allow for trusted client IPs and CIDRs, with inherited lists,
+       local replacement and explicit clearing.
+
     *) Prepare the module for release with one hosted-only pull-request CI
        entry point, preserved Linux/Windows compatibility coverage, native
        static-analysis profiles, 32-bit atomic controls, a gzip fuzz target,
@@ -9,8 +12,8 @@ Changes with the next minor release
        in request/proxy-target queries and form-urlencoded bodies while
        preserving percent-encoded plus signs. Reduce false positives by
        excluding sensitive-file matches from Referer, requiring contextual
-       Java object/array-stream and PHP webshell filename signatures, and retaining
-       compiled true/false-positive corpus controls.
+       Java object/array-stream and PHP webshell filename signatures, and
+       retaining compiled true/false-positive corpus controls.
 
     *) Bound the common gzip inspection allocation to a 64 KiB decoded prefix,
        retrying at the configured decoded-body cap only when the prefix fills.
