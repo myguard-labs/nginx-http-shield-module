@@ -41,6 +41,14 @@ Shield's opt-in gzip inspection does not cover Brotli-encoded bodies or inspect
 responses. Remediate affected runtimes and dependencies upstream; these
 signatures do not make them safe.
 
+## Client IP whitelist
+
+Trusted clients can bypass Shield with the native IP allowlist (whitelist).
+Use `shield_allow` for individual IPv4/IPv6 addresses or CIDR networks, at the
+`http`, `server` or `location` level. Matching clients bypass all Shield checks
+and bans; other nginx access controls still apply. See [Client IP allowlist](#client-ip-allowlist)
+for configuration, inheritance and trusted-proxy handling.
+
 ## PHP execution boundaries
 
 The optional [native PHP boundary recipe](contrib/php-boundary/README.md)
@@ -224,6 +232,29 @@ replaces the inherited list; omission inherits it. `shield_allow off;` clears
 it and cannot be combined with addresses in the same context. Host bits in a
 CIDR are normalized with an nginx configuration warning. Hostnames, variables,
 ports and `all` are invalid; malformed input fails configuration loading.
+
+For clients connecting directly to nginx, add only the addresses you trust:
+
+```nginx
+server {
+    listen 80;
+    server_name example.com;
+    shield block;
+    shield_allow 198.51.100.42;        # one IPv4 client
+    shield_allow 2001:db8:1234::/48;   # an IPv6 network
+
+    location / {
+        root /var/www/html;
+    }
+    location /untrusted/ {
+        shield_allow off;             # clear the inherited list here
+        root /var/www/html;
+    }
+}
+```
+
+Both entries apply to `/`; `/untrusted/` has no allowlisted clients and still
+runs Shield. Check the configuration with `nginx -t` before reloading nginx.
 
 Matching uses nginx's effective client address, including nginx's IPv4-mapped
 IPv6 handling: mapped clients are matched as IPv4 by `ngx_cidr_match`. Configured
