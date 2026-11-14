@@ -4,6 +4,7 @@
 """Focused parser, effective-policy and secret-safe deployment-checker oracles."""
 
 import importlib.util
+import ipaddress
 import json
 import os
 import re
@@ -86,6 +87,105 @@ class DeploymentCheckerTests(unittest.TestCase):
         result = self.run_config(name="unknown.conf")
         self.assertEqual(result["status"], "nonclean")
         self.assertIn("UNKNOWN", self.codes(result, "unknown"))
+
+    def test_allowlist_fixtures(self):
+        self.assertEqual(self.run_config(name="allowlist-safe.conf")["status"], "clean")
+        self.assertIn(
+            "ALLOWLIST",
+            self.codes(self.run_config(name="allowlist-unsafe.conf"), "hole"),
+        )
+        self.assertIn(
+            "UNKNOWN",
+            self.codes(self.run_config(name="allowlist-unknown.conf"), "unknown"),
+        )
+
+    def test_allowlist_effective_policy_and_invalid_inputs(self):
+        result = self.run_config(
+            self.simple(outer="shield_allow 192.0.2.1 2001:db8::/32;")
+        )
+        self.assertEqual(result["status"], "nonclean")
+        self.assertIn("ALLOWLIST", self.codes(result, "hole"))
+        result = self.run_config(
+            self.simple(outer="shield_allow 192.0.2.1;", body="shield_allow off;")
+        )
+        self.assertNotIn("ALLOWLIST", self.codes(result))
+        result = self.run_config(
+            self.simple(
+                outer="shield_allow 192.0.2.1;",
+                body="shield_allow off;",
+                locations="location /local { shield_allow 0.0.0.0/0; shield_allow ::/0; }",
+            )
+        )
+        self.assertEqual(
+            sum(d["code"] == "ALLOWLIST" for d in result["diagnostics"]), 1
+        )
+        for value in (
+            "",
+            "example.com",
+            "$remote_addr",
+            "192.0.2.1:80",
+            "192.0.2.1/33",
+            "192.0.2.1/255.255.255.0",
+            "off 192.0.2.1",
+            "off; shield_allow off",
+            "192.0.2.1; shield_allow off",
+            "off; shield_allow 192.0.2.1",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(
+                    "UNKNOWN",
+                    self.codes(
+                        self.run_config(self.simple(body=f"shield_allow {value};")),
+                        "unknown",
+                    ),
+                )
+        self.assertNotIn(
+            "UNKNOWN",
+            self.codes(
+                self.run_config(
+                    self.simple(
+                        body="shield_allow 192.0.2.7/24; shield_allow ::ffff:192.0.2.1/128;"
+                    )
+                ),
+                "unknown",
+            ),
+        )
+
+    def test_allowlist_local_replacement_and_ipv6_prefixes(self):
+        states = []
+        original = CHECKER.Analyzer.files
+
+        def capture(analyzer, state, owner, scope):
+            states.append((owner.name, tuple(state.get("allow", ()))))
+            return original(analyzer, state, owner, scope)
+
+        with patch.object(
+            CHECKER.Analyzer, "files", autospec=True, side_effect=capture
+        ):
+            result = self.run_config(
+                self.simple(
+                    outer="shield_allow 192.0.2.1;",
+                    body="shield_allow 2001:db8::/32; shield_allow ::ffff:0:0/96; shield_allow ::/0;",
+                    locations="location /child { shield_allow ::ffff:192.0.2.0/120; }",
+                )
+            )
+        self.assertNotIn("UNKNOWN", self.codes(result, "unknown"))
+        self.assertIn(
+            (
+                "server",
+                tuple(
+                    map(
+                        ipaddress.ip_network,
+                        ("2001:db8::/32", "::ffff:0.0.0.0/96", "::/0"),
+                    )
+                ),
+            ),
+            states,
+        )
+        self.assertIn(
+            ("location", (ipaddress.ip_network("::ffff:192.0.2.0/120"),)), states
+        )
+        self.assertIn("ALLOWLIST", self.codes(result, "hole"))
 
     def test_category_skip_replaces(self):
         result = self.run_config(

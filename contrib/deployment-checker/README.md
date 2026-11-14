@@ -221,3 +221,11 @@ diagnostic`: it deliberately asks for an impossible diagnostic. CI runs both
 and checks the specific failure. The suite also checks category/`NO_BODY`
 parity against the current native source so future category changes require
 an explicit checker update.
+
+### Client IP allowlists
+
+The checker follows `shield_allow` inheritance, local replacement, repeated
+address declarations and `off`. An effective nonempty list in an enabled
+Shield scope is reported as an `ALLOWLIST` coverage hole: matching clients
+bypass every Shield check, and the checker cannot establish their trust. Invalid
+or dynamic values are unknown. Verify proxy real-IP configuration separately.

@@ -207,6 +207,7 @@ http {
 | `shield_gzip` | http, server, location | `off` | Decode and inspect a single gzip request representation under the strict backend contract below. |
 | `shield_max_encoded_body` | http, server, location | `64k` | Encoded gzip input inspection budget (maximum `16m`); does not enforce upload size. |
 | `shield_status` | http, server, location | `403` | Status returned in `block` mode. One of 403, 404, 419, 429, 444. |
+| `shield_allow` | http, server, location | — | Trusted client IP addresses or CIDRs bypass Shield; `off` clears an inherited list. See [Client IP allowlist](#client-ip-allowlist). |
 | `shield_skip` | http, server, location | — | Space-separated category names to disable (see table above, plus the structural checks `httpoxy`, `range_dos`, `ctrl_char` and `dotfile`). A child block that sets `shield_skip` **replaces** the inherited list wholesale (masks do not merge); a child that omits it inherits the parent's. An empty child cannot clear an inherited skip — to un-skip, re-state the categories you still want disabled. |
 | `shield_log` | http, server, location | — | Append one JSON object per hit (block **and** detect) to a **file** or a **syslog** server, for out-of-band reporting (e.g. AbuseIPDB). `off` disables. See [Hit log](#hit-log). |
 | `shield_stats_zone` | http | — | `<name> <size>`; see below. |
@@ -214,6 +215,41 @@ http {
 | `shield_ban` | http, server, location | — | `zone=<name> count=<n> window=<time> bantime=<time>` — ban a client for `bantime` once it produces `count` shield hits within a fixed `window`. Optional `key=peer\|forwarded` and repeatable `trusted=<addr\|CIDR>` — see [Banning behind a proxy](#banning-behind-a-proxy). |
 | `shield_ban_status` | location | — | Serve a ban or stats zone. |
 | `shield_ban_status_format` | location | `json` | `json` or `prometheus` — select JSON or negotiated metrics output. Inherited by nested locations. |
+
+### Client IP allowlist
+
+`shield_allow` accepts one or more literal IPv4 or IPv6 addresses or CIDRs.
+Repeated declarations in a context append entries. A first local declaration
+replaces the inherited list; omission inherits it. `shield_allow off;` clears
+it and cannot be combined with addresses in the same context. Host bits in a
+CIDR are normalized with an nginx configuration warning. Hostnames, variables,
+ports and `all` are invalid; malformed input fails configuration loading.
+
+Matching uses nginx's effective client address, including nginx's IPv4-mapped
+IPv6 handling: mapped clients are matched as IPv4 by `ngx_cidr_match`. Configured
+mapped IPv6 CIDRs wholly within `::ffff:0:0/96` are normalized to IPv4; broader
+IPv6 prefixes retain nginx's matching semantics. Behind a trusted proxy,
+configure real IP handling with only the proxy's addresses:
+
+```nginx
+http {
+    set_real_ip_from 192.0.2.10; # trusted proxy only
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+    shield block;
+    shield_allow 198.51.100.42 2001:db8:1234::/48;
+    server {
+        location /public/ { shield_allow off; }
+    }
+}
+```
+
+Never trust forwarded headers from arbitrary clients: they could choose an
+allowlisted address. Shield does not use `shield_ban key=forwarded` for this
+match. Allowlisted requests bypass all Shield checks, bans, counters and hit
+logs, but remain in nginx access logs. nginx `allow`/`deny` does not bypass
+Shield; `shield_skip` only disables specified categories. Allowlist only clients
+trusted to bypass all Shield protection.
 
 ### Application-specific CVE controls
 
@@ -749,6 +785,8 @@ also runs as a CI gate.
    `category` and `source` but never echoes attacker bytes (log-injection safe).
 3. If a legitimate request trips a category, `shield_skip` it in that location.
 4. Switch to `shield block;`.
+5. If needed, add only trusted client addresses with `shield_allow`, verify
+   effective real-IP configuration and test both allowed and other clients.
 
 ## How it works
 
