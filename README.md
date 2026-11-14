@@ -238,6 +238,7 @@ For clients connecting directly to nginx, add only the addresses you trust:
 ```nginx
 server {
     listen 80;
+    listen [::]:80;
     server_name example.com;
     shield block;
     shield_allow 198.51.100.42;        # one IPv4 client
