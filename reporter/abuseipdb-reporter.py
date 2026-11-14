@@ -217,7 +217,7 @@ def _parse_retry_after(value: str | None, now: float) -> float | None:
         return None
     # A date without a timezone is GMT per RFC 9110.
     if when.tzinfo is None:
-        when = when.replace(tzinfo=dt.UTC)
+        when = when.replace(tzinfo=dt.timezone.utc)  # noqa: UP017 - retain Python 3.10 compatibility
     return max(0.0, when.timestamp() - now)
 
 
@@ -288,7 +288,7 @@ class Suppressor:
             pass
 
     def _roll_day(self, now: float) -> None:
-        today = dt.datetime.fromtimestamp(now, dt.UTC).strftime("%Y-%m-%d")
+        today = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y-%m-%d")  # noqa: UP017 - Python 3.10
         if today != self._day:
             self._day = today
             self._count = 0
@@ -766,7 +766,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     def log(msg: str) -> None:
-        stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: UP017 - Python 3.10
         print(f"{stamp} {msg}", flush=True)
 
     os.makedirs(os.path.dirname(args.state) or ".", exist_ok=True)
