@@ -64,6 +64,8 @@ NO_BODY = frozenset(
         "traversal",
         "cmdi",
         "lfi",
+        "crlf",
+        "nullbyte",
         "template",
         "php_rce",
         "java_rce",
