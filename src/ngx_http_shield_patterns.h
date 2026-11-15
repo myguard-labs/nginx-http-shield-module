@@ -1163,11 +1163,18 @@ static const ngx_http_shield_catdef_t  ngx_http_shield_categories[] = {
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_LFI_RFI, "lfi",
         ngx_http_shield_lfi_rfi, NGX_HTTP_SHIELD_MATCH_DECODED
         | NGX_HTTP_SHIELD_NO_BODY),
+    /* Encoded newlines and percent-escape examples are ordinary body data:
+     * form textareas contain %0d%0a, and posting an already-encoded URL
+     * produces %252f. Neither establishes a vulnerable application sink.
+     * Keep these heuristics in request targets/headers only, as with the
+     * other body-unsafe categories. */
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_CRLF, "crlf",
         ngx_http_shield_crlf,
-        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW),
+        NGX_HTTP_SHIELD_MATCH_DECODED | NGX_HTTP_SHIELD_MATCH_RAW
+        | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_NULLBYTE, "nullbyte",
-        ngx_http_shield_nullbyte, NGX_HTTP_SHIELD_MATCH_RAW),
+        ngx_http_shield_nullbyte,
+        NGX_HTTP_SHIELD_MATCH_RAW | NGX_HTTP_SHIELD_NO_BODY),
     NGX_HTTP_SHIELD_TABLE(NGX_HTTP_SHIELD_CAT_TEMPLATE, "template",
         ngx_http_shield_template, NGX_HTTP_SHIELD_MATCH_DECODED
         | NGX_HTTP_SHIELD_NO_BODY),

@@ -1,5 +1,10 @@
 Changes with the next minor release
 
+    *) Exclude CRLF and nullbyte heuristics from request-body inspection so
+       normal form line breaks, encoded URLs and literal encoding examples
+       do not generate hits or repeat-offender bans. Preserve existing
+       request-target/header checks and other body categories.
+
     *) Add shield_allow for trusted client IPs and CIDRs, with inherited lists,
        local replacement and explicit clearing.
 

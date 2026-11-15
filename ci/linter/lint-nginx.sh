@@ -31,7 +31,28 @@
 # Extend: add a rule as one more `rule <name> <regex> <message>` call.
 
 # shellcheck source=ci/linter/lib.sh disable=SC1091
-. "$(git rev-parse --show-toplevel)/ci/linter/lib.sh"
+ROOT=$(git rev-parse --show-toplevel)
+. "$ROOT/ci/linter/lib.sh"
+
+# Explicit arguments belong to the caller's directory; discovery and rules
+# use repository-relative paths regardless of that directory.
+ARGS=()
+for f in "$@"; do
+    ARGS+=("$(realpath -m --relative-to="$ROOT" -- "$f")")
+done
+cd "$ROOT" || exit 1
+set -- "${ARGS[@]}"
+
+# Category flags are duplicated by the standalone deployment checker. Run its
+# existing source-parity oracle locally before a drift can reach CI.
+PARITY_FILES=()
+lint_files_into PARITY_FILES \
+    '^(src/ngx_http_shield_patterns\.h|contrib/deployment-checker/check_deployment\.py|ci/tests/test_deployment_checker\.py|ci/linter/lint-nginx\.sh)$' "$@"
+if [ "${#PARITY_FILES[@]}" -gt 0 ]; then
+    echo "lint-nginx: deployment category parity"
+    python3 -B ci/tests/test_deployment_checker.py \
+        DeploymentCheckerTests.test_no_body_categories_and_source_parity || exit 1
+fi
 
 FILES=()
 lint_files_into FILES '^src/.*\.[ch]$' "$@"

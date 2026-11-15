@@ -857,20 +857,32 @@ shell script in an editor, a snippet in a docs API. The same is true of
 `<script` and `document.cookie` in a CMS saving a page, of `${jndi:` in a blog
 post *about* Log4Shell, and of `<?php system(` in a code-review tool.
 
-So each category declares whether its tokens are attack-only in *any* position,
-or only in a request target. Ten are request-target-and-header only:
+Each category declares where it applies. Twelve are excluded from body scans
+while retaining their current request-target and header checks:
 
-`cmdi` · `xss` · `template` · `lfi` · `php_rce` · `java_rce` · `java_eval` · `sensitive_file` · `exploit_path` · `traversal`
+`cmdi` · `xss` · `template` · `lfi` · `php_rce` · `java_rce` · `java_eval` ·
+`sensitive_file` · `exploit_path` · `traversal` · `crlf` · `nullbyte`
+
+`crlf` and `nullbyte` are excluded because normal form fields contain encoded
+newlines (`%0D%0A`) and already-encoded URLs (`%252F` after form encoding).
+JSON and plain text can also legitimately discuss literal `%00` examples or
+contain header-like lines. These bytes in a body do not prove an application
+will use them in a response header or filesystem path. This deliberately
+disables these generic body heuristics, including body-only encoded NUL and
+CRLF attempts; it does not exempt a WordPress path or trusted client IP.
 
 `traversal` is on that list because its signatures are pure gadgets (`../`,
 `..\`, `..;/`) that legitimately appear in bodies — a JSON source map or an
 asset manifest carrying `{"path":"../logo.png"}` is not an attack. In a request
 target the same token has no benign reading.
 
-Every other category is scanned in the body too, and that is where the body scan
-earns its keep — SQL injection in a form POST, contextual Java deserialization
-gadgets, SSI injection, contextual webshell filenames, and encoding evasions.
-Short opaque names are deliberately excluded because they collide with base64.
+Other categories remain body-scanned — SQL injection in a form POST,
+contextual Java deserialization gadgets, SSI injection, contextual webshell
+filenames, and overlong encodings. Such a signature does not establish how an
+application will interpret the content: SQL tutorials, template examples and
+other instructional text can still match. Start in detect mode and review
+legitimate application workflows before enabling blocking. Short opaque names
+are deliberately excluded because they collide with base64.
 
 This narrows *where* a category applies, never *whether* it matches: a
 body-exempt category still blocks at full strength in the request target and in

@@ -107,9 +107,10 @@ build_automata(void)
 {
     ngx_pool_t  *pool;
 
+    /* Fatal diagnostics are best effort; abort even if stderr fails. */
     pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, &test_log);
     if (pool == NULL) {
-        fprintf(stderr, "ngx_create_pool failed\n");
+        (void) fprintf(stderr, "ngx_create_pool failed\n");
         abort();
     }
 
@@ -117,7 +118,7 @@ build_automata(void)
                                   NGX_HTTP_SHIELD_MATCH_DECODED)
         != NGX_OK)
     {
-        fprintf(stderr, "ac_build(DECODED) failed\n");
+        (void) fprintf(stderr, "ac_build(DECODED) failed\n");
         abort();
     }
 
@@ -125,7 +126,7 @@ build_automata(void)
                                   NGX_HTTP_SHIELD_MATCH_RAW)
         != NGX_OK)
     {
-        fprintf(stderr, "ac_build(RAW) failed\n");
+        (void) fprintf(stderr, "ac_build(RAW) failed\n");
         abort();
     }
 
@@ -188,7 +189,7 @@ scan_str_mode(const char *s, uint64_t skip, size_t form_offset,
     lc = malloc(n);
     dec = malloc(n);
     if (buf == NULL || lc == NULL || dec == NULL) {
-        fprintf(stderr, "scan_str_skip: OOM\n");
+        (void) fprintf(stderr, "scan_str_skip: OOM\n");
         abort();
     }
     memcpy(buf, s, n);
@@ -525,7 +526,7 @@ case_malformed_and_embedded_nul(void)
     lc = malloc(elen);
     dec = malloc(elen);
     if (buf == NULL || lc == NULL || dec == NULL) {
-        fprintf(stderr, "case_malformed_and_embedded_nul: OOM\n");
+        (void) fprintf(stderr, "case_malformed_and_embedded_nul: OOM\n");
         abort();
     }
     memcpy(buf, embedded, elen);
@@ -823,6 +824,57 @@ case_body_base64_collisions(void)
 }
 
 
+static void
+case_body_encoding_content(void)
+{
+    static const char *content[] = {
+        "description=First+paragraph%0D%0ASecond+paragraph",
+        "description=First%0a%0dSecond",
+        "profile=https%3A%2F%2Fexample.test%2Fa%252Fb",
+        "description=The+literal+text+%2500+is+an+example",
+        "description=folder%255cfile",
+        "{\"text\":\"%00, %u0000 and %252f are literal examples\"}",
+        "A line break is written %0d%0a in a form.",
+        "A header example:\r\nSet-Cookie: example=value",
+        "A redirect example:\r\nLocation: /example",
+        "A size example:\r\nContent-Length: 12",
+        "%", "%0", "%GG", ""
+    };
+    static const struct {
+        const char *input;
+        ngx_http_shield_cat_e category;
+    } controls[] = {
+        {"/example%0D%0A", NGX_HTTP_SHIELD_CAT_CRLF},
+        {"\r\nLocation: /example", NGX_HTTP_SHIELD_CAT_CRLF},
+        {"/photo.php%00.jpg", NGX_HTTP_SHIELD_CAT_NULLBYTE},
+        {"/folder%252fitem", NGX_HTTP_SHIELD_CAT_NULLBYTE}
+    };
+    uint64_t body_skip = ngx_http_shield_no_body_mask();
+    ngx_http_shield_hit_t hit;
+    size_t i;
+
+    for (i = 0; i < sizeof(content) / sizeof(content[0]); i++) {
+        check(scan_str_mode(content[i], body_skip, 0, &hit) == NGX_DECLINED,
+              "form content with line breaks/encoding examples stays clean");
+        check(scan_str_mode(content[i], body_skip, strlen(content[i]), &hit)
+                  == NGX_DECLINED,
+              "opaque text/JSON encoding examples stay body-clean");
+    }
+    for (i = 0; i < sizeof(controls) / sizeof(controls[0]); i++) {
+        check(scan_str_mode(controls[i].input, 0, strlen(controls[i].input),
+                            &hit) == NGX_OK,
+              "URI/header CRLF and encoded-NUL controls remain detected");
+        check(hit.cat == controls[i].category,
+              "URI/header controls retain their original category");
+    }
+    check(scan_str_mode("content=First%0D%0ASecond&id=1+union+select+password",
+                        body_skip, 0, &hit) == NGX_OK,
+          "excluding body encoding heuristics retains SQLi detection");
+    check(hit.cat == NGX_HTTP_SHIELD_CAT_SQLI,
+          "the remaining body attack is attributed to SQLi");
+}
+
+
 int
 main(void)
 {
@@ -831,6 +883,7 @@ main(void)
     case_clean_baseline();
     case_plus_context();
     case_body_base64_collisions();
+    case_body_encoding_content();
     case_rule_term_count();
     case_state_capacity();
     case_definition_capacity();
