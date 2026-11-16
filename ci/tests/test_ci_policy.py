@@ -65,6 +65,33 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("ban-unit: required job missing", result.stderr)
 
+    def test_replay_jobs_require_baseline_history(self):
+        self.assertEqual(self.policy("coverage").returncode, 0)
+        path = self.root / ".github/workflows/build-test.yml"
+        original = path.read_text()
+        for old, new in (
+            ("fetch-depth: 0", "fetch-depth: 1"),
+            ("fetch-depth: 0", "fetch-depth: false"),
+        ):
+            path.write_text(original.replace(old, new))
+            result = self.policy("coverage")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "scan-core replay requires preceding full-history checkout",
+                result.stderr,
+            )
+        path.write_text(original)
+        # A checkout after the consumer does not supply its baseline.
+        doc = yaml.safe_load(original)
+        steps = doc["jobs"]["coverage"]["steps"]
+        steps.append(steps.pop(0))
+        path.write_text(yaml.safe_dump(doc))
+        result = self.policy("coverage")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "scan-core replay requires preceding full-history checkout", result.stderr
+        )
+
     def test_missing_required_trigger(self):
         self.mutate("ci-deep.yml", "  schedule:", "  disabled_schedule:")
         result = self.policy("coverage")

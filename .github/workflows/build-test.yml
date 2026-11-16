@@ -1,4 +1,4 @@
-# sync-sha: 40b5549346017a01328521dbfd2828c50e86183a672a37b5bd0fffc6b3671c6e
+# sync-sha: 6f38f59959eb61ddfc2741d7fbee456621358bba5bc3a1a9e28b8c4dfcd7a664
 name: Build and Test
 
 env:
@@ -677,6 +677,8 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # Scan-core replay also reads the immutable baseline revision.
+          fetch-depth: 0
           submodules: true
       - name: Load version pins
         run: bash .github/scripts/load-versions.sh

@@ -381,10 +381,15 @@ async def run_one(row, nginx, module):
             await fcgi.stop()
 
 
+def module_arg(value):
+    """An empty optional module path denotes a statically linked server."""
+    return Path(value) if value else None
+
+
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nginx", required=True, type=Path)
-    parser.add_argument("--module", type=Path)
+    parser.add_argument("--module", type=module_arg)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--only", choices=[row["id"] for row in CASES])
     args = parser.parse_args()

@@ -470,6 +470,27 @@ def check_coverage() -> int:
                 f"$/.github/workflows/{target}",
             ):
                 errors.append(f"ci.yml:{job}: required call to {target} missing")
+    for path in workflows():
+        for job, node in jobs(load(path)):
+            full_history = False
+            for step in node.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                if str(step.get("uses", "")).startswith("actions/checkout@"):
+                    options = step.get("with") or {}
+                    depth = (
+                        options.get("fetch-depth")
+                        if isinstance(options, dict)
+                        else None
+                    )
+                    full_history = type(depth) is int and depth == 0
+                if (
+                    "ci/tests/unit/run.sh" in str(step.get("run", ""))
+                    and not full_history
+                ):
+                    errors.append(
+                        f"{path.name}:{job}: scan-core replay requires preceding full-history checkout"
+                    )
     return report("lint-ci-coverage", errors, "required jobs and calls present")
 
 

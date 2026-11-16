@@ -6,8 +6,9 @@
 import asyncio
 import struct
 import unittest
+from pathlib import Path
 
-from check import CASES, verify
+from check import CASES, config, module_arg, verify
 from recorders import LIMIT, Recorder, fcgi_record, fcgi_request, http_request, params
 
 
@@ -65,6 +66,17 @@ class Params(unittest.TestCase):
 
 
 class Attribution(unittest.TestCase):
+    def test_static_empty_module_argument_omits_load_directive(self):
+        empty = module_arg("")
+        self.assertIsNone(empty)
+        self.assertNotIn("load_module", config(Path("/fixture"), 1, 2, 3, 4, empty))
+        module = module_arg("/fixture/shield.so")
+        self.assertEqual(module, Path("/fixture/shield.so"))
+        self.assertIn(
+            "load_module /fixture/shield.so;",
+            config(Path("/fixture"), 1, 2, 3, 4, module),
+        )
+
     def test_server_rejection_and_false_hit(self):
         row = next(row for row in CASES if row["id"] == "core-return-status")
         response = b"HTTP/1.1 418 fixture\r\n\r\n"
