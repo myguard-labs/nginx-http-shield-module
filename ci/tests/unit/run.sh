@@ -267,3 +267,14 @@ if ! grep -Eq 'negative|negative-size|size.*negative' "$TERM_ERR"; then
     exit 1
 fi
 echo 'ok   compile guard rejects 65 rule terms'
+
+# Use the same configured nginx core for both independently compiled revisions.
+REPLAY_RESULT=$(mktemp "${TMPDIR:-/tmp}/shield-threat-replay.XXXXXX.json")
+trap 'rm -f "$TERM_ERR" "$REPLAY_RESULT"' EXIT
+python3 "$ROOT/ci/tools/threat-replay.py" --nginx-source "$NGX_SRC" \
+    --output "$REPLAY_RESULT"
+
+python3 "$ROOT/ci/causal/check.py" --nginx-source "$NGX_SRC" \
+    --output "$REPLAY_RESULT"
+
+python3 "$ROOT/ci/backend/test_recorders.py"

@@ -1,0 +1,7 @@
+{
+  "base": "189bd9e5f8af78f86cfaa6ae456159d239a1c653",
+  "shards": [
+    "ci/threat-ledger/001.json",
+    "ci/threat-ledger/002.json"
+  ]
+}
