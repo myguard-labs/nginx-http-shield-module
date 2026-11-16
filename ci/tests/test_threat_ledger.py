@@ -216,6 +216,65 @@ class ThreatLedgerTests(unittest.TestCase):
                 self.header,
             )
 
+    def test_signature_initializers_fail_closed(self):
+        array = ledger_tool.ARRAY.search(self.header)
+        self.assertIsNotNone(array)
+        for initializer in (
+            'NGX_HTTP_SHIELD_SIG("ledger-" "probe"),',
+            'UNKNOWN_SIGNATURE("probe"),',
+        ):
+            header = (
+                self.header[: array.start(2)]
+                + initializer
+                + self.header[array.start(2) :]
+            )
+            with (
+                self.subTest(initializer=initializer),
+                self.assertRaisesRegex(ValueError, "unsupported signature initializer"),
+            ):
+                ledger_tool.shipped(header, self.module)
+
+    def test_commented_signature_is_removed_from_inventory(self):
+        array = ledger_tool.ARRAY.search(self.header)
+        macro = ledger_tool.fuzz_dict.SIG_RE.search(array.group(2)).group(0)
+        for comment in ("/* " + macro + " */", "// " + macro + "\n"):
+            header = self.header.replace(macro, comment, 1)
+            entries = ledger_tool.shipped(header, self.module)
+            self.assertEqual(len(entries), len(self.entries) - 1)
+            with self.assertRaisesRegex(ValueError, "removed=1"):
+                ledger_tool.check_drift(set(self.entries), entries)
+
+    def test_comment_markers_inside_literals_are_preserved(self):
+        array = ledger_tool.ARRAY.search(self.header)
+        literal = r"http://example/\"/*literal*/"
+        header = (
+            self.header[: array.start(2)]
+            + 'NGX_HTTP_SHIELD_SIG("'
+            + literal
+            + '"),'
+            + self.header[array.start(2) :]
+        )
+        entries = ledger_tool.shipped(header, self.module)
+        self.assertEqual(len(entries), len(self.entries) + 1)
+        self.assertTrue(
+            any(
+                ledger_tool.fuzz_dict.unescape_c(literal).hex() in identity
+                for _, identity in entries
+            )
+        )
+        self.assertEqual(
+            ledger_tool.without_comments("'/' /* removed */ '*'"), "'/'   '*'"
+        )
+        self.assertEqual(ledger_tool.without_comments('"/*" // end'), '"/*"  ')
+
+    def test_unterminated_comment_and_literals_rejected(self):
+        for suffix in ("/* incomplete", '\n"incomplete', "\n'incomplete"):
+            with (
+                self.subTest(suffix=suffix),
+                self.assertRaisesRegex(ValueError, "unterminated C"),
+            ):
+                ledger_tool.shipped(self.header + suffix, self.module)
+
     def test_shard_layout_and_roundtrip(self):
         self.assertEqual(ledger_tool.read_ledger(ROOT), self.ledger)
         self.assertEqual(len(self.ledger["entries"]), 663)

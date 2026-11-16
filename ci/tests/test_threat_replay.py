@@ -161,6 +161,14 @@ class ReplayTests(unittest.TestCase):
             4,
         )
 
+    def test_all_clean_comparison_cannot_promote_finite_corpus(self):
+        clean = ["clean"] * len(self.corpus["cases"])
+        result = replay.compare(self.corpus, self.fixtures, clean, clean)
+        self.assertEqual(result["regressions"], [])
+        self.assertTrue(any(k.endswith("/FN") for k in result["counts"]))
+        self.assertTrue(any(k.endswith("/unexplained") for k in result["counts"]))
+        self.assertFalse(result["promotion_eligible"])
+
     def test_new_false_positive_and_lost_positive_fail_comparison(self):
         old, new = ["clean"] * 38, ["clean"] * 38
         old[-1] = "sqli"

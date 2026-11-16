@@ -263,9 +263,8 @@ def compare(corpus, fixtures, baseline, candidate):
         "results": results,
         "counts": dict(sorted(counts.items())),
         "regressions": regressions,
-        "promotion_eligible": not any(
-            r["label"] == "benign" and r["candidate"] != "clean" for r in results
-        ),
+        # This finite, correlated toy corpus cannot establish promotion safety.
+        "promotion_eligible": False,
         "limits": (
             "scanner body matches, not HTTP denials; toy SQLite only; "
             "no population FP rate or per-rule causal proof"

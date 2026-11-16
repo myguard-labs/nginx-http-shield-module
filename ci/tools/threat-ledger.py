@@ -46,11 +46,35 @@ RULE = re.compile(
 )
 
 
+def without_comments(source):
+    """Remove C comments while preserving string and character literal bytes."""
+    tokens = re.compile(
+        r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|/\*.*?\*/|//[^\n]*|.',
+        re.DOTALL,
+    )
+    result = []
+    for match in tokens.finditer(source):
+        token = match.group()
+        if token in ('"', "'") or (
+            token == "/" and source[match.start() :].startswith("/*")
+        ):
+            raise ValueError("unterminated C comment or literal")
+        if token.startswith(("/*", "//")):
+            result.append(" " + "\n" * token.count("\n"))
+        else:
+            result.append(token)
+    return "".join(result)
+
+
 def shipped(header, module):
     """Extract table-bound entries and fail closed on incomplete extraction."""
-    arrays = {
-        name: fuzz_dict.SIG_RE.findall(body) for name, body in ARRAY.findall(header)
-    }
+    header, module = without_comments(header), without_comments(module)
+    arrays = {}
+    for name, body in ARRAY.findall(header):
+        remainder = fuzz_dict.SIG_RE.sub("", body)
+        if remainder.strip(" ,\t\r\n"):
+            raise ValueError("unsupported signature initializer: " + name)
+        arrays[name] = fuzz_dict.SIG_RE.findall(body)
     categories = TABLE.findall(header)
     rules = RULE.findall(header)
     block = re.search(
