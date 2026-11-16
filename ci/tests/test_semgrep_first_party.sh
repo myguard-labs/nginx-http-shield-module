@@ -61,6 +61,7 @@ SHA40='0123456789abcdef0123456789abcdef01234567'
         '    steps:' \
         "      - uses: owner/action@$SHA40" \
         "      - uses: \"owner/action@$SHA40\"" \
+        "      - uses: 'owner/action@$SHA40'" \
         "      - uses: owner/action/subpath@$SHA40" \
         "  flow: {steps: [{uses: \"owner/action@$SHA40\"}]}" \
         "  nested: {steps: [{uses: owner/action@$SHA40, with: {key: value}}]}" \
@@ -78,14 +79,16 @@ jq -e '(.errors | length) == 0 and (.results | length) == 0' "$TMP/pinned.json" 
     printf '%s\n' \
         'jobs: {tag: {steps: [{uses: "owner/action@v1"}]}}' \
         'jobs: {short: {steps: [{uses: owner/action@0123456789abcdef}]}}' \
-        "jobs: {long: {steps: [{uses: owner/action@${SHA40}0}]}}"
+        "jobs: {long: {steps: [{uses: owner/action@${SHA40}0}]}}" \
+        "- uses: owner/action@${SHA40}\"" \
+        "- uses: owner/action@${SHA40}'"
 } >"$TMP/.github/workflows/unpinned.yml"
 if (cd "$TMP" && semgrep scan --config "$ROOT/ci/semgrep/first-party.yml" --error --json \
     --metrics=off .github/workflows/unpinned.yml >"$TMP/unpinned.json" 2>/dev/null); then
     echo 'unpinned-action boundary controls did not fire' >&2
     exit 1
 fi
-jq -e '(.errors | length) == 0 and (.results | length) == 3 and
+jq -e '(.errors | length) == 0 and (.results | length) == 5 and
     all(.results[]; .check_id | endswith("first-party-unpinned-action"))' \
     "$TMP/unpinned.json" >/dev/null
 
