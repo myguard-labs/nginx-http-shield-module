@@ -1,4 +1,4 @@
-# sync-sha: e36a3b2280daee85fda1e1ceee4e5917cde9879b8902fc3c5ac65500b1c0c70a
+# sync-sha: 6f38f59959eb61ddfc2741d7fbee456621358bba5bc3a1a9e28b8c4dfcd7a664
 name: Build and Test
 
 env:
@@ -273,7 +273,10 @@ jobs:
           # exists now that the suite lives under ci/t/.
           TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
           TEST_NGINX_PORT: ${{ env.TEST_BASE_PORT }}
-        run: prove -v ci/t/
+        run: |
+          prove -v ci/t/ ci/causal/http.t
+          python3 ci/backend/check.py --nginx "$TEST_NGINX_BINARY" \
+            --module "$TEST_NGINX_LOAD_MODULES" --output /tmp/backend-contract.json
 
   asan:
     name: ASan and UBSan
@@ -328,7 +331,10 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           TEST_NGINX_SERVROOT: ${{ github.workspace }}/ci/t/servroot
           TEST_NGINX_PORT: ${{ env.TEST_BASE_PORT }}
-        run: prove -v ci/t/
+        run: |
+          prove -v ci/t/ ci/causal/http.t
+          python3 ci/backend/check.py --nginx "$TEST_NGINX_BINARY" \
+            --module "$TEST_NGINX_LOAD_MODULES" --output /tmp/backend-contract.json
 
       - name: Rejected reload replacement lifetime
         env:
@@ -374,6 +380,8 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # Offline replay needs the immutable scanner baseline.
+          fetch-depth: 0
           submodules: true
       - name: Load version pins
         run: bash .github/scripts/load-versions.sh
@@ -669,6 +677,8 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # Scan-core replay also reads the immutable baseline revision.
+          fetch-depth: 0
           submodules: true
       - name: Load version pins
         run: bash .github/scripts/load-versions.sh

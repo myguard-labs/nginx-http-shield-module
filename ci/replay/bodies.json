@@ -1,0 +1,192 @@
+{
+  "profile_plain": {
+    "body": "description=Hello+from+our+team.",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "profile_multiline": {
+    "body": "description=First+paragraph%0D%0ASecond+paragraph",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "profile_encoded_url": {
+    "body": "description=https%3A%2F%2Fexample.test%2Fa%252Fb",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "post_unicode": {
+    "body": "content=Caf%C3%A9%3A+%E2%82%AC12.50+%E2%80%94+hello",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "post_html": {
+    "body": "content=%3Ch1%3EHello%3C%2Fh1%3E%3Cp%3EWelcome+to+our+site.%3C%2Fp%3E",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "post_css": {
+    "body": "content=body+%7B+color%3A+red%3B+%7D",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "post_js": {
+    "body": "content=function+example%28%29+%7B+return+42%3B+%7D",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "post_relative_asset": {
+    "body": "{\"path\": \"../images/logo.png\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "post_php_example": {
+    "body": "content=%3C%3Fphp+echo+%22Hello%22%3B+%3F%3E",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "post_cookie_js": {
+    "body": "{\"content\": \"const x = document.cookie;\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "json_crlf_example": {
+    "body": "{\"example\": \"%0d%0a\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "json_nul_example": {
+    "body": "{\"example\": \"%00\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "json_overlong_example": {
+    "body": "{\"example\": \"%c0%af\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "plain_overlong_example": {
+    "body": "A URL encoding example is %c0%af.",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "post_sql_tutorial": {
+    "body": "content=Use+union+select+to+combine+query+results.",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "json_mongo_query": {
+    "body": "{\"filter\": {\"$where\": \"this.active == true\"}}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "post_mongo_tutorial": {
+    "body": "The MongoDB $where operator filters documents.",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "post_template_tutorial": {
+    "body": "content=The+template+expression+%7B%7B7%2A7%7D%7D+evaluates+to+49.",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "post_metadata_tutorial": {
+    "body": "content=The+metadata+URL+is+http%3A%2F%2F192.0.2.1%2Flatest%2Fmeta-data%2F.",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "plain_ssi_source": {
+    "body": "<!--#include virtual=\"/header.html\" -->",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "json_yaml_tag_example": {
+    "body": "{\"content\": \"A YAML tag example is !ruby/object:Example\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "json_flight_reference": {
+    "body": "{\"value\": \"$@1\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "json_graphql": {
+    "body": "{\"query\": \"query { user { id name } }\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "form_search": {
+    "body": "q=red+shoes+size+42",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "form_equals": {
+    "body": "note=x%3D1+and+y%3D2",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "json_regex": {
+    "body": "{\"pattern\": \"^[A-Z]+$\"}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "json_empty": {
+    "body": "{}",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "plain_empty": {
+    "body": "",
+    "content_type": "text/plain",
+    "source_role": "benign_authored_content"
+  },
+  "form_percent_tail": {
+    "body": "note=%",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "form_invalid_escape": {
+    "body": "note=%GG",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "form_short_escape": {
+    "body": "note=%0",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "form_url": {
+    "body": "url=https%3A%2F%2Fexample.test%2Fpath%3Fx%3D1%26y%3D2",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "benign_authored_content"
+  },
+  "form_sql_control": {
+    "body": "id=1+union+select+password",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "positive_attack_control"
+  },
+  "body_java_control": {
+    "body": "rO0ABXNy",
+    "content_type": "text/plain",
+    "source_role": "positive_attack_control"
+  },
+  "body_webshell_control": {
+    "body": "p0wny.php",
+    "content_type": "text/plain",
+    "source_role": "positive_attack_control"
+  },
+  "body_xmlrpc_control": {
+    "body": "<methodName>system.multicall</methodName>",
+    "content_type": "text/plain",
+    "source_role": "positive_attack_control"
+  },
+  "sqlite_public": {
+    "body": "id=1",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "controlled-sqlite-pair"
+  },
+  "sqlite_union_private": {
+    "body": "id=-1+union+select+value+from+private_data",
+    "content_type": "application/x-www-form-urlencoded",
+    "source_role": "controlled-sqlite-pair"
+  }
+}

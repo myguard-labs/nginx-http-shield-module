@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Shield threat ledger",
+  "type": "object",
+  "properties": {
+    "base": {
+      "type": "string",
+      "const": "189bd9e5f8af78f86cfaa6ae456159d239a1c653"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "properties": {
+          "era": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "family": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "affected": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "advisory": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "patch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "disclosure_date": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "review_cutoff": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "surfaces": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "backend_interpretation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "coverage_overlap": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "predicate": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "benign_counterexample": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "action_class": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "default candidate",
+              "deployment opt-in",
+              "observe only",
+              "outside visibility",
+              "patch/configuration mitigation",
+              "insufficient evidence"
+            ]
+          },
+          "performance_budget": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "mitigation_owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "parser_backend_versions": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "inspection_phase": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "site_contract": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "inspection_limits": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "rule_revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "owning_bundle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "id": {
+            "type": "string",
+            "pattern": "shield-[0-9a-f]{64}"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "signature",
+              "and-rule",
+              "profile",
+              "mechanism"
+            ]
+          },
+          "identity": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "evidence": {
+            "type": "string",
+            "enum": [
+              "inherited-unreviewed",
+              "reviewed"
+            ]
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "existing coverage",
+              "new default candidate",
+              "deployment opt-in",
+              "observe only",
+              "outside visibility",
+              "patch/configuration mitigation",
+              "insufficient evidence"
+            ]
+          },
+          "test_ids": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "supersedes": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "cves": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "products": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          }
+        },
+        "required": [
+          "era",
+          "family",
+          "affected",
+          "advisory",
+          "patch",
+          "disclosure_date",
+          "review_cutoff",
+          "surfaces",
+          "backend_interpretation",
+          "coverage_overlap",
+          "predicate",
+          "benign_counterexample",
+          "action_class",
+          "performance_budget",
+          "rationale",
+          "mitigation_owner",
+          "parser_backend_versions",
+          "inspection_phase",
+          "site_contract",
+          "inspection_limits",
+          "rule_revision",
+          "owning_bundle",
+          "id",
+          "kind",
+          "identity",
+          "evidence",
+          "disposition",
+          "test_ids",
+          "supersedes",
+          "sources",
+          "cves",
+          "products"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "base",
+    "entries"
+  ],
+  "additionalProperties": false
+}

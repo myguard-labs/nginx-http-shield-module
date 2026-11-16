@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "entry": "signature:sqli:756e696f6e2073656c656374",
+      "terms": [
+        "756e696f6e2073656c656374"
+      ],
+      "category": "sqli",
+      "positive_hex": "756e696f6e2073656c656374"
+    },
+    {
+      "entry": "signature:traversal:2e2e2f",
+      "terms": [
+        "2e2e2f"
+      ],
+      "category": "traversal",
+      "positive_hex": "2e2e2f"
+    },
+    {
+      "entry": "signature:deserial:3c6a6176612e6c616e672e70726f636573736275696c646572",
+      "terms": [
+        "3c6a6176612e6c616e672e70726f636573736275696c646572"
+      ],
+      "category": "deserial",
+      "positive_hex": "3c6a6176612e6c616e672e70726f636573736275696c646572"
+    },
+    {
+      "entry": "signature:java_eval:6a6176612e6c616e672e70726f636573736275696c646572",
+      "terms": [
+        "6a6176612e6c616e672e70726f636573736275696c646572"
+      ],
+      "category": "java_eval",
+      "positive_hex": "3c6a6176612e6c616e672e70726f636573736275696c646572"
+    },
+    {
+      "entry": "and-rule:ofbiz_authbypass:7265717569726570617373776f72646368616e67653d79,2f776562746f6f6c732f636f6e74726f6c2f",
+      "terms": [
+        "7265717569726570617373776f72646368616e67653d79",
+        "2f776562746f6f6c732f636f6e74726f6c2f"
+      ],
+      "category": "exploit_path",
+      "positive_hex": "7265717569726570617373776f72646368616e67653d79207c202f776562746f6f6c732f636f6e74726f6c2f"
+    },
+    {
+      "entry": "and-rule:metabase_jdbc_rce:6a6462633a68323a,696e69743d",
+      "terms": [
+        "6a6462633a68323a",
+        "696e69743d"
+      ],
+      "category": "deserial",
+      "positive_hex": "6a6462633a68323a207c20696e69743d"
+    },
+    {
+      "entry": "and-rule:jenkins_cli_read:2f636c693f,72656d6f74696e673d74727565",
+      "terms": [
+        "2f636c693f",
+        "72656d6f74696e673d74727565"
+      ],
+      "category": "exploit_path",
+      "positive_hex": "2f636c693f207c2072656d6f74696e673d74727565"
+    },
+    {
+      "entry": "and-rule:vmware_wsone_ssti:2f636174616c6f672d706f7274616c2f75692f6f617574682f766572696679,247b",
+      "terms": [
+        "2f636174616c6f672d706f7274616c2f75692f6f617574682f766572696679",
+        "247b"
+      ],
+      "category": "exploit_path",
+      "positive_hex": "2f636174616c6f672d706f7274616c2f75692f6f617574682f766572696679207c20247b"
+    },
+    {
+      "entry": "and-rule:ssrf_wildcard_dns:2e6e69702e696f,3136392d3235342d3136392d323534",
+      "terms": [
+        "2e6e69702e696f",
+        "3136392d3235342d3136392d323534"
+      ],
+      "category": "ssrf_meta",
+      "positive_hex": "2e6e69702e696f207c203136392d3235342d3136392d323534"
+    },
+    {
+      "entry": "and-rule:coldfusion_cfclient:2f63665f736372697074732f736372697074732f616a61782f636b656469746f722f706c7567696e732f66696c656d616e616765722f,5f6366636c69656e743d74727565",
+      "terms": [
+        "2f63665f736372697074732f736372697074732f616a61782f636b656469746f722f706c7567696e732f66696c656d616e616765722f",
+        "5f6366636c69656e743d74727565"
+      ],
+      "category": "exploit_path",
+      "positive_hex": "2f63665f736372697074732f736372697074732f616a61782f636b656469746f722f706c7567696e732f66696c656d616e616765722f207c205f6366636c69656e743d74727565"
+    }
+  ]
+}

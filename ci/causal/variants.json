@@ -1,0 +1,269 @@
+{
+  "version": 1,
+  "variants": [
+    {
+      "id": "sqlite_public/identity/content-store",
+      "parent": "sqlite_public",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "identity",
+      "endpoint": "content-store",
+      "body": "id=1",
+      "label": "benign",
+      "parent_body_sha256": "d9fc91d45c096b5e27dc6304d8015dc5cb0a959cd078ca25fafcf2333087728e"
+    },
+    {
+      "id": "sqlite_public/identity/sqlite-query",
+      "parent": "sqlite_public",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "identity",
+      "endpoint": "sqlite-query",
+      "body": "id=1",
+      "label": "benign",
+      "parent_body_sha256": "d9fc91d45c096b5e27dc6304d8015dc5cb0a959cd078ca25fafcf2333087728e"
+    },
+    {
+      "id": "sqlite_public/percent/content-store",
+      "parent": "sqlite_public",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "percent",
+      "endpoint": "content-store",
+      "body": "id=%31",
+      "label": "benign",
+      "parent_body_sha256": "d9fc91d45c096b5e27dc6304d8015dc5cb0a959cd078ca25fafcf2333087728e"
+    },
+    {
+      "id": "sqlite_public/percent/sqlite-query",
+      "parent": "sqlite_public",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "percent",
+      "endpoint": "sqlite-query",
+      "body": "id=%31",
+      "label": "benign",
+      "parent_body_sha256": "d9fc91d45c096b5e27dc6304d8015dc5cb0a959cd078ca25fafcf2333087728e"
+    },
+    {
+      "id": "sqlite_public/form-plus/content-store",
+      "parent": "sqlite_public",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "form-plus",
+      "endpoint": "content-store",
+      "body": "id=1",
+      "label": "benign",
+      "parent_body_sha256": "d9fc91d45c096b5e27dc6304d8015dc5cb0a959cd078ca25fafcf2333087728e"
+    },
+    {
+      "id": "sqlite_public/form-plus/sqlite-query",
+      "parent": "sqlite_public",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "form-plus",
+      "endpoint": "sqlite-query",
+      "body": "id=1",
+      "label": "benign",
+      "parent_body_sha256": "d9fc91d45c096b5e27dc6304d8015dc5cb0a959cd078ca25fafcf2333087728e"
+    },
+    {
+      "id": "sqlite_public/sql-case/content-store",
+      "parent": "sqlite_public",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "sql-case",
+      "endpoint": "content-store",
+      "body": "id=1",
+      "label": "benign",
+      "parent_body_sha256": "d9fc91d45c096b5e27dc6304d8015dc5cb0a959cd078ca25fafcf2333087728e"
+    },
+    {
+      "id": "sqlite_public/sql-case/sqlite-query",
+      "parent": "sqlite_public",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "sql-case",
+      "endpoint": "sqlite-query",
+      "body": "id=1",
+      "label": "benign",
+      "parent_body_sha256": "d9fc91d45c096b5e27dc6304d8015dc5cb0a959cd078ca25fafcf2333087728e"
+    },
+    {
+      "id": "sqlite_union_private/identity/content-store",
+      "parent": "sqlite_union_private",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "identity",
+      "endpoint": "content-store",
+      "body": "id=-1+union+select+value+from+private_data",
+      "label": "benign",
+      "parent_body_sha256": "f89a9a9704283f60c878307b67038853d2831d427c2f94f6f98e6beb43353769"
+    },
+    {
+      "id": "sqlite_union_private/identity/sqlite-query",
+      "parent": "sqlite_union_private",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "identity",
+      "endpoint": "sqlite-query",
+      "body": "id=-1+union+select+value+from+private_data",
+      "label": "attack",
+      "parent_body_sha256": "f89a9a9704283f60c878307b67038853d2831d427c2f94f6f98e6beb43353769"
+    },
+    {
+      "id": "sqlite_union_private/percent/content-store",
+      "parent": "sqlite_union_private",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "percent",
+      "endpoint": "content-store",
+      "body": "id=%2D%31%20%75%6E%69%6F%6E%20%73%65%6C%65%63%74%20%76%61%6C%75%65%20%66%72%6F%6D%20%70%72%69%76%61%74%65%5F%64%61%74%61",
+      "label": "benign",
+      "parent_body_sha256": "f89a9a9704283f60c878307b67038853d2831d427c2f94f6f98e6beb43353769"
+    },
+    {
+      "id": "sqlite_union_private/percent/sqlite-query",
+      "parent": "sqlite_union_private",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "percent",
+      "endpoint": "sqlite-query",
+      "body": "id=%2D%31%20%75%6E%69%6F%6E%20%73%65%6C%65%63%74%20%76%61%6C%75%65%20%66%72%6F%6D%20%70%72%69%76%61%74%65%5F%64%61%74%61",
+      "label": "attack",
+      "parent_body_sha256": "f89a9a9704283f60c878307b67038853d2831d427c2f94f6f98e6beb43353769"
+    },
+    {
+      "id": "sqlite_union_private/form-plus/content-store",
+      "parent": "sqlite_union_private",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "form-plus",
+      "endpoint": "content-store",
+      "body": "id=-1+union+select+value+from+private_data",
+      "label": "benign",
+      "parent_body_sha256": "f89a9a9704283f60c878307b67038853d2831d427c2f94f6f98e6beb43353769"
+    },
+    {
+      "id": "sqlite_union_private/form-plus/sqlite-query",
+      "parent": "sqlite_union_private",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "form-plus",
+      "endpoint": "sqlite-query",
+      "body": "id=-1+union+select+value+from+private_data",
+      "label": "attack",
+      "parent_body_sha256": "f89a9a9704283f60c878307b67038853d2831d427c2f94f6f98e6beb43353769"
+    },
+    {
+      "id": "sqlite_union_private/sql-case/content-store",
+      "parent": "sqlite_union_private",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "sql-case",
+      "endpoint": "content-store",
+      "body": "id=-1%20UNION%20SELECT%20VALUE%20FROM%20PRIVATE_DATA",
+      "label": "benign",
+      "parent_body_sha256": "f89a9a9704283f60c878307b67038853d2831d427c2f94f6f98e6beb43353769"
+    },
+    {
+      "id": "sqlite_union_private/sql-case/sqlite-query",
+      "parent": "sqlite_union_private",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "sql-case",
+      "endpoint": "sqlite-query",
+      "body": "id=-1%20UNION%20SELECT%20VALUE%20FROM%20PRIVATE_DATA",
+      "label": "attack",
+      "parent_body_sha256": "f89a9a9704283f60c878307b67038853d2831d427c2f94f6f98e6beb43353769"
+    },
+    {
+      "id": "sqlite_uncertain/identity/content-store",
+      "parent": "sqlite_uncertain",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "identity",
+      "endpoint": "content-store",
+      "body": "id=2",
+      "label": "benign",
+      "parent_body_sha256": "25d0c83ec3d0bc187def1660ccc450c9a7af16aadae2206da7e25efa1a1c76e3"
+    },
+    {
+      "id": "sqlite_uncertain/identity/sqlite-query",
+      "parent": "sqlite_uncertain",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "identity",
+      "endpoint": "sqlite-query",
+      "body": "id=2",
+      "label": "unclassified",
+      "parent_body_sha256": "25d0c83ec3d0bc187def1660ccc450c9a7af16aadae2206da7e25efa1a1c76e3"
+    },
+    {
+      "id": "sqlite_uncertain/percent/content-store",
+      "parent": "sqlite_uncertain",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "percent",
+      "endpoint": "content-store",
+      "body": "id=%32",
+      "label": "benign",
+      "parent_body_sha256": "25d0c83ec3d0bc187def1660ccc450c9a7af16aadae2206da7e25efa1a1c76e3"
+    },
+    {
+      "id": "sqlite_uncertain/percent/sqlite-query",
+      "parent": "sqlite_uncertain",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "percent",
+      "endpoint": "sqlite-query",
+      "body": "id=%32",
+      "label": "unclassified",
+      "parent_body_sha256": "25d0c83ec3d0bc187def1660ccc450c9a7af16aadae2206da7e25efa1a1c76e3"
+    },
+    {
+      "id": "sqlite_uncertain/form-plus/content-store",
+      "parent": "sqlite_uncertain",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "form-plus",
+      "endpoint": "content-store",
+      "body": "id=2",
+      "label": "benign",
+      "parent_body_sha256": "25d0c83ec3d0bc187def1660ccc450c9a7af16aadae2206da7e25efa1a1c76e3"
+    },
+    {
+      "id": "sqlite_uncertain/form-plus/sqlite-query",
+      "parent": "sqlite_uncertain",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "form-plus",
+      "endpoint": "sqlite-query",
+      "body": "id=2",
+      "label": "unclassified",
+      "parent_body_sha256": "25d0c83ec3d0bc187def1660ccc450c9a7af16aadae2206da7e25efa1a1c76e3"
+    },
+    {
+      "id": "sqlite_uncertain/sql-case/content-store",
+      "parent": "sqlite_uncertain",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "sql-case",
+      "endpoint": "content-store",
+      "body": "id=2",
+      "label": "benign",
+      "parent_body_sha256": "25d0c83ec3d0bc187def1660ccc450c9a7af16aadae2206da7e25efa1a1c76e3"
+    },
+    {
+      "id": "sqlite_uncertain/sql-case/sqlite-query",
+      "parent": "sqlite_uncertain",
+      "source_group": "sqlite-toy-sink-v1",
+      "split": "heldout",
+      "transform": "sql-case",
+      "endpoint": "sqlite-query",
+      "body": "id=2",
+      "label": "unclassified",
+      "parent_body_sha256": "25d0c83ec3d0bc187def1660ccc450c9a7af16aadae2206da7e25efa1a1c76e3"
+    }
+  ]
+}
