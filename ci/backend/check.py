@@ -225,7 +225,10 @@ def verify(row, response, hits, views, http, fcgi, hp, fp):
     name = row["id"]
     status = int(response.split(b" ", 2)[1])
     require(status == row["status"], f"{name}: response status {status}")
-    require(len(views) == 1, f"{name}: expected one Shield-server route observation")
+    require(
+        len(views) == 1,
+        f"{name}: expected one Shield-server route observation, got {views!r}",
+    )
     view = views[0]
     require(view["status"] == status, f"{name}: route status differs")
     require(bool(hits) == row["hit"], f"{name}: Shield hit attribution differs")
@@ -316,6 +319,23 @@ def verify(row, response, hits, views, http, fcgi, hp, fp):
     }
 
 
+async def finish_after_route(proc, path):
+    """Wait for request logging before terminating a single-process server."""
+    try:
+        async with asyncio.timeout(10):
+            while not (path.exists() and path.read_bytes().endswith(b"\n")):
+                require(
+                    proc.returncode is None,
+                    f"nginx exited before final route log: {proc.returncode}",
+                )
+                await asyncio.sleep(0.001)
+    except TimeoutError as exc:
+        content = path.read_bytes() if path.exists() else b""
+        raise TimeoutError(f"final route log incomplete: {content!r}") from exc
+    proc.send_signal(signal.SIGQUIT)
+    require(await asyncio.wait_for(proc.wait(), 10) == 0, "nginx shutdown failed")
+
+
 async def run_one(row, nginx, module):
     with tempfile.TemporaryDirectory(prefix="shield-backend-") as tmp:
         root = Path(tmp)
@@ -350,11 +370,7 @@ async def run_one(row, nginx, module):
                             break
                         await asyncio.sleep(0.01)
                 response = await raw(front if row["front"] else port, request(row))
-                proc.send_signal(signal.SIGQUIT)
-                require(
-                    await asyncio.wait_for(proc.wait(), 10) == 0,
-                    "nginx shutdown failed",
-                )
+                await finish_after_route(proc, root / "view.jsonl")
             await http.stop()
             await fcgi.stop()
             require(

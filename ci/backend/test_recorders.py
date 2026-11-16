@@ -5,10 +5,13 @@
 
 import asyncio
 import struct
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
-from check import CASES, config, module_arg, verify
+from check import CASES, config, finish_after_route, module_arg, verify
 from recorders import LIMIT, Recorder, fcgi_record, fcgi_request, http_request, params
 
 
@@ -103,6 +106,51 @@ class Attribution(unittest.TestCase):
 
 
 class Protocols(unittest.IsolatedAsyncioTestCase):
+    async def test_shutdown_waits_for_complete_route_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "view.jsonl"
+            proc = SimpleNamespace(
+                pid=424242,
+                returncode=None,
+                send_signal=Mock(),
+                wait=AsyncMock(return_value=0),
+            )
+            task = asyncio.create_task(finish_after_route(proc, path))
+            try:
+                await asyncio.sleep(0.003)
+                proc.send_signal.assert_not_called()
+                path.write_bytes(b'{"status":200}')
+                await asyncio.sleep(0.003)
+                proc.send_signal.assert_not_called()
+                path.write_bytes(b'{"status":200}\n')
+                await task
+                proc.send_signal.assert_called_once()
+                proc.wait.assert_awaited_once()
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_route_wait_fails_on_exit_or_incomplete_deadline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "view.jsonl"
+            proc = SimpleNamespace(
+                pid=424243, returncode=1, send_signal=Mock(), wait=AsyncMock()
+            )
+            with self.assertRaisesRegex(ValueError, "exited before final route log: 1"):
+                await finish_after_route(proc, path)
+            proc.returncode = None
+            path.write_bytes(b"partial")
+            timeout = asyncio.timeout
+            with (
+                patch("check.asyncio.timeout", side_effect=lambda _: timeout(0.01)),
+                self.assertRaisesRegex(
+                    TimeoutError, "final route log incomplete: b'partial'"
+                ),
+            ):
+                await finish_after_route(proc, path)
+            proc.send_signal.assert_not_called()
+
     async def test_http_complete_bytes(self):
         data = b"POST /raw?x=%41 HTTP/1.1\r\nContent-Length: 7\r\n\r\nA%00z+!"
         got = await http_request(reader(data))
