@@ -2,61 +2,91 @@
 
 [![Build&Test](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/build-test.yml)
 [![Lint](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/lint.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/lint.yml)
-[![Security Scanners](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml)
+[![Security
+Scanners](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/security-scanners.yml)
 [![Fuzzing](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/fuzzing.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/fuzzing.yml)
 [![Valgrind](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/valgrind.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/valgrind.yml)
 [![CodeQL](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/codeql.yml)
 [![A/UBSan](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/asan.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/asan.yml)
 [![Windows](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/windows-build.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/windows-build.yml)
-[![CI Deep](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml)
-[![Bump versions](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/bump.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/bump.yml)
+[![CI
+Deep](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/ci-deep.yml)
+[![Bump
+versions](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/bump.yml/badge.svg)](https://github.com/myguard-labs/nginx-http-shield-module/actions/workflows/bump.yml)
 
-> 📖 **Read the article:** [nginx-http-shield-module: A Bounded Exploit Filter](https://deb.myguard.nl/articles/nginx-http-shield-module/)
-> — what it blocks, why the engine is an Aho-Corasick automaton, and how to roll it out from `detect` to `block`.
+A bounded request filter for nginx and Angie. Shield matches compiled exploit
+forms in request targets, selected headers and eligible body prefixes. Run it
+in `detect` mode to review matches, then enable `block` on the locations where
+the policy fits the application. The module is **off by default**.
 
-A small nginx dynamic module that blocks exploitation of web vulnerabilities
-that were **patched years ago** — SQL injection, ancient PHP/Java RCE chains,
-Log4Shell, Shellshock, path traversal, cloud-metadata SSRF, and more.
+Shield has no runtime rule language or regular-expression engine. Its fixed
+literal and structural checks are a small part of an application's protection:
+a signature match does not prove a vulnerable backend, and an unmatched request
+is not a clean bill of health. Keep applications patched and use a full WAF
+where broader policy is needed.
 
-It is deliberately **not a general-purpose WAF**. There is no rules language,
-no regex engine, no external ruleset to keep updated — just a fixed set of
-compiled-in signatures chosen to avoid known legitimate forms in the shipped
-negative corpus. That narrow scope reduces false positives, but it does not
-make every application safe to block without observation. Start in `detect`
-mode, inspect the hits, and use a full WAF such as ModSecurity or Coraza where
-the application needs broader policy.
+[Read the deployment
+article](https://deb.myguard.nl/articles/nginx-http-shield-module/) for the
+operating model, or use the [operator guide](docs/deployment.md) for a short
+rollout checklist.
 
-Think of it as a **legacy-exploit floor**: cheap, always-on, catches the
-internet background radiation of exploit scanners hammering CVEs from 2012.
-Run a real WAF on top where you need one.
+## Start here
 
-Coverage is limited to known request forms, not all PHP vulnerabilities. The
-reviewed October 2026 PHP [request-lifetime](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w),
-[cross-request state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp),
-and [upload-progress](https://www.php.net/archive/2026.php#2026-10-23-1) issues
-provided no reliable attack-only literal to add here. The
-[Brotli issue](https://github.com/google/brotli/releases/tag/v1.2.1) also
-affects [backends that decompress incoming request bodies](https://github.com/dotnet/runtime/security/advisories/GHSA-p3jp-9v83-76w9).
-Shield's opt-in gzip inspection does not cover Brotli-encoded bodies or inspect
-responses. Remediate affected runtimes and dependencies upstream; these
-signatures do not make them safe.
+| Task | Read |
+| --- | --- |
+| Build and load the module | [Install](#install) |
+| Try it without changing responses | [Configuration](#configuration) and [operator guide](docs/deployment.md) |
+| Decide what body text should enforce | [Ambiguous body markers](#ambiguous-body-markers) and [body exclusions](#not-every-category-is-scanned-in-the-body) |
+| Select a policy for a particular application | [Application-specific CVE controls](#application-specific-cve-controls) |
+| Inspect compressed requests | [Gzip inspection contract](#optional-gzip-request-inspection) |
+| Monitor without exporting request content | [Hit log](#hit-log), [status endpoint](#status-endpoint) and [reporter](#reporting-to-abuseipdb) |
+| Test an exception and roll it back | [Scoped trial and rollback](#scoped-trial-and-rollback) |
+| Build, test or extend the module | [Testing](#testing), [CI](#ci) and [adding a signature](#adding-a-signature) |
+
+## Protection boundaries
+
+Body inspection defaults to an 8 KiB prefix of eligible content. It is an
+inspection budget, not an upload limit. Unknown/binary media types and bytes
+beyond the cap remain uninspected. Gzip decoding and application-specific
+`shield_cve` profiles are opt-in. Brotli bodies and responses are not decoded
+or inspected by those features.
+
+Eight ambiguous body markers are **observed rather than enforced by default**,
+even in block mode. `shield_body_strict on` enables enforcement for those
+markers where the application sink justifies it; it does not enable every
+category in bodies. Review the exact [policy tradeoff](#ambiguous-body-markers)
+before changing the setting.
+
+The hit log keeps operational labels and a client address, with `req` always
+empty. It contains no request target, body, cookie or authorization value. The
+bundled AbuseIPDB reporter currently sends **no reports**: its reviewed
+promotion registry is empty. Neither a block nor a signature match proves
+exploit intent.
 
 ## Client IP whitelist
 
-Trusted clients can bypass Shield with the native IP allowlist (whitelist).
-Use `shield_allow` for individual IPv4/IPv6 addresses or CIDR networks, at the
-`http`, `server` or `location` level. Matching clients bypass all Shield checks
-and bans; other nginx access controls still apply. See [Client IP allowlist](#client-ip-allowlist)
-for configuration, inheritance and trusted-proxy handling.
+`shield_allow` accepts trusted IPv4/IPv6 addresses and CIDRs. A match bypasses
+all Shield checks, bans, counters and hit logs; other nginx access controls
+still apply. See [Client IP allowlist](#client-ip-allowlist) for inheritance
+and trusted-proxy handling. Use this only for clients trusted to bypass the
+entire module.
 
 ## PHP execution boundaries
 
-The optional [native PHP boundary recipe](contrib/php-boundary/README.md)
-restricts FastCGI dispatch to declared absolute PHP entrypoints and excludes
-explicit upload/cache/media filesystem trees. It includes front-controller and
-public static-file routing, an exact installation contract, and live
-nginx/Angie tests with a recording FastCGI backend. Operators must adapt and
-verify the whole recipe; Shield does not change application configuration.
+Shield does not decide which PHP scripts nginx may execute or which filesystem
+paths are private. Those are deployment contracts. The optional companions have
+separate setup and validation requirements:
+
+- [PHP boundary recipe](contrib/php-boundary/README.md): restrict FastCGI
+  dispatch
+  to declared entrypoints and exclude upload/cache/media trees.
+- [Private filesystem destinations](contrib/private-destinations/README.md):
+  protect the actual opened file, including aliases and symlinks.
+- [Final FastCGI handoff](contrib/final-handoff/README.md): check generated
+  script
+  and privileged parameter vectors against an explicit contract.
+- [Deployment checker](contrib/deployment-checker/README.md): analyze a reviewed
+  configuration snapshot; it does not replace `nginx -t` or runtime tests.
 
 ## What it blocks
 
@@ -65,7 +95,7 @@ strings) and six AND rules with 12 terms. Matching is case-insensitive and uses
 the raw and/or percent-decoded view declared by each category:
 
 | Category | Examples |
-|----------|----------|
+| ---------- | ---------- |
 | `sqli` | `union select` plus comment/control-whitespace evasions, `' or 1=1`, `into outfile`, time-based calls in quote or operator context (`' and sleep(`, `;sleep(`, `pg_sleep(`, `benchmark(`, `waitfor delay`), database escape APIs such as `sp_oacreate` and `pg_read_file(` |
 | `xss` | `<script`, `javascript:`, entity-encoded `javascript&#x3a;`, `data:text/html`, `onerror=`, `onpointerenter=` |
 | `traversal` | the traversal **gadget**: `../`, `..\`, `..;/`, `.%2e/` (CVE-2021-41773), `....//` |
@@ -101,13 +131,12 @@ What is inspected: the request line and query string; `User-Agent` with the
 full ruleset; `Referer` with sensitive-file matches excluded; `Content-Type`
 for header-borne exploits such as Struts OGNL; URI-bearing `Destination`,
 `X-Original-URL` and `X-Rewrite-URL` with the full ruleset; injection-shaped
-cookie values; and every other
-request-header value for Log4Shell and Shellshock. Opaque header values
-deliberately do not run short gadget/webshell tokens that would eventually
-collide with random credentials or multipart boundary entropy. When enabled,
-text-shaped request bodies are inspected too — including a body sent with no
-`Content-Type` header at all, since RFC 9110 makes the header optional and
-origin apps still consume such bodies.
+cookie values; and every other request-header value for Log4Shell and
+Shellshock. Opaque header values deliberately do not run short gadget/webshell
+tokens that would eventually collide with random credentials or multipart
+boundary entropy. When enabled, text-shaped request bodies are inspected too —
+including a body sent with no `Content-Type` header at all, since RFC 9110
+makes the header optional and origin apps still consume such bodies.
 
 What is **not** done: scanner-name blocking (User-Agent strings like `sqlmap`
 are trivially spoofed, so they are not matched — but payloads carried *inside*
@@ -115,17 +144,18 @@ those headers, like Shellshock, are).
 
 ## Private filesystem destinations
 
-For explicitly private files and trees, use the native
-[private destination recipe](contrib/private-destinations/README.md). Kernel
-permissions protect the actual file opened by nginx/Angie, including aliases,
-rewrites, internal redirects and symlink targets. It preserves declared public
-files and legitimate public symlinks under a separate worker/backend ownership
-contract; no Shield directive or automatic configuration change is involved.
+For explicitly private files and trees, use the native [private destination
+recipe](contrib/private-destinations/README.md). Kernel permissions protect the
+actual file opened by nginx/Angie, including aliases, rewrites, internal
+redirects and symlink targets. It preserves declared public files and
+legitimate public symlinks under a separate worker/backend ownership contract;
+no Shield directive or automatic configuration change is involved.
 
-The optional [deployment checker](contrib/deployment-checker/README.md) inspects
-an explicit configuration snapshot and site contract without applying changes.
-It reports effective category skips, PHP/final-handoff mapping problems, private
-file obligations and public internal routes. Unsupported input stays nonclean.
+The optional [deployment checker](contrib/deployment-checker/README.md)
+inspects an explicit configuration snapshot and site contract without applying
+changes. It reports effective category skips, PHP/final-handoff mapping
+problems, private file obligations and public internal routes. Unsupported
+input stays nonclean.
 
 ## Install
 
@@ -150,8 +180,8 @@ load_module modules/ngx_http_shield_module.so;
 ### Windows
 
 The module supports native 64-bit Windows builds with both MSVC and MinGW-w64.
-It uses nginx APIs only, so it needs no Windows compatibility shim or additional
-system libraries.
+It uses nginx APIs only, so it needs no Windows compatibility shim or
+additional system libraries.
 
 - **MSVC:** build the module statically with
   `--add-module=C:/path/to/nginx-http-shield-module`. nginx's MSVC build does
@@ -161,12 +191,12 @@ system libraries.
   `objs/ngx_http_shield_module.so` from the main nginx configuration.
 
 nginx's native Windows build does not discover installed PCRE2 or zlib
-automatically. Pass their unpacked source directories through `--with-pcre`
-and `--with-zlib`; see
-[the Windows CI workflow](.github/workflows/windows-build.yml) for complete,
-SHA-256-verified MSVC and MinGW-w64 examples. The workflow also starts each
-built server and verifies that a benign request succeeds while an SQL-injection
-probe is blocked.
+automatically. Pass their unpacked source directories through `--with-pcre` and
+`--with-zlib`; see [the Windows CI
+workflow](.github/workflows/windows-build.yml) for complete, SHA-256-verified
+MSVC and MinGW-w64 examples. The workflow also starts each built server and
+verifies that a benign request succeeds while an SQL-injection probe is
+blocked.
 
 Or use the helper for a throwaway build:
 
@@ -176,33 +206,44 @@ ci/tools/ci-build.sh                     # uses .github/versions.env; debug .so 
 
 ## Configuration
 
+Start with a detect-only configuration. This example proxies to an application
+on port 9000; retain your site's actual content handler when adapting it.
+`load_module` belongs in the main configuration, before `http {}`.
+
 ```nginx
 http {
-    # Turn on globally in detect mode first, watch the logs, then switch to block.
     shield detect;
-
-    # Optional: a shared-memory zone for the repeat-offender ban list.
-    shield_ban_zone shield:10m;
+    shield_body on;                 # default on
+    shield_max_body 8k;              # inspected prefix, not an upload limit
+    shield_log /var/log/nginx/shield.json;
+    shield_stats_zone shield_metrics 64k;
 
     server {
-        location / {
-            shield block;          # off | detect | block
-            shield_body on;        # inspect request body (default on)
-            shield_max_body 8k;    # bytes of body scanned (default 8k)
-            shield_status 403;      # 403 | 404 | 419 | 429 | 444 (default 403)
-            shield_log /var/log/nginx/shield.json;  # JSON hit log (off by default)
+        listen 8080;
 
-            # Ban an IP for 1h once it trips 5 signatures within 1 minute.
-            shield_ban zone=shield count=5 window=1m bantime=1h;
+        location / {
+            proxy_pass http://127.0.0.1:9000;
         }
 
-        location /legacy-app/ {
-            shield block;
-            shield_skip sqli xss;  # disable specific categories here
+        location = /shield-metrics {
+            shield off;
+            shield_ban_status shield_metrics;
+            shield_ban_status_format prometheus;
+            allow 127.0.0.1;
+            deny all;
         }
     }
 }
 ```
+
+Size every shared zone for at least eight host memory pages. The `64k` example
+needs `128k` or more on a host with 16 KiB pages.
+
+Run `nginx -t` (or `angie -t`) before reloading. Exercise real application
+workflows and inspect category, source, rule identity and byte view. Then set
+`shield block;` in one reviewed location; the default rejection status is 403.
+Keep bans and external reporting out of the initial trial. The [operator
+guide](docs/deployment.md) covers monitoring, exceptions and rollback.
 
 ### Ambiguous body markers
 
@@ -211,29 +252,29 @@ With body inspection enabled, `%c0%af`, `union select`, `{"$where":`,
 `!ruby/object:` are observed by default in bodies. They can occur in stored
 examples without an evaluating sink. Observation emits a local notice with
 category, source and `verdict=suspicious action=observe` to file sinks only
-(writer callbacks such as syslog are excluded); it does not reject,
-accumulate bans, increment attack counters or enter the `shield_log` reporter
-feed. No request or body text is added to this notice. An observation does not
-certify that the content is safe or fully inspected.
+(writer callbacks such as syslog are excluded); it does not reject, accumulate
+bans, increment attack counters or enter the `shield_log` reporter feed. No
+request or body text is added to this notice. An observation does not certify
+that the content is safe or fully inspected.
 
-The flag is inherited; a location can explicitly set it off.
-Set `shield_body_strict on;` only where a validated decoding, SQL, query,
-template, fetch, SSI or YAML sink needs these exact predicates enforced under
-the configured block/detect and ban policy. With the default off, enforcement
-of payloads relying solely on these eight markers is lost, including a tested
-SQL extraction. URI/header policies, other signatures (including siblings in
-the same category), AND rules, body bounds and exclusions remain unchanged.
-An enforceable match in either body byte view takes priority over observation.
+The flag is inherited; a location can explicitly set it off. Set
+`shield_body_strict on;` only where a validated decoding, SQL, query, template,
+fetch, SSI or YAML sink needs these exact predicates enforced under the
+configured block/detect and ban policy. With the default off, enforcement of
+payloads relying solely on these eight markers is lost, including a tested SQL
+extraction. URI/header policies, other signatures (including siblings in the
+same category), AND rules, body bounds and exclusions remain unchanged. An
+enforceable match in either body byte view takes priority over observation.
 `shield_skip` still suppresses an entire category on all eligible surfaces.
 
 ### Directives
 
 | Directive | Context | Default | Description |
-|-----------|---------|---------|-------------|
+| ----------- | --------- | --------- | ------------- |
 | `shield` | http, server, location | `off` | `off` disables; `detect` logs only; `block` rejects. |
 | `shield_cve` | http, server, location | `off` | Opt-in application policies; see below. |
 | `shield_body` | http, server, location | `on` | Inspect the request body (text-shaped content types only). |
-| `shield_body_strict` | http, server, location | `off` | Strict body policy. |
+| `shield_body_strict` | http, server, location | `off` | Enforce the eight ambiguous body markers instead of observing them; does not override body category exclusions. See [Ambiguous body markers](#ambiguous-body-markers). |
 | `shield_max_body` | http, server, location | `8k` | Decoded/output inspection budget from the start of an eligible body (maximum `16m` when gzip inspection is enabled). For larger bodies, the remainder is not inspected; this does not enforce upload size. |
 | `shield_gzip` | http, server, location | `off` | Decode and inspect a single gzip request representation under the strict backend contract below. |
 | `shield_max_encoded_body` | http, server, location | `64k` | Encoded gzip input inspection budget (maximum `16m`); does not enforce upload size. |
@@ -281,10 +322,10 @@ Both entries apply to `/`; `/untrusted/` has no allowlisted clients and still
 runs Shield. Check the configuration with `nginx -t` before reloading nginx.
 
 Matching uses nginx's effective client address, including nginx's IPv4-mapped
-IPv6 handling: mapped clients are matched as IPv4 by `ngx_cidr_match`. Configured
-mapped IPv6 CIDRs wholly within `::ffff:0:0/96` are normalized to IPv4; broader
-IPv6 prefixes retain nginx's matching semantics. Behind a trusted proxy,
-configure real IP handling with only the proxy's addresses:
+IPv6 handling: mapped clients are matched as IPv4 by `ngx_cidr_match`.
+Configured mapped IPv6 CIDRs wholly within `::ffff:0:0/96` are normalized to
+IPv4; broader IPv6 prefixes retain nginx's matching semantics. Behind a trusted
+proxy, configure real IP handling with only the proxy's addresses:
 
 ```nginx
 http {
@@ -303,14 +344,14 @@ Never trust forwarded headers from arbitrary clients: they could choose an
 allowlisted address. Shield does not use `shield_ban key=forwarded` for this
 match. Allowlisted requests bypass all Shield checks, bans, counters and hit
 logs, but remain in nginx access logs. nginx `allow`/`deny` does not bypass
-Shield; `shield_skip` only disables specified categories. Allowlist only clients
-trusted to bypass all Shield protection.
+Shield; `shield_skip` only disables specified categories. Allowlist only
+clients trusted to bypass all Shield protection.
 
 ### Application-specific CVE controls
 
-These optional policies inspect selected request forms associated with newer CVEs.
-Select them only on the corresponding application locations, initially with
-`shield detect`. They have compatibility costs and are narrower than the
+These optional policies inspect selected request forms associated with newer
+CVEs. Select them only on the corresponding application locations, initially
+with `shield detect`. They have compatibility costs and are narrower than the
 generic signature policy. All profiles default to off.
 
 ```nginx
@@ -328,9 +369,9 @@ location /next/ {
 
 `shield_cve` accepts one or more names below, or `off` by itself. A child
 inherits the parent selection if omitted; an explicit selection replaces it,
-and `off` clears it. Duplicate directives, repeated names and unknown names
-are configuration errors. Profiles honor `shield off`, `detect`, configured
-block status, `shield_skip`, hit logs, counters and repeat-offender accounting.
+and `off` clears it. Duplicate directives, repeated names and unknown names are
+configuration errors. Profiles honor `shield off`, `detect`, configured block
+status, `shield_skip`, hit logs, counters and repeat-offender accounting.
 
 | Profile | Inspected form | Reported category |
 | --- | --- | --- |
@@ -342,22 +383,23 @@ block status, `shield_skip`, hit logs, counters and repeat-offender accounting.
 | `json_escapes` | The existing React2Shell Flight gadget suffixes after one JSON string-escape decoding pass, for JSON, `+json` and multipart form bodies. Addresses an encoding gap in the CVE-2025-55182 literal coverage. | `deserial` |
 
 Body policies require `shield_body on` and a scannable media type. Only the
-`shield_max_body` prefix is inspected; bytes after it remain uninspected.
-Craft JSON strings receive the same escape view, so escaped PHP namespace
-separators and ASCII Unicode escapes are visible. Form bodies receive one
-percent-decoding pass. JSON string tokens are inspected independently for
-Flight suffixes; tokens cannot join to manufacture a match. Multipart field contents are inspected independently using the declared
-boundary, so a malformed field cannot suppress later fields. Missing, duplicate
-or invalid boundary parameters, or conflicting boundaries across duplicate
-headers, fail inspection with a server error in block mode; detect mode logs
-the inspection error and preserves the response. Each view is scanned at most
-once regardless of the number of Content-Type headers. Complete
-JSON tokens before a malformed or truncated string remain inspected. This is an inspection
-view, not a complete JSON or multipart validator: it does not alter forwarded
-bytes, recursively decode string values, inspect binary
-uploads, or enforce a request-size limit. Non-ASCII JSON code points cannot
-join the ASCII gadget tokens. JSON and percent-decoding views are separate.
-With `shield_gzip on`, these views run on the successfully decoded prefix.
+`shield_max_body` prefix is inspected; bytes after it remain uninspected. Craft
+JSON strings receive the same escape view, so escaped PHP namespace separators
+and ASCII Unicode escapes are visible. Form bodies receive one percent-decoding
+pass. JSON string tokens are inspected independently for Flight suffixes;
+tokens cannot join to manufacture a match. Multipart field contents are
+inspected independently using the declared boundary, so a malformed field
+cannot suppress later fields. Missing, duplicate or invalid boundary
+parameters, or conflicting boundaries across duplicate headers, fail inspection
+with a server error in block mode; detect mode logs the inspection error and
+preserves the response. Each view is scanned at most once regardless of the
+number of Content-Type headers. Complete JSON tokens before a malformed or
+truncated string remain inspected. This is an inspection view, not a complete
+JSON or multipart validator: it does not alter forwarded bytes, recursively
+decode string values, inspect binary uploads, or enforce a request-size limit.
+Non-ASCII JSON code points cannot join the ASCII gadget tokens. JSON and
+percent-decoding views are separate. With `shield_gzip on`, these views run on
+the successfully decoded prefix.
 
 Coverage is for the listed forms, not complete protection for any CVE.
 Alternate gadgets, XML entity encodings, backend parsing differences and
@@ -377,10 +419,10 @@ forwarding and policy behavior; it does not certify another application's
 compression support or turn code-shaped text into a universally unsafe body.
 Deploy this only where the backend rejects malformed deflate data, bad payload
 CRC/size, truncated gzip and non-padding trailing data before interpreting
-decoded content. A backend that
-ignores trailing garbage or acts before integrity validation is outside this
-protection contract. The recording-backend tests verify strict rejection of
-these representations while asserting the original forwarded bytes.
+decoded content. A backend that ignores trailing garbage or acts before
+integrity validation is outside this protection contract. The recording-backend
+tests verify strict rejection of these representations while asserting the
+original forwarded bytes.
 
 ```nginx
 http {
@@ -397,61 +439,63 @@ http {
 
 The module requires the supported zlib library at build time (development
 headers and library, or nginx's `--with-zlib` source configuration). A dynamic
-system-zlib build links libz directly so it can load into a compatible core that
-has no other zlib user. A Unix dynamic bundled-zlib build links the bundled
-static archive into the module, building those library objects as PIC. Both
-paths support loading into a compatible core without its own zlib user.
-It calls
-`inflateInit2(31)` and at most 192 inflate calls for 64 members: two
-bounded `Z_BLOCK` header calls and one `Z_FINISH` payload call per member, without a decoder fork or unbounded retry loop. `inflateReset2(31)`
-reuses the same stream and allocations between members. The helper returns the exact consumed bytes, produced
-bytes, zlib status and allocation counts. Its private arena permits at most
-64 KiB of zlib allocations and is released after decoding. The encoded copy
-is bounded by `shield_max_encoded_body`; the decoded buffer is
-`shield_max_body + 1` bytes. The extra byte detects an exact fit without
-claiming completion at a cap. The existing scanner still owns its bounded
-scratch buffers. Both inspection budgets may be zero and must not exceed
-16 MiB when gzip inspection is enabled; neither changes nginx's upload limit.
-Input, output and member budgets bound decoder work, including
-expansion bombs and gzip optional header fields. No shared lock is added.
+system-zlib build links libz directly so it can load into a compatible core
+that has no other zlib user. A Unix dynamic bundled-zlib build links the
+bundled static archive into the module, building those library objects as PIC.
+Both paths support loading into a compatible core without its own zlib user. It
+calls `inflateInit2(31)` and at most 192 inflate calls for 64 members: two
+bounded `Z_BLOCK` header calls and one `Z_FINISH` payload call per member,
+without a decoder fork or unbounded retry loop. `inflateReset2(31)` reuses the
+same stream and allocations between members. The helper returns the exact
+consumed bytes, produced bytes, zlib status and allocation counts. Its private
+arena permits at most 64 KiB of zlib allocations and is released after
+decoding. The encoded copy is bounded by `shield_max_encoded_body`; the decoded
+buffer is `shield_max_body + 1` bytes. The extra byte detects an exact fit
+without claiming completion at a cap. The existing scanner still owns its
+bounded scratch buffers. Both inspection budgets may be zero and must not
+exceed 16 MiB when gzip inspection is enabled; neither changes nginx's upload
+limit. Input, output and member budgets bound decoder work, including expansion
+bombs and gzip optional header fields. No shared lock is added.
 
 Only one Content-Encoding field with the single case-insensitive token `gzip`
 is decoded. Up to 64 concatenated gzip members and zero padding between/after
-members are supported, matching the recording backend's accepted forms.
-The four-byte inspection header clears reserved flags. zlib parses optional
+members are supported, matching the recording backend's accepted forms. The
+four-byte inspection header clears reserved flags. zlib parses optional
 extra/name/comment fields and identifies their end; an original FHCRC field is
 skipped unchecked, as Python gzip does. Payload CRC and uncompressed-size
-validation remain enabled. Original compressed bytes are never rewritten.
-Known non-member trailing magic takes precedence over byte/member limits. Absent encoding or one `identity` value uses the existing path.
-Repeated fields, comma-separated/stacked encodings, other tokens and non-padding
-trailing bytes are unsupported inspection representations.
-They keep the legacy raw-byte scan and count as incomplete. A malformed or
-truncated stream likewise retains only the raw scan; decoded bytes from an
-invalid representation are never treated as validated text. A valid decoded
-prefix at the output cap is scanned and counted as partial, even if it
-matches an admitted attack. Bytes beyond either budget are never claimed
-inspected, and trailer integrity is not established for capped output. A module input cap
-that cuts a gzip stream also retains its decoded prefix for scanning, unlike
-a genuinely truncated complete upload. It counts as incomplete encoding; bytes
-and trailer integrity beyond the input budget remain uninspected. At the
-member cap, the decoded prefix is scanned and counted as incomplete encoding;
-an input cap takes counter precedence over a simultaneous decoded output cap.
+validation remain enabled. Original compressed bytes are never rewritten. Known
+non-member trailing magic takes precedence over byte/member limits. Absent
+encoding or one `identity` value uses the existing path. Repeated fields,
+comma-separated/stacked encodings, other tokens and non-padding trailing bytes
+are unsupported inspection representations. They keep the legacy raw-byte scan
+and count as incomplete. A malformed or truncated stream likewise retains only
+the raw scan; decoded bytes from an invalid representation are never treated as
+validated text. A valid decoded prefix at the output cap is scanned and counted
+as partial, even if it matches an admitted attack. Bytes beyond either budget
+are never claimed inspected, and trailer integrity is not established for
+capped output. A module input cap that cuts a gzip stream also retains its
+decoded prefix for scanning, unlike a genuinely truncated complete upload. It
+counts as incomplete encoding; bytes and trailer integrity beyond the input
+budget remain uninspected. At the member cap, the decoded prefix is scanned and
+counted as incomplete encoding; an input cap takes counter precedence over a
+simultaneous decoded output cap.
 
 The feature changes only the inspection view: original buffers, file offsets,
 Content-Encoding, Content-Length and compressed bytes remain available to the
 content handler unchanged. It reuses `shield_body`, media-type admission,
 category skips, `shield_cve`, configured status, and off/detect/block actions.
-An encoding error or inspection cap alone never rejects an upload; resource
-or I/O failure follows the existing inspection-failure action. A deployment
+An encoding error or inspection cap alone never rejects an upload; resource or
+I/O failure follows the existing inspection-failure action. A deployment
 requiring complete inspection must monitor the incomplete counters and set
 budgets appropriate to its explicit backend contract.
 
 ### Repeat-offender banning
 
-In block mode, a single shield hit blocks that request. `shield_ban` escalates a **persistent**
-attacker to a hard ban: after `count` hits inside a `window`, the client
-IP is refused for `bantime` — with the configured `shield_status`, **before any
-signature scanning**, so a known-bad IP costs only a shared-memory lookup.
+In block mode, a single shield hit blocks that request. `shield_ban` escalates
+a **persistent** attacker to a hard ban: after `count` hits inside a `window`,
+the client IP is refused for `bantime` — with the configured `shield_status`,
+**before any signature scanning**, so a known-bad IP costs only a shared-memory
+lookup.
 
 The `window` is **fixed (tumbling), not sliding**: the first hit starts it, and
 once it elapses the counter resets wholesale rather than ageing out individual
@@ -477,14 +521,16 @@ http {
   while it stays in observation mode for everyone else.
 - **Keyed on the client IP** (IPv4 or IPv6), stored in the shm zone, shared
   across all worker processes. A `10m` zone holds on the order of 10⁵ addresses.
-  When it fills, only **genuinely stale** entries are reclaimed — an entry with a
+  When it fills, only **genuinely stale** entries are reclaimed — an entry with
+  a
   live ban or a live counting window is never evicted to make room, so an
   attacker cannot rotate addresses to flush a pending ban. If nothing is
-  reclaimable the new hit is dropped and `zone … is full` is logged rather than a
+  reclaimable the new hit is dropped and `zone … is full` is logged rather than
+  a
   live entry being sacrificed. Behind a proxy, see
   [Banning behind a proxy](#banning-behind-a-proxy) — the default key is the TCP
   peer, which would otherwise be your proxy for every client.
-- **The ban takes effect on the attacker's _next_ request** — the hit that
+- **The ban takes effect on the attacker's *next* request** — the hit that
   reaches the threshold is still handled on its own merits.
 - **`window` and `bantime`** take nginx time units (`s`, `m`, `h`, `d`).
 - Put `shield_ban_zone` in the `http{}` block once; reference it by name from as
@@ -494,7 +540,8 @@ http {
   against one zone cross-applies whichever location handled the request and
   corrupts the count. Locations that need different policies must each reference
   their own zone.
-- **Zone state is per-instance and non-persistent.** The shm zone is an anonymous
+- **Zone state is per-instance and non-persistent.** The shm zone is an
+  anonymous
   mapping: it does not survive a binary upgrade or a full restart, and bans are
   lost with it. A reload keeps the zone (and so the bans) as long as the zone
   name and size are unchanged.
@@ -534,12 +581,12 @@ http {
 ```
 
 The exception observes the eight ambiguous body markers only. URI, header,
-other body signatures and sibling locations retain their configured protections.
-All eight markers change together: this is neither a single-rule exception nor
-proof of an exploit or application sink. If the application needs a narrower
-exception, leave the candidate unpromoted until a precise control exists.
-`shield_skip` disables a whole category; `shield_allow` and `shield off` bypass
-Shield more broadly. They cannot express that narrower exception.
+other body signatures and sibling locations retain their configured
+protections. All eight markers change together: this is neither a single-rule
+exception nor proof of an exploit or application sink. If the application needs
+a narrower exception, leave the candidate unpromoted until a precise control
+exists. `shield_skip` disables a whole category; `shield_allow` and `shield
+off` bypass Shield more broadly. They cannot express that narrower exception.
 
 1. Start with observation and validate the application's behavior and diagnostic
    rule/revision identity. A ban-free `shield detect` trial must have no ban
@@ -598,31 +645,33 @@ location / {
 so it is only believed under two conditions, both enforced:
 
 - **`trusted=` is mandatory with `key=forwarded`.** It lists the proxies whose
-  header you accept, as addresses or CIDRs, and may be repeated. Omitting it is a
+  header you accept, as addresses or CIDRs, and may be repeated. Omitting it is
+  a
   **configuration error**, not a silent fallback: without it any direct client
-  could pick its own ban key, ban third parties by forging a header, and fill the
+  could pick its own ban key, ban third parties by forging a header, and fill
+  the
   zone with unlimited fake entries. Config with `trusted=` but no
   `key=forwarded` is rejected too, since it would quietly do nothing.
 - **The header is read only when the TCP peer is itself in `trusted=`.** A
   request arriving directly — not through your proxy — always keys on its real
   peer address no matter what it claims.
 
-The **rightmost** `X-Forwarded-For` entry is used, not the leftmost. The header is
-append-only, so the leftmost value is whatever the original client claimed and is
-attacker-controlled even behind a trusted proxy; the rightmost is what your
-nearest trusted proxy actually observed. If the header is absent, unparsable, or
-the peer is untrusted, the key falls back to the peer address — over-broad, but
-never attacker-chosen.
+The **rightmost** `X-Forwarded-For` entry is used, not the leftmost. The header
+is append-only, so the leftmost value is whatever the original client claimed
+and is attacker-controlled even behind a trusted proxy; the rightmost is what
+your nearest trusted proxy actually observed. If the header is absent,
+unparsable, or the peer is untrusted, the key falls back to the peer address —
+over-broad, but never attacker-chosen.
 
-This trusts **one** proxy hop. For a deeper chain, put nginx's `realip` module in
-front (`set_real_ip_from` + `real_ip_header`, which supports a recursive walk):
-it rewrites the connection address, and the default `key=peer` then picks up the
-result with no shield configuration at all.
+This trusts **one** proxy hop. For a deeper chain, put nginx's `realip` module
+in front (`set_real_ip_from` + `real_ip_header`, which supports a recursive
+walk): it rewrites the connection address, and the default `key=peer` then
+picks up the result with no shield configuration at all.
 
 ### Status endpoint
 
-For block-only deployments, configure one optional counters-only zone in
-`http {}` and reference it from the same status endpoint:
+For block-only deployments, configure one optional counters-only zone in `http
+{}` and reference it from the same status endpoint:
 
 ```nginx
 shield_stats_zone metrics 32k;
@@ -640,20 +689,21 @@ server {
 ```
 
 The zone counts all shield-enabled locations in the HTTP configuration. With
-ban zones present, each zone keeps its own counters; the global stats zone counts
-each request once even when it visits multiple ban zones. `shield off` requests
-are excluded. It requires native atomics and at least 8 system pages (32k on a
-4k-page host). Duplicate stats declarations, name collisions, using a stats zone
-with `shield_ban` or the test probe, and changing a zone's kind while keeping its
-size on reload are configuration errors. A reload with the same kind and size
-retains counters. Changing the size creates fresh storage and resets counters;
-that fresh storage may use either kind. Stats storage contains
-no client addresses or ban nodes and performs no per-request allocation or mutex
-operation. Its counters wrap at native atomic width. Scrapes read counters
-independently, so concurrent updates need not produce cross-counter equality.
-Existing metric names and labels are shared with ban zones; ban-specific counters,
-node counts and the JSON ban list are zero/empty, while used/size describe the
-actual shared slab. Do not sum global and per-ban-zone request counts together.
+ban zones present, each zone keeps its own counters; the global stats zone
+counts each request once even when it visits multiple ban zones. `shield off`
+requests are excluded. It requires native atomics and at least 8 system pages
+(32k on a 4k-page host). Duplicate stats declarations, name collisions, using a
+stats zone with `shield_ban` or the test probe, and changing a zone's kind
+while keeping its size on reload are configuration errors. A reload with the
+same kind and size retains counters. Changing the size creates fresh storage
+and resets counters; that fresh storage may use either kind. Stats storage
+contains no client addresses or ban nodes and performs no per-request
+allocation or mutex operation. Its counters wrap at native atomic width.
+Scrapes read counters independently, so concurrent updates need not produce
+cross-counter equality. Existing metric names and labels are shared with ban
+zones; ban-specific counters, node counts and the JSON ban list are zero/empty,
+while used/size describe the actual shared slab. Do not sum global and
+per-ban-zone request counts together.
 
 `shield_ban_status <zone>;` serves a JSON report for a ban zone:
 
@@ -675,17 +725,20 @@ location /shield-status {
  "banned":[{"addr":"203.0.113.10","hits":0,"expires":3417}]}
 ```
 
-- `blocked` counts requests actually denied, so in `detect` mode it stays 0 while
+- `blocked` counts requests actually denied, so in `detect` mode it stays 0
+  while
   the per-category counters still climb — useful for sizing a ruleset before
   turning blocking on.
 - `bans` counts bans **armed**, not requests refused while banned.
 - `inspected` counts first-pass main-request inspections with a ban zone;
-  `ban_refused` counts main requests refused by an existing ban before inspection.
+  `ban_refused` counts main requests refused by an existing ban before
+  inspection.
   Each counter increments at most once per main request per zone across internal
   and named redirects; reinspection of redirected URIs still runs. A request
   first routed through an off location counts when it reaches an active one.
   A later distinct zone counts its own inspection. One private variable slot
-  per configured zone uses nginx's existing request-variable allocation (16 bytes
+  per configured zone uses nginx's existing request-variable allocation (16
+  bytes
   per zone on 64-bit builds); no additional allocator call or mutex is needed.
   Off locations, subrequests and body-handler re-entry do not increment them.
   These independent atomic counters wrap at the platform's native atomic width.
@@ -693,7 +746,8 @@ location /shield-status {
   nginx's non-atomic fallback rejects that directive. Block-only configuration
   without a ban zone remains available.
 - `evictions` counts reclaimed stale ban nodes; `alloc_failures` counts dropped
-  node allocations after reclamation. Successful allocations do not increment it.
+  node allocations after reclamation. Successful allocations do not increment
+  it.
 - `body_uninspected` counts bodies with incomplete inspection in the zone.
   `too_large` records an inspected prefix above the byte budget; `encoding`
   records an unsupported or incomplete encoded representation; collection,
@@ -714,9 +768,11 @@ location /shield-status {
   metrics scraper sees a stable key set. Counters are cumulative and survive a
   reload (the zone does); a restart clears them with the zone.
 - `detections` splits each category by the configured `detect` or `block` mode.
-- `expires` is seconds remaining on the ban. Only currently-banned clients appear
+- `expires` is seconds remaining on the ban. Only currently-banned clients
+  appear
   in `banned`; clients merely counting hits are in `nodes` but not the list.
-- Requires `shield_ban` on some location: the counters live in that zone's shared
+- Requires `shield_ban` on some location: the counters live in that zone's
+  shared
   memory. Non-`GET`/`HEAD` returns 405.
 
 To scrape metrics directly, select `prometheus` (JSON remains the default):
@@ -731,56 +787,58 @@ location /shield-metrics {
 ```
 
 `?format=json` or `?format=prometheus` overrides the directive for one request.
-Names and values are case-sensitive raw query bytes; empty, invalid or duplicate
-`format` arguments return 400. Unrelated arguments are ignored. Query strings
-over 8192 bytes return 400. JSON remains the default and ignores `Accept`.
+Names and values are case-sensitive raw query bytes; empty, invalid or
+duplicate `format` arguments return 400. Unrelated arguments are ignored. Query
+strings over 8192 bytes return 400. JSON remains the default and ignores
+`Accept`.
 
-Metrics use Prometheus 0.0.4 (`text/plain; version=0.0.4; charset=utf-8`) unless
-`Accept` explicitly includes `application/openmetrics-text` with a valid positive
-`q` value at least as high as `text/plain` (OpenMetrics wins ties). Wildcards do
-not opt into OpenMetrics. OpenMetrics 1.0 responses use
-`application/openmetrics-text; version=1.0.0; charset=utf-8` and end with `# EOF`;
-0.0.4 responses omit that marker. Successful JSON, GET and HEAD responses include
-`Vary: Accept`.
+Metrics use Prometheus 0.0.4 (`text/plain; version=0.0.4; charset=utf-8`)
+unless `Accept` explicitly includes `application/openmetrics-text` with a valid
+positive `q` value at least as high as `text/plain` (OpenMetrics wins ties).
+Wildcards do not opt into OpenMetrics. OpenMetrics 1.0 responses use
+`application/openmetrics-text; version=1.0.0; charset=utf-8` and end with `#
+EOF`; 0.0.4 responses omit that marker. Successful JSON, GET and HEAD responses
+include `Vary: Accept`.
 
 Negotiation accepts media types and parameter names without case sensitivity,
 optional whitespace, quoted media parameters, `version=1.0.0` for OpenMetrics,
 `version=0.0.4` for text, and `charset=utf-8`. Unknown or unsupported media
 parameters exclude that representation. Quality values have at most three
-decimal places and range from 0 to 1; quoted or duplicate `q` values are invalid.
-Malformed Accept values fall back to 0.0.4, as do values exceeding 8192 combined
-bytes, 32 media ranges or 16 parameters per range. Repeated Accept fields share
-these budgets and use the highest quality for each supported media type.
-Valid parameter extensions following `q` are ignored.
+decimal places and range from 0 to 1; quoted or duplicate `q` values are
+invalid. Malformed Accept values fall back to 0.0.4, as do values exceeding
+8192 combined bytes, 32 media ranges or 16 parameters per range. Repeated
+Accept fields share these budgets and use the highest quality for each
+supported media type. Valid parameter extensions following `q` are ignored.
 
-Both metrics formats expose
-`shield_hits_total{zone="shield",category="sqli"}` for every category, including
-zeroes, `shield_detections_total{zone,category,mode}` for both `detect` and
-`block`, `shield_source_hits_total{zone,category,source}` for each fixed source,
-plus `shield_blocked_total`, `shield_bans_total`, `shield_zone_nodes`,
-and `shield_banned_clients`, each labeled by `zone`. It also exposes
+Both metrics formats expose `shield_hits_total{zone="shield",category="sqli"}`
+for every category, including zeroes,
+`shield_detections_total{zone,category,mode}` for both `detect` and `block`,
+`shield_source_hits_total{zone,category,source}` for each fixed source, plus
+`shield_blocked_total`, `shield_bans_total`, `shield_zone_nodes`, and
+`shield_banned_clients`, each labeled by `zone`. It also exposes
 `shield_requests_total`, `shield_ban_refusals_total`,
 `shield_zone_evictions_total`, `shield_zone_alloc_failures_total`,
 `shield_zone_used_bytes` and `shield_zone_size_bytes`, using the corresponding
 JSON fields above. The first four additions are counters; the byte families are
-gauges. The first three original families are
-counters; the last two are gauges. Counter `HELP` and `TYPE` declarations use
-the family name without `_total` for OpenMetrics and with it for 0.0.4. Zone
-label values escape quotes, backslashes and line feeds. Source labels match
-the detection log;
-query-string detections use `uri` because the request target is scanned together.
+gauges. The first three original families are counters; the last two are
+gauges. Counter `HELP` and `TYPE` declarations use the family name without
+`_total` for OpenMetrics and with it for 0.0.4. Zone label values escape
+quotes, backslashes and line feeds. Source labels match the detection log;
+query-string detections use `uri` because the request target is scanned
+together.
 
 Evidence metric names stay unchanged. `shield_hits_total`,
-`shield_detections_total`, `shield_source_hits_total`, `shield_blocked_total` and
-`shield_bans_total` add the fixed label `class="suspicious"`; even strict body and
-resource-policy blocks remain nonpromoted evidence. `shield_body_uninspected_total`
-adds `class="not-inspected"`. No request/rule text becomes a label. These are the
-only classes currently emitted; no exploit series or artificial zero is emitted.
-Promoting evidence later requires separate counter accounting before an exploit
-label may be produced. Existing operational metrics and JSON fields stay intact.
-Selectors that specify an exact old label set must migrate; unfiltered metric
-selectors still match. Dashboards select the class explicitly and show no
-promoted exploit rate on older exporters or the current nonpromoted exporter.
+`shield_detections_total`, `shield_source_hits_total`, `shield_blocked_total`
+and `shield_bans_total` add the fixed label `class="suspicious"`; even strict
+body and resource-policy blocks remain nonpromoted evidence.
+`shield_body_uninspected_total` adds `class="not-inspected"`. No request/rule
+text becomes a label. These are the only classes currently emitted; no exploit
+series or artificial zero is emitted. Promoting evidence later requires
+separate counter accounting before an exploit label may be produced. Existing
+operational metrics and JSON fields stay intact. Selectors that specify an
+exact old label set must migrate; unfiltered metric selectors still match.
+Dashboards select the class explicitly and show no promoted exploit rate on
+older exporters or the current nonpromoted exporter.
 
 `shield_banned_clients` counts only unexpired bans; `shield_zone_nodes` also
 includes clients accumulating hits and expired entries not yet reclaimed.
@@ -788,35 +846,36 @@ Metrics use one snapshot under the zone lock, then render outside it, with
 response size independent of the number of clients. Individual client addresses
 remain available in JSON, avoiding unbounded metric series per client.
 
-> **Restrict this location.** The report names banned client addresses and reveals
+> **Restrict this location.** The report names banned client addresses and
+> reveals
 > which attack categories are firing — operational detail that should not be
 > public. The module deliberately applies **no** access control of its own, so
 > gate it with `allow`/`deny`, `auth_basic`, or a management-only listener.
-> Walking the ban list takes the zone's slab mutex for O(nodes), so scrape it at a
+> Walking the ban list takes the zone's slab mutex for O(nodes), so scrape it
+> at a
 > sane interval rather than per second on a large zone.
 
 ### Monitoring
 
 Import [the Grafana dashboard](contrib/grafana-dashboard.json) and select a
 Prometheus data source through Grafana’s UI import. For file provisioning or
-the HTTP API, replace `${DS_PROMETHEUS}` with your data source UID. The
-[scrape configuration](contrib/prometheus-scrape.yml)
-and [alert rules](contrib/prometheus-alerts.yml) are starting points: adjust the
-target, thresholds and hold times for your traffic and route alerts in your
-alert manager. The scrape target must reach the access-controlled metrics
-location; do not expose the status endpoint publicly. The dashboard keeps the
-scrape target's `instance` and the module's `zone` labels separate.
+the HTTP API, replace `${DS_PROMETHEUS}` with your data source UID. The [scrape
+configuration](contrib/prometheus-scrape.yml) and [alert
+rules](contrib/prometheus-alerts.yml) are starting points: adjust the target,
+thresholds and hold times for your traffic and route alerts in your alert
+manager. The scrape target must reach the access-controlled metrics location;
+do not expose the status endpoint publicly. The dashboard keeps the scrape
+target's `instance` and the module's `zone` labels separate.
 
 The example alerts distinguish promoted block-mode exploit evidence from
 suspicious enforcement, while retaining reserved zone memory above 80%,
-allocation failures,
-eviction activity, ban refusals above 10 per second, and incomplete body
-inspections above 10% of inspected requests. The body ratio uses all inspected
-requests as its denominator, not just requests with bodies; it is a traffic
-indicator rather than a percentage of submitted bodies. A zero request
-rate produces no meaningful ratio. Counters reset on restart; Prometheus
-`rate` and `increase` account for counter resets. Monitor scrape health
-separately because missing metrics cannot trigger these alerts.
+allocation failures, eviction activity, ban refusals above 10 per second, and
+incomplete body inspections above 10% of inspected requests. The body ratio
+uses all inspected requests as its denominator, not just requests with bodies;
+it is a traffic indicator rather than a percentage of submitted bodies. A zero
+request rate produces no meaningful ratio. Counters reset on restart;
+Prometheus `rate` and `increase` account for counter resets. Monitor scrape
+health separately because missing metrics cannot trigger these alerts.
 
 JSON fields map to metric samples as follows; each metric has a `zone` label.
 
@@ -839,9 +898,9 @@ JSON fields map to metric samples as follows; each metric has a `zone` label.
 | `banned[].addr`, `hits`, `expires` | No per-client metric |
 | No JSON field | `shield_source_hits_total{category,source,class}` |
 
-The bounded body reasons are `too_large`, `encoding`, and `error`.
-The source breakdown is available only in metrics; the JSON ban array carries
-client details that are deliberately absent from metrics.
+The bounded body reasons are `too_large`, `encoding`, and `error`. The source
+breakdown is available only in metrics; the JSON ban array carries client
+details that are deliberately absent from metrics.
 
 ### Hit log
 
@@ -857,48 +916,50 @@ every hit, in both `block` and `detect` mode:
 ```
 
 Fields `ts`, `ip`, `cat`, `src`, `mode`, `status` and `req` retain their names
-and types; categories and their priority are unchanged. **Compatibility change:**
-`req` is now always empty. Request targets, query strings, bodies, cookies,
-authorization values and hashes of those values are omitted. Shield hit notices
-also suppress nginx's automatic request context; separately configured nginx
-access logs and other nginx messages follow their own logging policies.
+and types; categories and their priority are unchanged. **Compatibility
+change:** `req` is now always empty. Request targets, query strings, bodies,
+cookies, authorization values and hashes of those values are omitted. Shield
+hit notices also suppress nginx's automatic request context; separately
+configured nginx access logs and other nginx messages follow their own logging
+policies.
 
 `rule` is a 16-digit fingerprint of the **public static predicate definition**,
 not of request content. `rev` is the explicit diagnostic/semantic revision.
 Definition edits create a new identity; semantic changes outside static terms
-require a revision bump. Identities do not depend on table positions.
-Signature and AND-rule fingerprints are checked for collisions against the
-compiled inventory in CI. These are attribution labels, not cryptographic
-authenticators or evidence of an exploitable sink.
-`ruleset` fingerprints the ordered static tables under that revision; `build`
-identifies the nginx version. Record the module source/commit separately when
-reproducing a build. Structural checks and application profiles have fixed
-identity names under the same revision.
+require a revision bump. Identities do not depend on table positions. Signature
+and AND-rule fingerprints are checked for collisions against the compiled
+inventory in CI. These are attribution labels, not cryptographic authenticators
+or evidence of an exploitable sink. `ruleset` fingerprints the ordered static
+tables under that revision; `build` identifies the nginx version. Record the
+module source/commit separately when reproducing a build. Structural checks and
+application profiles have fixed identity names under the same revision.
 
 `view` distinguishes raw, decoded, structural and policy-specific byte views.
-`verdict=signature-match` means a configured predicate matched; `action` records
-`block` or `detect`, independently of that observation. `body_policy` records
-the effective `observe`/`strict` setting; `ban` records whether repeat-offender
-accounting is configured, without claiming that this request armed a ban.
-Ambiguous body markers remain local `verdict=suspicious action=observe` notices,
-with the same rule/revision/ruleset/view fields. They never enter this JSON feed.
+`verdict=signature-match` means a configured predicate matched; `action`
+records `block` or `detect`, independently of that observation. `body_policy`
+records the effective `observe`/`strict` setting; `ban` records whether
+repeat-offender accounting is configured, without claiming that this request
+armed a ban. Ambiguous body markers remain local `verdict=suspicious
+action=observe` notices, with the same rule/revision/ruleset/view fields. They
+never enter this JSON feed.
 
 All event labels come from fixed definitions/configuration; hostile quotes,
 control bytes and invalid UTF-8 cannot enter through request content. JSON
-records, including their file newline, are bounded by 768 bytes; a future format
-that exceeds the buffer is dropped whole, never truncated into invalid JSON.
-The file is reopened on `SIGUSR1` (logrotate-safe).
+records, including their file newline, are bounded by 768 bytes; a future
+format that exceeds the buffer is dropped whole, never truncated into invalid
+JSON. The file is reopened on `SIGUSR1` (logrotate-safe).
 
 The production scanner attributes only its selected category at its accepting
 endpoint using bounded static suffix comparisons. It does not collect all
-matches. `ci/causal/diagnostics.py` checks overlap offline using small sanitized
-fixtures and the compiled public inventory; those fixtures establish diagnostic
-attribution, not all-rule behavioral or application-sink coverage.
+matches. `ci/causal/diagnostics.py` checks overlap offline using small
+sanitized fixtures and the compiled public inventory; those fixtures establish
+diagnostic attribution, not all-rule behavioral or application-sink coverage.
 
 Behind a trusted proxy, configure nginx's real-IP module first, for example
-with a narrowly scoped `set_real_ip_from` plus `real_ip_header X-Forwarded-For`.
-Shield then logs nginx's validated connection address. The reporter does not
-read or trust a raw forwarded header; never map arbitrary client-supplied XFF.
+with a narrowly scoped `set_real_ip_from` plus `real_ip_header
+X-Forwarded-For`. Shield then logs nginx's validated connection address. The
+reporter does not read or trust a raw forwarded header; never map arbitrary
+client-supplied XFF.
 
 **No `| command` form.** shield runs in `PRECONTENT` on every request inside
 root-started workers; piping attacker-influenced bytes into a forked shell would
@@ -921,34 +982,33 @@ shield_log syslog:server=10.0.0.1:514,tag=shield,nohostname;
 The `syslog:` options are nginx's standard [`ngx_syslog`
 set](https://nginx.org/en/docs/syslog.html) (`server=`, `facility=`, `tag=`,
 `severity=`, `nohostname`). One datagram per hit (capped at 4096 bytes, no
-trailing newline — syslog frames it). File and syslog are mutually exclusive per
-directive; use `off` to disable, and a child `off` overrides an inherited
+trailing newline — syslog frames it). File and syslog are mutually exclusive
+per directive; use `off` to disable, and a child `off` overrides an inherited
 parent.
 
 #### Reporting to AbuseIPDB
 
-`reporter/abuseipdb-reporter.py` is a ready-to-run reporter for the file sink. It
-tails the JSON log (surviving logrotate via an inode/offset state file), skips
-private/loopback/reserved IPs, de-duplicates each IP for 15 minutes (matching
-AbuseIPDB's own per-IP limit), enforces a daily cap (default 1000, the free
-tier), and reports only records with explicit `mode=block`, `action=block` and
-`verdict=exploit` whose exact `(ruleset, rule, rev, cat)` identity is in the
-reviewed promotion registry. **That registry is empty. Current `signature-match`
-records, observations, resource-safety events, incomplete inspections, detect
-mode and legacy/unclassifiable records send no reports.** A block or causal
-fixture alone never promotes a signature. This deliberately loses historical
-reporting until evidence and producer accounting are promoted together. Skipped
-records advance the saved offset and consume no quota; later promotion does not
-replay them.
-The public comment is constant; no request, URL, body, header, category or source
-text is sent. Only the validated public IP, bounded timestamp and fixed category
-IDs accompany it. Duplicate JSON keys and malformed metadata are discarded.
-Suppression and daily-cap state are persisted, so a
-restart cannot reset them and overrun the quota; a 429 or network failure backs
-off (honouring `Retry-After`) and rechecks the retained line against its pending
-attempt debt after cooldown instead of risking a duplicate POST. The
-API key comes from `ABUSEIPDB_API_KEY` in the environment — never the command
-line. A hardened `systemd` unit is provided:
+`reporter/abuseipdb-reporter.py` is a ready-to-run reporter for the file sink.
+It tails the JSON log (surviving logrotate via an inode/offset state file),
+skips private/loopback/reserved IPs, de-duplicates each IP for 15 minutes
+(matching AbuseIPDB's own per-IP limit), enforces a daily cap (default 1000,
+the free tier), and reports only records with explicit `mode=block`,
+`action=block` and `verdict=exploit` whose exact `(ruleset, rule, rev, cat)`
+identity is in the reviewed promotion registry. **That registry is empty.
+Current `signature-match` records, observations, resource-safety events,
+incomplete inspections, detect mode and legacy/unclassifiable records send no
+reports.** A block or causal fixture alone never promotes a signature. This
+deliberately loses historical reporting until evidence and producer accounting
+are promoted together. Skipped records advance the saved offset and consume no
+quota; later promotion does not replay them. The public comment is constant; no
+request, URL, body, header, category or source text is sent. Only the validated
+public IP, bounded timestamp and fixed category IDs accompany it. Duplicate
+JSON keys and malformed metadata are discarded. Suppression and daily-cap state
+are persisted, so a restart cannot reset them and overrun the quota; a 429 or
+network failure backs off (honouring `Retry-After`) and rechecks the retained
+line against its pending attempt debt after cooldown instead of risking a
+duplicate POST. The API key comes from `ABUSEIPDB_API_KEY` in the environment —
+never the command line. A hardened `systemd` unit is provided:
 
 ```bash
 sudo cp reporter/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
@@ -967,14 +1027,14 @@ The non-dry-run reporter deliberately refuses missing, malformed or
 non-canonical suppression state rather than risk forgetting outstanding quota
 or de-duplication debt. On an upgrade or recovery, restore the installation's
 authoritative `suppress.json`; never run the first-install command to replace
-lost state. Legacy IP spellings are canonicalized during loading; aliases retain
-the latest de-duplication timestamp. Malformed or scoped keys still fail closed.
-The startup error names the rejected path.
+lost state. Legacy IP spellings are canonicalized during loading; aliases
+retain the latest de-duplication timestamp. Malformed or scoped keys still fail
+closed. The startup error names the rejected path.
 
 Use `--dry-run` to see exactly what would be sent without calling the API. The
 reporter's suppression, backoff, PII-strip and offset-persistence logic are
-covered by `reporter/test_abuseipdb_reporter.py` (run `pytest reporter/`), which
-also runs as a CI gate.
+covered by `reporter/test_abuseipdb_reporter.py` (run `pytest reporter/`),
+which also runs as a CI gate.
 
 ### Rollout
 
@@ -989,19 +1049,17 @@ also runs as a CI gate.
 ## How it works
 
 The module runs in the `PRECONTENT` phase. The literal-signature engine builds
-two normalized copies of every inspected
-input — a lowercased raw copy and a percent-decoded-once, lowercased copy — and
-runs every enabled category's patterns over them in a **single Aho-Corasick
-pass per buffer**. A raw `+`
+two normalized copies of every inspected input — a lowercased raw copy and a
+percent-decoded-once, lowercased copy — and runs every enabled category's
+patterns over them in a **single Aho-Corasick pass per buffer**. A raw `+`
 becomes a space only in request/proxy-target queries and URL-encoded form
 bodies; percent-encoded `%2B` and plus signs in other inputs remain literal in
 this engine. Opt-in application policies use a separate legacy form-style view
-that folds `+` after percent-decoding. Four
-categories (`httpoxy`, `range_dos`, `ctrl_char`, `dotfile`) are structural checks
-rather than literal matches. There is no regex. Normalization allocates two
-scratch buffers per inspected value; body/gzip and application-policy views use
-additional bounded request-pool buffers. Measure request cost on the deployed
-build and workload.
+that folds `+` after percent-decoding. Four categories (`httpoxy`, `range_dos`,
+`ctrl_char`, `dotfile`) are structural checks rather than literal matches.
+There is no regex. Normalization allocates two scratch buffers per inspected
+value; body/gzip and application-policy views use additional bounded
+request-pool buffers. Measure request cost on the deployed build and workload.
 
 Body inspection reads the buffered request body (up to `shield_max_body`) and
 scans it the same way, then resumes phase processing — the same mechanism the
@@ -1016,12 +1074,12 @@ left alone.
 
 A signature's meaning depends on **where** it appears.
 
-A request *target* containing `/bin/sh` is an attack — there is no reading of a
-URI in which that string is content. A `text/…` or `application/json` **body**
-containing `/bin/sh` is a Tuesday: it is a CI config, a Dockerfile paste, a
-shell script in an editor, a snippet in a docs API. The same is true of
-`<script` and `document.cookie` in a CMS saving a page, of `${jndi:` in a blog
-post *about* Log4Shell, and of `<?php system(` in a code-review tool.
+A request *target* containing `/bin/sh` can be a probe for a shell executable.
+The same bytes in a `text/…` or `application/json` **body** can be a CI config,
+a Dockerfile paste, a shell script in an editor or a snippet in a docs API. The
+byte string alone does not establish an executable application sink. The same
+is true of `<script` and `document.cookie` in a CMS saving a page, of `${jndi:`
+in a blog post *about* Log4Shell, and of `<?php system(` in a code-review tool.
 
 Each category declares where it applies. Twelve are excluded from body scans
 while retaining their current request-target and header checks:
@@ -1040,20 +1098,21 @@ CRLF attempts; it does not exempt a WordPress path or trusted client IP.
 `traversal` is on that list because its signatures are pure gadgets (`../`,
 `..\`, `..;/`) that legitimately appear in bodies — a JSON source map or an
 asset manifest carrying `{"path":"../logo.png"}` is not an attack. In a request
-target the same token has no benign reading.
+target the same token remains subject to the configured traversal policy; a
+match still does not prove that the backend resolves the path outside its root.
 
-Other categories remain body-scanned — SQL injection in a form POST,
-contextual Java deserialization gadgets, SSI injection, contextual webshell
-filenames, and overlong encodings. Such a signature does not establish how an
-application will interpret the content: SQL tutorials, template examples and
-other instructional text can still match. Start in detect mode and review
-legitimate application workflows before enabling blocking. Short opaque names
-are deliberately excluded because they collide with base64.
+Other categories remain body-scanned — SQL injection in a form POST, contextual
+Java deserialization gadgets, SSI injection, contextual webshell filenames, and
+overlong encodings. Such a signature does not establish how an application will
+interpret the content: SQL tutorials, template examples and other instructional
+text can still match. Start in detect mode and review legitimate application
+workflows before enabling blocking. Short opaque names are deliberately
+excluded because they collide with base64.
 
 This narrows *where* a category applies, never *whether* it matches: a
 body-exempt category still blocks at full strength in the request target and in
-the scanned headers. It costs nothing at runtime — the exempt set is folded into
-the same skip bitmask `shield_skip` already uses, so there is still one
+the scanned headers. It costs nothing at runtime — the exempt set is folded
+into the same skip bitmask `shield_skip` already uses, so there is still one
 automaton and one lookup per byte.
 
 It is also why `/etc/passwd` is a `sensitive_file` and not a `traversal`:
@@ -1080,7 +1139,7 @@ its category fires:
 > gadget rather than on Metabase's setup endpoint).
 
 | Rule | Category | Fires only when the buffer has… |
-|---|---|---|
+| --- | --- | --- |
 | `ofbiz_authbypass` | `exploit_path` | `requirepasswordchange=y` **and** `/webtools/control/` |
 | `metabase_jdbc_rce` | `deserial` | `jdbc:h2:` **and** `init=` |
 | `jenkins_cli_read` | `exploit_path` | `/cli?` **and** `remoting=true` |
@@ -1089,14 +1148,14 @@ its category fires:
 | `coldfusion_cfclient` | `exploit_path` | `/cf_scripts/scripts/ajax/ckeditor/plugins/filemanager/` **and** `_cfclient=true` (ColdFusion CVE-2023-26360) |
 
 Rule terms are **not** signatures: a term never fires on its own, and none of
-the left-hand tokens above will block a request by itself. That is checked
-in both directions — `ci/t/07-and-rules.t` proves the full set blocks, and
+the left-hand tokens above will block a request by itself. That is checked in
+both directions — `ci/t/07-and-rules.t` proves the full set blocks, and
 `ci/t/05-fp-negative.t` proves each term alone does not.
 
 **Every term must be specific enough that co-occurrence *is* the attack.** The
 engine checks that a rule's terms appear in the same buffer, not that they form
 one expression, so two low-specificity terms will match traffic that merely
-mentions both — which is why the rule set has no `sleep(` + `select ` pairing
+mentions both — which is why the rule set has no `sleep(` + `select` pairing
 (both are ordinary English; the standalone `sqli` table catches the real
 attack in quote context instead) and why the Jenkins and VMware rules use
 `/cli?` and `${` rather than `/cli` and `freemarker`. Distance does not rescue a
@@ -1104,10 +1163,10 @@ vague term: benign mentions and real payloads sit at overlapping byte gaps.
 `ci/t/05-fp-negative.t` TESTS 64-69 pin the benign co-occurrence shapes.
 
 The terms are matched by the same single automaton pass, so a rule costs no
-extra scan time: the pass just records which terms it saw and evaluates the sets
-once at the end. Rules are same-buffer only (a term in the URI and a term in the
-body do not combine), and `shield_skip <category>` disables that category's
-rules along with its signatures.
+extra scan time: the pass just records which terms it saw and evaluates the
+sets once at the end. Rules are same-buffer only (a term in the URI and a term
+in the body do not combine), and `shield_skip <category>` disables that
+category's rules along with its signatures.
 
 ### When inspection itself fails
 
@@ -1115,9 +1174,9 @@ If the module cannot inspect a buffer at all — a pool allocation fails under
 memory pressure, or a request-body temp file cannot be read — then the request
 was never actually scanned, and an unscanned request is not a clean one.
 
-* `shield block` **fails closed**: the request is rejected with `500` and
+- `shield block` **fails closed**: the request is rejected with `500` and
   `error.log` gets `shield: could not inspect <what>, failing closed`.
-* `shield detect` never changes the response by definition, so it logs
+- `shield detect` never changes the response by definition, so it logs
   `shield: could not inspect <what>, request left unscanned` and serves the
   request.
 
@@ -1149,15 +1208,16 @@ normalization uses the two bounded scratch buffers described above.
 
 ## Adding a signature
 
-The [2025–2026 CVE survey](ci/definitions-2025-2026.md) records the
-React2Shell gadget additions and why October 2026 PHP RCEs cannot be
-reliably covered by literal signatures.
+The [2025–2026 CVE survey](ci/definitions-2025-2026.md) records the React2Shell
+gadget additions and why October 2026 PHP RCEs cannot be reliably covered by
+literal signatures.
 
-Signatures live in [`src/ngx_http_shield_patterns.h`](src/ngx_http_shield_patterns.h).
-Store them lowercase, and never as a bare keyword — always a multi-token
-combination that only appears in an attack. `ci/t/05-fp-negative.t` exists to
-catch signatures that are too broad. Adding a whole category is an enum value,
-a table, and one row in `ngx_http_shield_categories[]`; no engine change.
+Signatures live in
+[`src/ngx_http_shield_patterns.h`](src/ngx_http_shield_patterns.h). Store them
+lowercase, and never as a bare keyword — always a multi-token combination that
+only appears in an attack. `ci/t/05-fp-negative.t` exists to catch signatures
+that are too broad. Adding a whole category is an enum value, a table, and one
+row in `ngx_http_shield_categories[]`; no engine change.
 
 ## Testing
 
@@ -1219,7 +1279,7 @@ Three targets, one per seam that takes attacker-controlled bytes and links
 outside nginx:
 
 | Target | Surface | Oracle |
-|---|---|---|
+| --- | --- | --- |
 | `fuzz_scan` | normalize + Aho-Corasick scan of any inspected buffer (URI, query, User-Agent, Referer, Content-Type, body), over the real signature tables and nginx's real `ngx_unescape_uri()` | naive per-signature `memmem` reference, differential against the shipped engine |
 | `fuzz_xff` | the `X-Forwarded-For` rightmost-token parse that selects the ban key | forward-walking reference, differential on both offset and length, plus a bounds assertion |
 | `fuzz_gzip` | bounded gzip member/header/trailer decoding | repeat-call determinism, immutable input, output/arena/member/call bounds, ASan and UBSan |
@@ -1259,7 +1319,7 @@ members run as parallel jobs with no `needs:` chaining, including both hosted
 Windows toolchains; `windows-build.yml` also remains manually dispatchable.
 
 | Workflow | Trigger | Gates |
-|---|---|---|
+| --- | --- | --- |
 | `build-test.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | multi-job build, strict-warning compile, full Test::Nginx suite, and the same suite again under ASan+UBSan |
 | `lint.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | `ci/linter/run-all.sh` — shellcheck/shfmt, cppcheck-adjacent C style, Python (ruff), Perl (perlcritic), YAML (yamllint/actionlint), spelling (codespell) and the docs-drift/CI-policy checks below, plus `ci/linter/selftest.sh`'s negative controls on the gate itself |
 | `security-scanners.yml` | `workflow_call` (PR via `ci.yml`) + `workflow_dispatch` | flawfinder (blocks at ≥4), clang-tidy (`cert-*`, `security.*`), GCC `-fanalyzer` (advisory), C plus fully accounted first-party semgrep, online zizmor workflow auditing, and an OSV sweep of the machine-readable pinned-dependency inventory |
@@ -1288,21 +1348,26 @@ build-tree cache via `.github/actions/build-cache` before calling
 without invoking the compiler, which CodeQL's tracer can't see, so that job
 always builds cold). On a warm second run of the same ref, `configure` is
 skipped outright (stamped against the exact argv) and object compiles are
-served from ccache — locally, a same-mode rebuild after touching a source
-file went from a ~4.3s build to a ~0.06s no-op. The other build jobs
-(`test-nginx`, `asan`, `ban-unit`, `prober`, `coverage`, `runtime-tests`) call
-`ci-build.sh` directly and are not wired to this action yet. `apt`/`dpkg`
-package state is deliberately never cached — see the comment in
+served from ccache — locally, a same-mode rebuild after touching a source file
+went from a ~4.3s build to a ~0.06s no-op. The other build jobs (`test-nginx`,
+`asan`, `ban-unit`, `prober`, `coverage`, `runtime-tests`) call `ci-build.sh`
+directly and are not wired to this action yet. `apt`/`dpkg` package state is
+deliberately never cached — see the comment in
 `.github/actions/build-cache/action.yml`.
 
 ## See also
 
-- [nginx-http-shield-module: A Bounded Exploit Filter](https://deb.myguard.nl/articles/nginx-http-shield-module/)
-  — the full article: what it blocks, the engine design, and a detect-to-block rollout guide.
+- [nginx-http-shield-module: A Bounded Exploit
+  Filter](https://deb.myguard.nl/articles/nginx-http-shield-module/)
+  — the full article: what it blocks, the engine design, and a detect-to-block
+  rollout guide.
 - [NGINX for Debian & Ubuntu](https://deb.myguard.nl/nginx-modules/) and
-  [Angie](https://deb.myguard.nl/angie-modules-optimized-extended/) — the prebuilt APT stack this
-  module is packaged for: HTTP/3, hardening patches, 100+ curated dynamic modules, no compiling.
-- [Where to find us](https://deb.myguard.nl/where-to-find-us/) — every repo, Docker image and
+  [Angie](https://deb.myguard.nl/angie-modules-optimized-extended/) — the
+  prebuilt APT stack this
+  module is packaged for: HTTP/3, hardening patches, 100+ curated dynamic
+  modules, no compiling.
+- [Where to find us](https://deb.myguard.nl/where-to-find-us/) — every repo,
+  Docker image and
   download URL we publish, in one place.
 
 ## License
