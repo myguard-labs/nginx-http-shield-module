@@ -1,4 +1,4 @@
-# sync-sha: c7dd94b2616ef21c2b81d3ff9247dfb7a0370150958da678a5e17790da3dc29f
+# sync-sha: dca2ed8e8e30c2bb95ee3e221afdb82fdcbdf7668960e72a1e1dfe44ff89facb
 name: Build and Test
 
 env:
@@ -54,6 +54,7 @@ jobs:
             --suppress=normalCheckLevelMaxBranches \
             --suppress=unusedFunction \
             --suppress=unusedStructMember \
+            '-DNGINX_VER="nginx/test"' \
             -I src \
             src/ngx_http_shield_module.c \
             src/ngx_http_shield_ban.c \

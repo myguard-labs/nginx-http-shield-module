@@ -662,9 +662,11 @@ ngx_http_shield_log_hit(ngx_http_request_t *r,
         }
         /* nginx records ENOSPC backoff on the private copy. File sinks are
          * worker-owned; writer callbacks retain their own mutable state. */
+#if !defined(ANGIE_VERSION)
         if (log.writer == NULL) {
             sink->disk_full_time = log.disk_full_time;
         }
+#endif
     }
 }
 
