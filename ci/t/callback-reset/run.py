@@ -62,8 +62,8 @@ def check_response(response, status, body=None):
 
 
 def build_fixture(nginx, output):
-    build = Path(os.environ.get("CALLBACK_RESET_BUILD", nginx.parent))
-    source = Path(os.environ.get("CALLBACK_RESET_SOURCE", build.parent))
+    build = nginx.parent
+    source = build.parent
     includes = [
         source / "src" / sub
         for sub in (
@@ -78,7 +78,10 @@ def build_fixture(nginx, output):
             "http/v3",
         )
     ]
-    command = shlex.split(os.environ.get("CC", "cc")) + [
+    compiler = shutil.which("cc")
+    assert compiler is not None, "callback-reset requires cc"
+    command = [
+        compiler,
         "-shared",
         "-fPIC",
         "-Wall",
