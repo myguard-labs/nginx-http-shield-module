@@ -236,6 +236,9 @@ http {
 }
 ```
 
+Size every shared zone for at least eight host memory pages. The `64k` example
+needs `128k` or more on a host with 16 KiB pages.
+
 Run `nginx -t` (or `angie -t`) before reloading. Exercise real application
 workflows and inspect category, source, rule identity and byte view. Then set
 `shield block;` in one reviewed location; the default rejection status is 403.

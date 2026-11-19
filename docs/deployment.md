@@ -24,14 +24,18 @@ application's existing handler. Validate the complete configuration with `nginx
 legitimate requests before enabling enforcement. Include administration,
 scheduled clients, uploads and API requests in that trial.
 
-`shield detect` records enforceable matches without rejecting the request. It
-also leaves requests unchanged on internal inspection errors. The default
-`shield off` does no inspection. Enable `shield_log` explicitly if you need its
+`shield detect` records enforceable matches without rejecting for those
+matches. It also leaves requests unchanged on internal inspection errors.
+An attached ban policy still counts hits and refuses already-banned clients.
+The default `shield off` does no inspection. Enable `shield_log` explicitly if
+you need its
 JSON feed; normal nginx access logs have their own privacy policy.
 
 Use a counters-only `shield_stats_zone` when bans are unnecessary. Protect the
-status location with access controls and set `shield off` there. Do not expose
-client-address ban lists or operational counters publicly.
+status location with access controls and set `shield off` there. Size every
+shared zone for at least eight host memory pages: the `64k` example needs
+`128k` or more on a host with 16 KiB pages. Do not expose client-address ban
+lists or operational counters publicly.
 
 ## 3. Choose the body policy deliberately
 
@@ -100,9 +104,12 @@ recipe](../README.md#scoped-trial-and-rollback) to keep production bans and
 counters separate.
 
 Rollback changes future policy; it does not undo past responses, erase shared
-bans or recall an external report. Use `shield detect` on the trial location
-when you need to stop rejection while continuing observations. Validate and
-reload the complete configuration each time.
+bans or recall an external report. `shield detect` alone does not stop refusals
+from active bans or stop new bans accumulating. Detach the trial location's
+`shield_ban` binding and reload, then verify the new workers and wait for old
+workers to drain. Follow steps 4 and 5 of the [trial and rollback
+recipe](../README.md#scoped-trial-and-rollback) before retiring the trial zone.
+Validate and reload the complete configuration each time.
 
 ## 6. Read evidence without exporting request content
 
