@@ -204,6 +204,28 @@ http {
 }
 ```
 
+### Ambiguous body markers
+
+With body inspection enabled, `%c0%af`, `union select`, `{"$where":`,
+`{{7*7}}`, `169.254.169.254`, `/latest/meta-data/`, `<!--#include virtual` and
+`!ruby/object:` are observed by default in bodies. They can occur in stored
+examples without an evaluating sink. Observation emits a local notice with
+category, source and `verdict=suspicious action=observe` to file sinks only
+(writer callbacks such as syslog are excluded); it does not reject,
+accumulate bans, increment attack counters or enter the `shield_log` reporter
+feed. No request or body text is added to this notice. An observation does not
+certify that the content is safe or fully inspected.
+
+The flag is inherited; a location can explicitly set it off.
+Set `shield_body_strict on;` only where a validated decoding, SQL, query,
+template, fetch, SSI or YAML sink needs these exact predicates enforced under
+the configured block/detect and ban policy. With the default off, enforcement
+of payloads relying solely on these eight markers is lost, including a tested
+SQL extraction. URI/header policies, other signatures (including siblings in
+the same category), AND rules, body bounds and exclusions remain unchanged.
+An enforceable match in either body byte view takes priority over observation.
+`shield_skip` still suppresses an entire category on all eligible surfaces.
+
 ### Directives
 
 | Directive | Context | Default | Description |
@@ -211,6 +233,7 @@ http {
 | `shield` | http, server, location | `off` | `off` disables; `detect` logs only; `block` rejects. |
 | `shield_cve` | http, server, location | `off` | Opt-in application policies; see below. |
 | `shield_body` | http, server, location | `on` | Inspect the request body (text-shaped content types only). |
+| `shield_body_strict` | http, server, location | `off` | Strict body policy. |
 | `shield_max_body` | http, server, location | `8k` | Decoded/output inspection budget from the start of an eligible body (maximum `16m` when gzip inspection is enabled). For larger bodies, the remainder is not inspected; this does not enforce upload size. |
 | `shield_gzip` | http, server, location | `off` | Decode and inspect a single gzip request representation under the strict backend contract below. |
 | `shield_max_encoded_body` | http, server, location | `64k` | Encoded gzip input inspection budget (maximum `16m`); does not enforce upload size. |
@@ -483,6 +506,79 @@ http {
   the critical sections are bounded rbtree/queue work with no allocation beyond
   `ngx_slab_alloc_locked` and no I/O. Recovery is a restart.
 
+### Scoped trial and rollback
+
+Keep a trial in an exact location with its own ban zone, separate from normal
+traffic. Do not inherit `shield_ban` from `http` or `server`: there is no
+`shield_ban off` override. Attach each policy only to its intended locations.
+For example, keep the application's existing content handler in both locations:
+
+```nginx
+http {
+    shield_ban_zone production:10m;
+    shield_ban_zone trial_v1:1m;
+    server {
+        shield block;
+        shield_body_strict on;
+        location = /trial {
+            shield_body_strict off;
+            shield_ban zone=trial_v1 count=5 window=1m bantime=1h;
+            # Existing application content handler goes here.
+        }
+        location / {
+            shield_ban zone=production count=5 window=1m bantime=1h;
+            # Existing application content handler goes here.
+        }
+    }
+}
+```
+
+The exception observes the eight ambiguous body markers only. URI, header,
+other body signatures and sibling locations retain their configured protections.
+All eight markers change together: this is neither a single-rule exception nor
+proof of an exploit or application sink. If the application needs a narrower
+exception, leave the candidate unpromoted until a precise control exists.
+`shield_skip` disables a whole category; `shield_allow` and `shield off` bypass
+Shield more broadly. They cannot express that narrower exception.
+
+1. Start with observation and validate the application's behavior and diagnostic
+   rule/revision identity. A ban-free `shield detect` trial must have no ban
+   policy in its location or ancestors: detect mode with `shield_ban` still
+   accumulates hits and refuses an already banned client. Observation of the
+   eight markers has no ban effect, but other signatures can still ban.
+2. Change `shield_body_strict` only in the exact trial location after its
+   application evidence supports enforcement. Run `nginx -t` before each reload,
+   verify that new workers serve the intended policy, and check the sibling
+   controls. A rejected reload leaves the previous policy active.
+3. To withdraw, restore `shield_body_strict off` there. Existing requests keep
+   their old worker's configuration. An old strict body request can finish and
+   arm a ban after the new workers have begun observing. A reload is not an
+   instantaneous barrier, and changing the policy does not erase earlier bans.
+4. To stop trial-ban refusals, remove only the trial location's `shield_ban`
+   binding and reload, leaving its zone declaration for inspection. Verify new
+   workers, then wait for every old worker that could use the trial policy to
+   exit normally. Check worker exits and outstanding requests; an arbitrary
+   delay does not prove drainage. If an inherited ban prevents isolation, keep
+   promotion withheld until the configuration is separated.
+5. After drainage, remove only the exclusively owned trial zone declaration
+   and any status references, check the configuration and reload again. A
+   future trial uses a fresh zone name such as `trial_v2`. Confirm its empty
+   status and confirm the unchanged production zone still refuses its banned
+   clients. Detaching a location alone does not delete zone state. This retires
+   an entire trial zone, including its counters; it is not per-rule cleanup.
+
+Ban nodes store an address, hit count, window start and expiry, without rule,
+revision, location or request identity. Hit diagnostics do not add that missing
+shared-state attribution. If trial and production hits already share a zone,
+selective rollback is unavailable: withhold the promotion, preserve the zone
+and let existing bans expire. Do not flush or restart nginx to clear a trial
+ban, rotate a shared production zone, or use an allowlist to bypass it. Shorter
+`bantime` on reload does not shorten an expiry already stored in a ban node.
+
+The focused `ci/tools/test_policy_rollback.py` test covers these transitions,
+old in-flight bodies, rejected configurations, exact-location sibling controls
+and retirement of a separate trial zone while production bans survive.
+
 ### Banning behind a proxy
 
 By default the ban key is the **TCP peer address**. Behind a reverse proxy or a
@@ -674,6 +770,18 @@ label values escape quotes, backslashes and line feeds. Source labels match
 the detection log;
 query-string detections use `uri` because the request target is scanned together.
 
+Evidence metric names stay unchanged. `shield_hits_total`,
+`shield_detections_total`, `shield_source_hits_total`, `shield_blocked_total` and
+`shield_bans_total` add the fixed label `class="suspicious"`; even strict body and
+resource-policy blocks remain nonpromoted evidence. `shield_body_uninspected_total`
+adds `class="not-inspected"`. No request/rule text becomes a label. These are the
+only classes currently emitted; no exploit series or artificial zero is emitted.
+Promoting evidence later requires separate counter accounting before an exploit
+label may be produced. Existing operational metrics and JSON fields stay intact.
+Selectors that specify an exact old label set must migrate; unfiltered metric
+selectors still match. Dashboards select the class explicitly and show no
+promoted exploit rate on older exporters or the current nonpromoted exporter.
+
 `shield_banned_clients` counts only unexpired bans; `shield_zone_nodes` also
 includes clients accumulating hits and expired entries not yet reclaimed.
 Metrics use one snapshot under the zone lock, then render outside it, with
@@ -699,7 +807,9 @@ alert manager. The scrape target must reach the access-controlled metrics
 location; do not expose the status endpoint publicly. The dashboard keeps the
 scrape target's `instance` and the module's `zone` labels separate.
 
-The example alerts detect reserved zone memory above 80%, allocation failures,
+The example alerts distinguish promoted block-mode exploit evidence from
+suspicious enforcement, while retaining reserved zone memory above 80%,
+allocation failures,
 eviction activity, ban refusals above 10 per second, and incomplete body
 inspections above 10% of inspected requests. The body ratio uses all inspected
 requests as its denominator, not just requests with bodies; it is a traffic
@@ -722,12 +832,12 @@ JSON fields map to metric samples as follows; each metric has a `zone` label.
 | `alloc_failures` | `shield_zone_alloc_failures_total` |
 | `used` | `shield_zone_used_bytes` |
 | `size` | `shield_zone_size_bytes` |
-| `body_uninspected.<reason>` | `shield_body_uninspected_total{reason}` |
-| `categories.<category>` | `shield_hits_total{category}` |
-| `detections.<category>.<mode>` | `shield_detections_total{category,mode}` |
+| `body_uninspected.<reason>` | `shield_body_uninspected_total{reason,class}` |
+| `categories.<category>` | `shield_hits_total{category,class}` |
+| `detections.<cat>.<mode>` | `shield_detections_total{category,mode,class}` |
 | `banned` array length | `shield_banned_clients` |
 | `banned[].addr`, `hits`, `expires` | No per-client metric |
-| No JSON field | `shield_source_hits_total{category,source}` |
+| No JSON field | `shield_source_hits_total{category,source,class}` |
 
 The bounded body reasons are `too_large`, `encoding`, and `error`.
 The source breakdown is available only in metrics; the JSON ban array carries
@@ -739,18 +849,51 @@ client details that are deliberately absent from metrics.
 every hit, in both `block` and `detect` mode:
 
 ```json
-{"ts":"2026-07-17T14:22:05+02:00","ip":"203.0.113.7","cat":"sqli","src":"uri","mode":"block","status":403,"req":"GET /?id=1 union select pw HTTP/1.1"}
+{"ts":"2026-07-17T14:22:05+02:00","ip":"203.0.113.7","cat":"sqli",
+ "src":"uri","mode":"block","status":403,"req":"",
+ "rule":"c5d8b739bdf9c83d","rev":1,"ruleset":"...","build":"nginx/...",
+ "view":"decoded","verdict":"signature-match","action":"block",
+ "body_policy":"observe","ban":"off"}
 ```
 
-Fields: `ts` (ISO-8601 with timezone — AbuseIPDB's `timestamp`), `ip` (nginx's
-connection address), `cat` shield
-category, `src` where it matched (`uri`/`user-agent`/`body`/…), `mode`, `status`
-(0 in detect mode), and `req` the request line. `req` is the only
-attacker-controlled field: JSON uses short escapes for quote, backslash, LF,
-CR and TAB, and `\u00XX` for other control and non-ASCII bytes, so a hostile
-request line can neither inject a
-second record nor break the JSON. The file is reopened on `SIGUSR1`
-(logrotate-safe).
+Fields `ts`, `ip`, `cat`, `src`, `mode`, `status` and `req` retain their names
+and types; categories and their priority are unchanged. **Compatibility change:**
+`req` is now always empty. Request targets, query strings, bodies, cookies,
+authorization values and hashes of those values are omitted. Shield hit notices
+also suppress nginx's automatic request context; separately configured nginx
+access logs and other nginx messages follow their own logging policies.
+
+`rule` is a 16-digit fingerprint of the **public static predicate definition**,
+not of request content. `rev` is the explicit diagnostic/semantic revision.
+Definition edits create a new identity; semantic changes outside static terms
+require a revision bump. Identities do not depend on table positions.
+Signature and AND-rule fingerprints are checked for collisions against the
+compiled inventory in CI. These are attribution labels, not cryptographic
+authenticators or evidence of an exploitable sink.
+`ruleset` fingerprints the ordered static tables under that revision; `build`
+identifies the nginx version. Record the module source/commit separately when
+reproducing a build. Structural checks and application profiles have fixed
+identity names under the same revision.
+
+`view` distinguishes raw, decoded, structural and policy-specific byte views.
+`verdict=signature-match` means a configured predicate matched; `action` records
+`block` or `detect`, independently of that observation. `body_policy` records
+the effective `observe`/`strict` setting; `ban` records whether repeat-offender
+accounting is configured, without claiming that this request armed a ban.
+Ambiguous body markers remain local `verdict=suspicious action=observe` notices,
+with the same rule/revision/ruleset/view fields. They never enter this JSON feed.
+
+All event labels come from fixed definitions/configuration; hostile quotes,
+control bytes and invalid UTF-8 cannot enter through request content. JSON
+records, including their file newline, are bounded by 768 bytes; a future format
+that exceeds the buffer is dropped whole, never truncated into invalid JSON.
+The file is reopened on `SIGUSR1` (logrotate-safe).
+
+The production scanner attributes only its selected category at its accepting
+endpoint using bounded static suffix comparisons. It does not collect all
+matches. `ci/causal/diagnostics.py` checks overlap offline using small sanitized
+fixtures and the compiled public inventory; those fixtures establish diagnostic
+attribution, not all-rule behavioral or application-sink coverage.
 
 Behind a trusted proxy, configure nginx's real-IP module first, for example
 with a narrowly scoped `set_real_ip_from` plus `real_ip_header X-Forwarded-For`.
@@ -764,8 +907,8 @@ exists to block — so `shield_log "| ..."` is rejected at config load. Log to a
 file and let a **separate, unprivileged** process tail it and call the reporting
 API. That process owns the API key, rate-limiting, IP de-duplication and
 private-IP suppression — none of which belong on the request hot path. For
-AbuseIPDB, map each `cat` to a category ID (most → `21` Web App Attack; `sqli`
-also → `16` SQL Injection).
+AbuseIPDB, require promoted block-mode exploit evidence before mapping admitted
+categories to fixed category IDs; the bundled reporter currently promotes none.
 
 #### Syslog transport
 
@@ -788,12 +931,22 @@ parent.
 tails the JSON log (surviving logrotate via an inode/offset state file), skips
 private/loopback/reserved IPs, de-duplicates each IP for 15 minutes (matching
 AbuseIPDB's own per-IP limit), enforces a daily cap (default 1000, the free
-tier), maps the shield category to AbuseIPDB IDs, and POSTs to
-`/api/v2/report`. The public report comment carries only `METHOD /path` — the
-query string is stripped, since URLs routinely carry tokens/PII you must not
-forward to a third party. Suppression and daily-cap state are persisted, so a
+tier), and reports only records with explicit `mode=block`, `action=block` and
+`verdict=exploit` whose exact `(ruleset, rule, rev, cat)` identity is in the
+reviewed promotion registry. **That registry is empty. Current `signature-match`
+records, observations, resource-safety events, incomplete inspections, detect
+mode and legacy/unclassifiable records send no reports.** A block or causal
+fixture alone never promotes a signature. This deliberately loses historical
+reporting until evidence and producer accounting are promoted together. Skipped
+records advance the saved offset and consume no quota; later promotion does not
+replay them.
+The public comment is constant; no request, URL, body, header, category or source
+text is sent. Only the validated public IP, bounded timestamp and fixed category
+IDs accompany it. Duplicate JSON keys and malformed metadata are discarded.
+Suppression and daily-cap state are persisted, so a
 restart cannot reset them and overrun the quota; a 429 or network failure backs
-off (honouring `Retry-After`) and the unsent line is retried, not dropped. The
+off (honouring `Retry-After`) and rechecks the retained line against its pending
+attempt debt after cooldown instead of risking a duplicate POST. The
 API key comes from `ABUSEIPDB_API_KEY` in the environment — never the command
 line. A hardened `systemd` unit is provided:
 
@@ -802,8 +955,21 @@ sudo cp reporter/abuseipdb-reporter.py /usr/local/bin/shield-abuseipdb-reporter
 sudo cp reporter/shield-abuseipdb-reporter.service /etc/systemd/system/
 sudo install -m600 /dev/null /etc/shield-abuseipdb.env
 sudoedit /etc/shield-abuseipdb.env    # add: ABUSEIPDB_API_KEY=...  (editor, not echo)
+# Verified first install only: create suppression state as the service identity.
+# O_EXCL makes this fail instead of overwriting any existing state.
+sudo systemd-run --wait --collect --quiet \
+  -p DynamicUser=yes -p StateDirectory=shield-reporter \
+  /usr/bin/python3 -c 'import os; p="/var/lib/shield-reporter/suppress.json"; d=b"{\"version\":2,\"day\":null,\"count\":0,\"last\":{},\"pending\":[],\"reservation_ready\":true}\n"; f=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,d); os.close(f)'
 sudo systemctl enable --now shield-abuseipdb-reporter
 ```
+
+The non-dry-run reporter deliberately refuses missing, malformed or
+non-canonical suppression state rather than risk forgetting outstanding quota
+or de-duplication debt. On an upgrade or recovery, restore the installation's
+authoritative `suppress.json`; never run the first-install command to replace
+lost state. Legacy IP spellings are canonicalized during loading; aliases retain
+the latest de-duplication timestamp. Malformed or scoped keys still fail closed.
+The startup error names the rejected path.
 
 Use `--dry-run` to see exactly what would be sent without calling the API. The
 reporter's suppression, backoff, PII-strip and offset-persistence logic are

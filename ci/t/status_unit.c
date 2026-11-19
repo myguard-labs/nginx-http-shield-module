@@ -142,15 +142,15 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
         APPEND("# HELP shield_hits Shield signature hits by category.\n"
                "# TYPE shield_hits counter\n");
         for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
-            APPEND("shield_hits_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\"} %s\n",
+            APPEND("shield_hits_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",class=\"suspicious\"} %s\n",
                    cats[i], maximum ? "18446744073709551615" : "0");
         }
         APPEND("# HELP shield_blocked Shield requests blocked.\n"
                "# TYPE shield_blocked counter\n"
-               "shield_blocked_total{zone=\"quote\\\"slash\\\\line\\n\"} %s\n"
+               "shield_blocked_total{zone=\"quote\\\"slash\\\\line\\n\",class=\"suspicious\"} %s\n"
                "# HELP shield_bans Shield bans armed.\n"
                "# TYPE shield_bans counter\n"
-               "shield_bans_total{zone=\"quote\\\"slash\\\\line\\n\"} %s\n"
+               "shield_bans_total{zone=\"quote\\\"slash\\\\line\\n\",class=\"suspicious\"} %s\n"
                "# HELP shield_zone_nodes Shield zone nodes in use.\n"
                "# TYPE shield_zone_nodes gauge\n"
                "shield_zone_nodes{zone=\"quote\\\"slash\\\\line\\n\"} %" PRIuPTR "\n"
@@ -186,9 +186,9 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
         APPEND("# HELP shield_detections Shield detections by category and mode.\n"
                "# TYPE shield_detections counter\n");
         for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
-            APPEND("shield_detections_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",mode=\"detect\"} %s\n",
+            APPEND("shield_detections_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",mode=\"detect\",class=\"suspicious\"} %s\n",
                    cats[i], maximum ? "18446744073709551615" : "0");
-            APPEND("shield_detections_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",mode=\"block\"} %s\n",
+            APPEND("shield_detections_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",mode=\"block\",class=\"suspicious\"} %s\n",
                    cats[i], maximum ? "18446744073709551615" : "0");
         }
             APPEND("# HELP shield_source_hits Shield signature hits by category and source.\n"
@@ -201,7 +201,7 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
                 size_t j;
                 for (i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
                     for (j = 0; j < sizeof(sources) / sizeof(sources[0]); j++) {
-                        APPEND("shield_source_hits_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",source=\"%s\"} %s\n",
+                        APPEND("shield_source_hits_total{zone=\"quote\\\"slash\\\\line\\n\",category=\"%s\",source=\"%s\",class=\"suspicious\"} %s\n",
                                cats[i], sources[j],
                                maximum ? "18446744073709551615" : "0");
                     }
@@ -212,7 +212,7 @@ check_golden(ngx_str_t *body, int prometheus, int maximum)
             {
                 static const char *reasons[] = { "too_large", "encoding", "error" };
                 for (i = 0; i < 3; i++) {
-                    APPEND("shield_body_uninspected_total{zone=\"quote\\\"slash\\\\line\\n\",reason=\"%s\"} %s\n",
+                    APPEND("shield_body_uninspected_total{zone=\"quote\\\"slash\\\\line\\n\",reason=\"%s\",class=\"not-inspected\"} %s\n",
                            reasons[i], maximum ? "18446744073709551615" : "0");
                 }
             }
@@ -371,9 +371,9 @@ main(void)
     assert(strstr(text, "shield_zone_alloc_failures_total{zone=\"quote\\\"slash\\\\line\\n\"} 44\n") != NULL);
     assert(strstr(text, "shield_zone_used_bytes{zone=\"quote\\\"slash\\\\line\\n\"} 55\n") != NULL);
     assert(strstr(text, "shield_zone_size_bytes{zone=\"quote\\\"slash\\\\line\\n\"} 66\n") != NULL);
-    assert(strstr(text, "reason=\"too_large\"} 77\n") != NULL);
-    assert(strstr(text, "reason=\"encoding\"} 88\n") != NULL);
-    assert(strstr(text, "reason=\"error\"} 99\n") != NULL);
+    assert(strstr(text, "reason=\"too_large\",class=\"not-inspected\"} 77\n") != NULL);
+    assert(strstr(text, "reason=\"encoding\",class=\"not-inspected\"} 88\n") != NULL);
+    assert(strstr(text, "reason=\"error\",class=\"not-inspected\"} 99\n") != NULL);
     free(text);
     free(allocation);
     allocations = 0;
@@ -389,6 +389,7 @@ main(void)
     assert(strstr(text, "# HELP shield_hits_total ") != NULL);
     assert(strstr(text, "# TYPE shield_hits_total counter\n") != NULL);
     assert(strstr(text, "# TYPE shield_zone_nodes gauge\n") != NULL);
+    assert(strstr(text, "class=\"exploit\"") == NULL);
     assert(strstr(text, "# EOF") == NULL);
     free(text);
     free(allocation);
@@ -436,7 +437,7 @@ main(void)
     {
         u_char long_label[4096];
         ngx_str_t long_zone;
-        const char tail[] = "reason=\"error\"} 18446744073709551615\n";
+        const char tail[] = "reason=\"error\",class=\"not-inspected\"} 18446744073709551615\n";
 
         /* Every label byte expands; numeric widths and the final sample are
          * maximal, so neither escaping nor counters leave hidden slack. */
@@ -468,8 +469,8 @@ main(void)
     memcpy(text, body.data, body.len);
     text[body.len] = '\0';
     assert(strstr(text, "zone=\"quote\\\"slash\\\\line\\n\"") != NULL);
-    assert(strstr(text, "category=\"sqli\"} 18446744073709551615\n") != NULL);
-    assert(strstr(text, "category=\"dotfile\"} 0\n") != NULL);
+    assert(strstr(text, "category=\"sqli\",class=\"suspicious\"} 18446744073709551615\n") != NULL);
+    assert(strstr(text, "category=\"dotfile\",class=\"suspicious\"} 0\n") != NULL);
     assert(strstr(text, "\"} 18446744073709551615\n# HELP shield_bans") != NULL);
     assert(strstr(text, "\"} 18446744073709551615\n# HELP shield_zone_nodes") != NULL);
     assert(body.len >= 6 && memcmp(text + body.len - 6, "# EOF\n", 6) == 0);

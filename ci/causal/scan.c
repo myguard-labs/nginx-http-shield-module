@@ -5,6 +5,7 @@
  */
 #include "ngx_http_shield_scan.c"
 #include <stdio.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,7 +33,7 @@ print_terms(const ngx_http_shield_sig_t *terms, ngx_uint_t count)
 }
 
 static int
-inventory(void)
+inventory(int diagnostics)
 {
     ngx_uint_t row, item;
     const ngx_http_shield_catdef_t *cat;
@@ -44,6 +45,11 @@ inventory(void)
             printf("signature\t%u\t%u\t%s\t%s\t", (unsigned) row,
                    (unsigned) item, cat->name, cat->name);
             print_terms(&cat->sigs[item], 1);
+            if (diagnostics) {
+                printf("\t%u\t%016" PRIx64, (unsigned) cat->match,
+                       ngx_http_shield_rule_identity("sig", cat->name,
+                                             &cat->sigs[item], 1, cat->match));
+            }
             (void) putchar('\n');
         }
     }
@@ -56,6 +62,11 @@ inventory(void)
         printf("and-rule\t%u\t0\t%s\t%s\t", (unsigned) row,
                rule->name, ngx_http_shield_categories[item].name);
         print_terms(rule->terms, rule->nterms);
+        if (diagnostics) {
+            printf("\t%u\t%016" PRIx64, (unsigned) rule->match,
+                   ngx_http_shield_rule_identity("and", rule->name,
+                                  rule->terms, rule->nterms, rule->match));
+        }
         (void) putchar('\n');
     }
     return ferror(stdout) ? 2 : 0;
@@ -126,9 +137,14 @@ main(int argc, char **argv)
     char line[8196];
     u_char data[4096], lc[4096], dec[4096];
     size_t n, i;
-    int hi, lo;
+    int hi, lo, diagnostics = 0;
 
-    if (argc == 2 && strcmp(argv[1], "--list") == 0) { return inventory(); }
+    if (argc > 1 && strcmp(argv[argc - 1], "--diagnostics") == 0) {
+        diagnostics = 1;
+        argc--;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "--list") == 0) { return inventory(diagnostics); }
     if (!(argc == 2 && strcmp(argv[1], "--full") == 0)
         && !isolate(argc, argv))
     {
@@ -167,7 +183,11 @@ main(int argc, char **argv)
             ngx_destroy_pool(pool);
             return 2;
         }
-        puts(rc == NGX_OK ? hit.category : "clean");
+        if (diagnostics && rc == NGX_OK) {
+            printf("%s\t%016" PRIx64 "\t%s\n", hit.category, hit.rule, hit.view);
+        } else {
+            puts(rc == NGX_OK ? hit.category : "clean");
+        }
     }
     ngx_destroy_pool(pool);
     return ferror(stdin) || ferror(stdout) ? 2 : 0;

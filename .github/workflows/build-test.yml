@@ -1,4 +1,4 @@
-# sync-sha: 6f38f59959eb61ddfc2741d7fbee456621358bba5bc3a1a9e28b8c4dfcd7a664
+# sync-sha: dca2ed8e8e30c2bb95ee3e221afdb82fdcbdf7668960e72a1e1dfe44ff89facb
 name: Build and Test
 
 env:
@@ -54,6 +54,7 @@ jobs:
             --suppress=normalCheckLevelMaxBranches \
             --suppress=unusedFunction \
             --suppress=unusedStructMember \
+            '-DNGINX_VER="nginx/test"' \
             -I src \
             src/ngx_http_shield_module.c \
             src/ngx_http_shield_ban.c \
@@ -73,6 +74,11 @@ jobs:
 
       - name: Check allowlist Python assertion mode
         run: python3 -m unittest -v ci/tests/test_allowlist_mode.py
+
+      - name: Check assertion-dependent test drivers
+        run: |
+          python3 ci/tests/test_optimization_guards.py
+          python3 ci/tests/test_cve_cleanup.py
 
       - name: Check deployment analysis and diagnostic control
         run: |
@@ -344,6 +350,9 @@ jobs:
           python3 ci/tools/test_reload_lifetime.py \
             --nginx "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-asan/objs/nginx" \
             --port "$((TEST_BASE_PORT + 32))"
+          python3 ci/tools/test_policy_rollback.py \
+            --nginx "$GITHUB_WORKSPACE/.build/nginx-${NGINX_VERSION}-asan/objs/nginx" \
+            --port "$((TEST_BASE_PORT + 33))"
 
   reporter-tests:
     name: Reporter unit tests
@@ -368,7 +377,8 @@ jobs:
       # path (or adds an untested one) fails the PR rather than silently rotting.
       - name: Run reporter unit tests with coverage
         run: |
-          python3 -m pytest -q reporter/test_abuseipdb_reporter.py ci/tests/test_reporter_boundaries.py \
+          python3 -m pytest -q reporter/test_abuseipdb_reporter.py \
+            ci/tests/test_reporter_boundaries.py ci/tests/test_reporter_verdicts.py \
             --cov=. --cov-report=term-missing --cov-fail-under=95
 
   ban-unit:

@@ -430,6 +430,12 @@ ngx_http_shield_status_json(ngx_pool_t *pool, ngx_str_t *zone,
 }
 
 
+/* Existing aggregate hits (including strict body/resource-policy matches) are
+ * suspicious evidence, never promoted exploit proof. This renderer cannot split
+ * promoted counters: a future promotion must add separate accounting first.
+ * Labels are fixed literals, independent of request and rule text.
+ */
+
 /* Render metrics outside the slab lock. Only aggregate gauges are exposed:
  * per-client labels would create unbounded time-series cardinality. The zone
  * label is escaped once into the same allocation as the response body. */
@@ -514,7 +520,8 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
         if (i == 0) {
             for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
                 p = ngx_slprintf(p, last,
-                    "%s_total{zone=\"%V\",category=\"%s\"} %uL\n",
+                    "%s_total{zone=\"%V\",category=\"%s\","
+                    "class=\"suspicious\"} %uL\n",
                     metric->family, &label, ngx_http_shield_cat_name(j),
                     snapshot->cat_hits[j]);
             }
@@ -524,9 +531,9 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
             for (j = 0; j < NGX_HTTP_SHIELD_CAT_N; j++) {
                 p = ngx_slprintf(p, last,
                     "%s_total{zone=\"%V\",category=\"%s\","
-                    "mode=\"detect\"} %uL\n"
+                    "mode=\"detect\",class=\"suspicious\"} %uL\n"
                     "%s_total{zone=\"%V\",category=\"%s\","
-                    "mode=\"block\"} %uL\n",
+                    "mode=\"block\",class=\"suspicious\"} %uL\n",
                     metric->family, &label, ngx_http_shield_cat_name(j),
                     snapshot->cat_detect[j], metric->family, &label,
                     ngx_http_shield_cat_name(j), snapshot->cat_block[j]);
@@ -542,7 +549,7 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
                 {
                     p = ngx_slprintf(p, last,
                         "%s_total{zone=\"%V\",category=\"%s\","
-                        "source=\"%s\"} %uL\n",
+                        "source=\"%s\",class=\"suspicious\"} %uL\n",
                         metric->family, &label, ngx_http_shield_cat_name(j),
                         ngx_http_shield_source_name(source),
                         snapshot->source_hits[j][source]);
@@ -555,16 +562,18 @@ ngx_http_shield_status_prometheus(ngx_pool_t *pool, ngx_str_t *zone,
 
             for (j = 0; j < NGX_HTTP_SHIELD_BODY_REASONS; j++) {
                 p = ngx_slprintf(p, last,
-                    "%s_total{zone=\"%V\",reason=\"%s\"} %uL\n",
+                    "%s_total{zone=\"%V\",reason=\"%s\","
+                    "class=\"not-inspected\"} %uL\n",
                     metric->family, &label, reasons[j],
                     snapshot->body_uninspected[j]);
             }
             continue;
         }
         value = ngx_http_shield_status_value(snapshot, i);
-        p = ngx_slprintf(p, last, "%s%s{zone=\"%V\"} %uL\n",
+        p = ngx_slprintf(p, last, "%s%s{zone=\"%V\"%s} %uL\n",
                          metric->family, metric->counter ? "_total" : "",
-                         &label, value);
+                         &label, (i == 1 || i == 2)
+                           ? ",class=\"suspicious\"" : "", value);
     }
     if (openmetrics) {
         p = ngx_slprintf(p, last, "# EOF\n");

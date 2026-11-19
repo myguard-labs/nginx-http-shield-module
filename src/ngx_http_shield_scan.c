@@ -22,7 +22,186 @@
  * picks the right automaton for each buffer flavour. Defined below its callers,
  * so it needs a prototype here. */
 static const ngx_http_shield_catdef_t *ngx_http_shield_ac_scan(
-    const ngx_http_shield_ac_t *ac, u_char *data, size_t len, uint64_t skip);
+    const ngx_http_shield_ac_t *ac, u_char *data, size_t len, uint64_t skip,
+    ngx_uint_t strict, ngx_uint_t *observed_row,
+    ngx_http_shield_hit_t *observation, ngx_http_shield_hit_t *hit,
+    const char *view);
+
+
+/* Only these category-qualified byte strings have body-collision evidence.
+ * Classify while building the cycle-owned immutable trie, never per request.
+ * Separate outputs preserve same-category siblings ending at the same state. */
+static ngx_uint_t
+ngx_http_shield_body_observe(ngx_uint_t cat, const ngx_http_shield_sig_t *sig)
+{
+    if (cat == NGX_HTTP_SHIELD_CAT_OVERLONG
+        && sig->len == sizeof("%c0%af") - 1
+        && ngx_memcmp(sig->s, "%c0%af", sizeof("%c0%af") - 1) == 0)
+    {
+        return 1;
+    }
+
+    if (cat == NGX_HTTP_SHIELD_CAT_SQLI
+        && sig->len == sizeof("union select") - 1
+        && ngx_memcmp(sig->s, "union select", sizeof("union select") - 1) == 0)
+    {
+        return 1;
+    }
+
+    if (cat == NGX_HTTP_SHIELD_CAT_NOSQL
+        && sig->len == sizeof("{\"$where\":") - 1
+        && ngx_memcmp(sig->s, "{\"$where\":", sizeof("{\"$where\":") - 1) == 0)
+    {
+        return 1;
+    }
+
+    if (cat == NGX_HTTP_SHIELD_CAT_SSTI
+        && sig->len == sizeof("{{7*7}}") - 1
+        && ngx_memcmp(sig->s, "{{7*7}}", sizeof("{{7*7}}") - 1) == 0)
+    {
+        return 1;
+    }
+
+    if (cat == NGX_HTTP_SHIELD_CAT_SSRF_META
+        && sig->len == sizeof("169.254.169.254") - 1
+        && ngx_memcmp(sig->s, "169.254.169.254",
+                      sizeof("169.254.169.254") - 1) == 0)
+    {
+        return 1;
+    }
+
+    if (cat == NGX_HTTP_SHIELD_CAT_SSRF_META
+        && sig->len == sizeof("/latest/meta-data/") - 1
+        && ngx_memcmp(sig->s, "/latest/meta-data/",
+                      sizeof("/latest/meta-data/") - 1) == 0)
+    {
+        return 1;
+    }
+
+    if (cat == NGX_HTTP_SHIELD_CAT_SSI
+        && sig->len == sizeof("<!--#include virtual") - 1
+        && ngx_memcmp(sig->s, "<!--#include virtual",
+                      sizeof("<!--#include virtual") - 1) == 0)
+    {
+        return 1;
+    }
+
+    if (cat == NGX_HTTP_SHIELD_CAT_RAILS_YAML
+        && sig->len == sizeof("!ruby/object:") - 1
+        && ngx_memcmp(sig->s, "!ruby/object:",
+                      sizeof("!ruby/object:") - 1) == 0)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+/* Length-delimited public-definition identity, independent of table position,
+ * pointer width, byte order and request content. Unsigned wrap is intentional.
+ */
+static uint64_t
+ngx_http_shield_identity_part(uint64_t hash, const u_char *data, size_t len)
+{
+    size_t  i;
+    uint64_t size = (uint64_t) len;
+
+    for (i = 0; i < 8; i++) {
+        hash = (hash ^ (size & 255)) * UINT64_C(1099511628211);
+        size >>= 8;
+    }
+    for (i = 0; i < len; i++) {
+        hash = (hash ^ data[i]) * UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+
+uint64_t
+ngx_http_shield_rule_identity(const char *kind, const char *name,
+    const ngx_http_shield_sig_t *terms, ngx_uint_t nterms, ngx_uint_t flags)
+{
+    ngx_uint_t  i;
+    u_char      metadata[2];
+    uint64_t    hash = UINT64_C(14695981039346656037);
+
+    hash = ngx_http_shield_identity_part(hash, (const u_char *) kind,
+                                         ngx_strlen(kind));
+    hash = ngx_http_shield_identity_part(hash, (const u_char *) name,
+                                         ngx_strlen(name));
+    metadata[0] = (u_char) flags;
+    metadata[1] = NGX_HTTP_SHIELD_RULE_REVISION;
+    hash = ngx_http_shield_identity_part(hash, metadata, sizeof(metadata));
+    for (i = 0; i < nterms; i++) {
+        hash = ngx_http_shield_identity_part(hash,
+                   (const u_char *) terms[i].s, terms[i].len);
+    }
+    return hash;
+}
+
+
+uint64_t
+ngx_http_shield_ruleset_identity(void)
+{
+    size_t    i, j, k;
+    uint64_t  hash = UINT64_C(14695981039346656037), rule;
+    u_char    encoded[8];
+
+    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES + NGX_HTTP_SHIELD_NRULES; i++) {
+        size_t count = i < NGX_HTTP_SHIELD_NCATEGORIES
+                       ? ngx_http_shield_categories[i].nsigs : 1;
+        for (j = 0; j < count; j++) {
+            if (i < NGX_HTTP_SHIELD_NCATEGORIES) {
+                const ngx_http_shield_catdef_t *cat =
+                    &ngx_http_shield_categories[i];
+                rule = ngx_http_shield_rule_identity("sig", cat->name,
+                                      &cat->sigs[j], 1, cat->match);
+            } else {
+                const ngx_http_shield_ruledef_t *def =
+                    &ngx_http_shield_rules[i - NGX_HTTP_SHIELD_NCATEGORIES];
+                rule = ngx_http_shield_rule_identity("and", def->name,
+                                    def->terms, def->nterms, def->match);
+            }
+            for (k = 0; k < sizeof(encoded); k++) {
+                encoded[k] = (u_char) (rule & 255);
+                rule >>= 8;
+            }
+            hash = ngx_http_shield_identity_part(hash, encoded,
+                                                  sizeof(encoded));
+        }
+    }
+    return hash;
+}
+
+
+/* Attribute only the chosen category at its accepting endpoint. This is a
+ * bounded suffix comparison against static definitions, not another input scan
+ * or an all-match production collector. Observe/enforce outputs may share an
+ * endpoint and category, so apply the same policy partition as the trie. */
+static uint64_t
+ngx_http_shield_signature_identity(ngx_uint_t row, u_char *data, size_t end,
+    ngx_uint_t strict, ngx_uint_t observation)
+{
+    size_t                          i;
+    const ngx_http_shield_catdef_t  *cat = &ngx_http_shield_categories[row];
+
+    for (i = 0; i < cat->nsigs; i++) {
+        const ngx_http_shield_sig_t *sig = &cat->sigs[i];
+        if (!strict && ngx_http_shield_body_observe(cat->cat, sig)
+                       != observation)
+        {
+            continue;
+        }
+        if (sig->len <= end
+            && ngx_memcmp(data + end - sig->len, sig->s, sig->len) == 0)
+        {
+            return ngx_http_shield_rule_identity("sig", cat->name, sig, 1,
+                                                   cat->match);
+        }
+    }
+    return 0; /* Unknown attribution must never invent a matching rule. */
+}
 
 
 /* Index of the lowest set bit. Only ever called with m != 0. */
@@ -109,7 +288,7 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
     size_t                       next_bytes, mask_bytes, state_bytes;
     ngx_uint_t                   b, term;
     ngx_pool_t                  *temp;
-    uint64_t                    *out, *rout;
+    uint64_t                    *out, *rout, *observe;
     ngx_http_shield_ac_state_t  *next, *queue, *fail, s, v, f;
 
     /* One state per signature byte, plus the root. The BFS never creates a
@@ -160,8 +339,9 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
     next = ngx_pcalloc(pool, next_bytes);
     out = ngx_pcalloc(pool, mask_bytes);
     rout = ngx_pcalloc(pool, mask_bytes);
+    observe = ngx_pcalloc(pool, mask_bytes);
 
-    if (next == NULL || out == NULL || rout == NULL) {
+    if (next == NULL || out == NULL || rout == NULL || observe == NULL) {
         return NGX_ERROR;
     }
 
@@ -239,7 +419,14 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
              * that also accepts here (two categories may share a signature
              * string). ac_scan resolves a multi-category state by table
              * order. */
-            out[s] |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
+            if (ngx_http_shield_body_observe(
+                    ngx_http_shield_categories[i].cat, sig))
+            {
+                observe[s] |= (uint64_t) 1
+                              << ngx_http_shield_categories[i].cat;
+            } else {
+                out[s] |= (uint64_t) 1 << ngx_http_shield_categories[i].cat;
+            }
         }
     }
 
@@ -317,6 +504,7 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
              * signature ending at the same offset). Keeping only the first
              * dropped the other -- the detection bypass this replaces. */
             out[v] |= out[f];
+            observe[v] |= observe[f];
 
             /* Rule terms union along the fail links for the same reason: a
              * term ending inside a longer signature (or inside another term)
@@ -331,6 +519,7 @@ ngx_http_shield_ac_build(ngx_pool_t *pool, ngx_log_t *log,
 
     ac->next = next;
     ac->out = out;
+    ac->observe = observe;
     ac->rout = rout;
     ac->nstates = nstates;
 
@@ -361,7 +550,22 @@ ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
     const char *source, size_t form_offset, uint64_t skip,
     ngx_http_shield_hit_t *hit)
 {
+    /* Preserve the public scanner's historical enforcement semantics. */
+    return ngx_http_shield_scan_policy(automata, data, len, scratch_lc,
+                                      scratch_dec, source, form_offset, skip,
+                                      1, hit);
+}
+
+
+ngx_int_t
+ngx_http_shield_scan_policy(const ngx_http_shield_automata_t *automata,
+    u_char *data, size_t len, u_char *scratch_lc, u_char *scratch_dec,
+    const char *source, size_t form_offset, uint64_t skip, ngx_uint_t strict,
+    ngx_http_shield_hit_t *hit)
+{
     size_t                           i, dlen;
+    ngx_uint_t                       observed_row = NGX_HTTP_SHIELD_NCATEGORIES;
+    ngx_http_shield_hit_t             observation;
     u_char                          *raw_lc, *dec, *dst, *src;
     const ngx_http_shield_catdef_t  *cat;
 
@@ -377,7 +581,9 @@ ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
     /* Raw signatures must see the untouched spelling, including percent
      * escapes and literal plus signs. Reuse this scratch only after that
      * scan. */
-    cat = ngx_http_shield_ac_scan(&automata->raw, raw_lc, len, skip);
+    cat = ngx_http_shield_ac_scan(&automata->raw, raw_lc, len, skip,
+                                   strict, &observed_row, &observation, hit,
+                                   "raw");
     if (cat != NULL) {
         hit->category = cat->name;
         hit->cat = cat->cat;
@@ -398,12 +604,22 @@ ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
     dlen = dst - dec;
     ngx_strlow(dec, dec, dlen);
 
-    cat = ngx_http_shield_ac_scan(&automata->decoded, dec, dlen, skip);
+    cat = ngx_http_shield_ac_scan(&automata->decoded, dec, dlen, skip,
+                                   strict, &observed_row, &observation, hit,
+                                   "decoded");
     if (cat != NULL) {
         hit->category = cat->name;
         hit->cat = cat->cat;
         hit->source = source;
         return NGX_OK;
+    }
+
+    /* Observation is advisory. Both byte views and all AND rules have had
+     * the chance to enforce before an ambiguous result can be returned. */
+    if (observed_row < NGX_HTTP_SHIELD_NCATEGORIES) {
+        *hit = observation;
+        hit->source = source;
+        return NGX_DONE;
     }
 
     return NGX_DECLINED;
@@ -424,7 +640,9 @@ ngx_http_shield_scan_input(const ngx_http_shield_automata_t *automata,
  */
 static const ngx_http_shield_catdef_t *
 ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
-    size_t len, uint64_t skip)
+    size_t len, uint64_t skip, ngx_uint_t strict, ngx_uint_t *observed_row,
+    ngx_http_shield_hit_t *observation, ngx_http_shield_hit_t *hit,
+    const char *view)
 {
     size_t                      i;
     uint64_t                    live, seen;
@@ -445,7 +663,26 @@ ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
          * that ends no rule term, which is nearly all of them. */
         seen |= ac->rout[s];
 
-        live = ac->out[s] & ~skip;
+        live = ac->out[s];
+        if (strict) {
+            live |= ac->observe[s];
+        } else {
+            uint64_t pending = ac->observe[s] & ~skip;
+            while (pending) {
+                row = ac->row[ngx_http_shield_ac_lowest_bit(pending)];
+                if (row < *observed_row) {
+                    *observed_row = row;
+                    observation->cat = ngx_http_shield_categories[row].cat;
+                    observation->category =
+                        ngx_http_shield_categories[row].name;
+                    observation->rule = ngx_http_shield_signature_identity(
+                                              row, data, i + 1, 0, 1);
+                    observation->view = view;
+                }
+                pending &= pending - 1;
+            }
+        }
+        live &= ~skip;
         if (live == 0) {
             continue;
         }
@@ -464,6 +701,9 @@ ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
             /* A standalone signature already decides the request, so there is
              * nothing an AND-rule could add: return without evaluating them.
              * This keeps the standalone path exactly as fast as it was. */
+            hit->rule = ngx_http_shield_signature_identity(best, data,
+                                                             i + 1, strict, 0);
+            hit->view = view;
             return &ngx_http_shield_categories[best];
         }
     }
@@ -493,6 +733,12 @@ ngx_http_shield_ac_scan(const ngx_http_shield_ac_t *ac, u_char *data,
         row = ac->row[ngx_http_shield_rules[i].cat];
 
         if (row < NGX_HTTP_SHIELD_NCATEGORIES) {
+            hit->rule = ngx_http_shield_rule_identity("and",
+                            ngx_http_shield_rules[i].name,
+                            ngx_http_shield_rules[i].terms,
+                            ngx_http_shield_rules[i].nterms,
+                            ngx_http_shield_rules[i].match);
+            hit->view = view;
             return &ngx_http_shield_categories[row];
         }
     }

@@ -81,11 +81,10 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-# "union select ... from users" is used throughout ci/t/*.t (01-modes.t,
-# 04-body.t) as the sqli category's canonical attack marker -- reusing it here
-# keeps this driver's fixture consistent with the rest of the suite rather than
-# inventing a parallel signature.
-MARKER = "union select password from users"
+# Use an enforcing SQL sibling so the body-reassembly oracle remains sensitive
+# under the default body policy; the shorter "union select" marker is observed
+# unless strict body enforcement is explicitly enabled.
+MARKER = "union all select password from users"
 BLOCKED = 403
 ALLOWED = 200
 # What a NOT-blocked POST looks like here. empty_gif is the content handler in

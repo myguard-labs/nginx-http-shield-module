@@ -40,11 +40,10 @@
 #
 # ngx_http_shield_ac_build() needs a real ngx_pool_t (ngx_pcalloc for the
 # permanent tables, ngx_create_pool/ngx_destroy_pool for build scratch), so
-# ngx_palloc.c and ngx_alloc.c are linked too -- there is no allocator stub
-# here, unlike the skeleton module's ci/fuzz/ngx_stubs.c, because shield has
-# neither an ngx_stubs.c nor a nginx-tree.sh helper to reuse.
+# ngx_palloc.c and ngx_alloc.c are linked too. test_scan.c interposes selected
+# NULL outcomes but forwards every successful allocation to nginx.
 #
-# -Werror applies to OUR translation units only (test_scan.c and
+# -Werror applies to OUR translation unit (test_scan.c including the exact
 # ngx_http_shield_scan.c). ngx_string.c/ngx_palloc.c/ngx_alloc.c are upstream
 # code we neither own nor patch, and gating on warnings in them would make an
 # nginx version bump look like a test regression.
@@ -216,11 +215,10 @@ fi
 
 echo "==> Building $BIN with ${CC}"
 # shellcheck disable=SC2086  # $CC may legitimately carry flags (e.g. "gcc -m32")
+# Keep the scan object name for coverage consumers; gcov maps the included
+# source back to the unchanged production file, including file-local helpers.
 $CC "${OWN_CFLAGS[@]}" "${NGX_INCS[@]}" -I"$ROOT/src" -c "$DIR/test_scan.c" \
-    -o "$DIR/test_scan.o"
-# shellcheck disable=SC2086
-$CC "${OWN_CFLAGS[@]}" "${NGX_INCS[@]}" -I"$ROOT/src" \
-    -c "$ROOT/src/ngx_http_shield_scan.c" -o "$DIR/ngx_http_shield_scan.o"
+    -o "$DIR/ngx_http_shield_scan.o"
 # shellcheck disable=SC2086
 $CC "${NGX_CFLAGS[@]}" "${NGX_INCS[@]}" -c "$NGX_SRC/src/core/ngx_string.c" \
     -o "$DIR/ngx_string.o"
@@ -232,7 +230,7 @@ $CC "${NGX_CFLAGS[@]}" "${NGX_INCS[@]}" -c "$NGX_SRC/src/os/unix/ngx_alloc.c" \
     -o "$DIR/ngx_alloc.o"
 # shellcheck disable=SC2086
 $CC "${LINK_EXTRA[@]}" -o "$BIN" \
-    "$DIR/test_scan.o" "$DIR/ngx_http_shield_scan.o" \
+    "$DIR/ngx_http_shield_scan.o" \
     "$DIR/ngx_string.o" "$DIR/ngx_palloc.o" "$DIR/ngx_alloc.o"
 
 echo "==> Running"

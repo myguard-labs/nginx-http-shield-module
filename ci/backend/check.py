@@ -134,6 +134,8 @@ http {{
     server {{
         listen 127.0.0.1:{port};
         shield block;
+        # This transport oracle exercises an explicitly enforced SQL sink.
+        shield_body_strict on;
         shield_log {root}/shield.jsonl;
         access_log {root}/view.jsonl view;
         location /http/ {{
@@ -241,7 +243,7 @@ def verify(row, response, hits, views, http, fcgi, hp, fp):
             f"{name}: Shield action differs",
         )
         require(
-            hit["req"].encode() == request(row).split(b"\r\n", 1)[0],
+            hit.get("req") == "",
             f"{name}: Shield request view differs",
         )
     require(len(http) == (row["sink"] == "http"), f"{name}: HTTP receipt count differs")

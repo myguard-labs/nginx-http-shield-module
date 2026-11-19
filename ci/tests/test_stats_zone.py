@@ -316,7 +316,10 @@ def checks(binary: Path, module: Path | None, output: Path) -> None:
             port, "/metrics", {"Accept": "application/openmetrics-text"}
         )
         assert status == 200 and om.endswith(b"# EOF\n")
-        marker = b'shield_source_hits_total{zone="stats",category="httpoxy",source="header"} 104'
+        marker = (
+            b'shield_source_hits_total{zone="stats",category="httpoxy",'
+            b'source="header",class="suspicious"} 104'
+        )
         assert marker in prometheus and marker in om
         (output / "stats.prom").write_bytes(prometheus)
         (output / "stats.om").write_bytes(om)

@@ -27,11 +27,11 @@ tests:
         values: '0+660x10'
       - series: 'shield_ban_refusals_total{zone="boundary"}'
         values: '0+600x10'
-      - series: 'shield_body_uninspected_total{zone="high",reason="error"}'
+      - series: 'shield_body_uninspected_total{zone="high",class="not-inspected",reason="error"}'
         values: '0+12x10'
-      - series: 'shield_body_uninspected_total{zone="boundary",reason="encoding"}'
+      - series: 'shield_body_uninspected_total{zone="boundary",class="not-inspected",reason="encoding"}'
         values: '0+10x10'
-      - series: 'shield_body_uninspected_total{zone="zero",reason="error"}'
+      - series: 'shield_body_uninspected_total{zone="zero",class="not-inspected",reason="error"}'
         values: '0x10'
       - series: 'shield_requests_total{zone="high"}'
         values: '0+100x10'
@@ -67,4 +67,39 @@ tests:
             exp_annotations: {summary: Shield incomplete body inspections exceed 10% of inspections}
       - eval_time: 4m
         alertname: ShieldZonePressure
+        exp_alerts: []
+
+  # Synthetic future exporter evidence; no production promotion is implied.
+  - interval: 1m
+    input_series:
+      - series: 'shield_detections_total{zone="promoted",category="sqli",mode="block",class="exploit"}'
+        values: '0+1x10'
+      - series: 'shield_detections_total{zone="detect",category="sqli",mode="detect",class="exploit"}'
+        values: '0+1x10'
+      - series: 'shield_detections_total{zone="suspicious",category="sqli",mode="block",class="suspicious"}'
+        values: '0+1x10'
+      - series: 'shield_detections_total{zone="resource",category="overlong",mode="block",class="resource"}'
+        values: '0+1x10'
+      - series: 'shield_detections_total{zone="uninspected",category="sqli",mode="block",class="not-inspected"}'
+        values: '0+1x10'
+      - series: 'shield_detections_total{zone="unknown",category="sqli",mode="block",class="unknown"}'
+        values: '0+1x10'
+      - series: 'shield_detections_total{zone="legacy",category="sqli",mode="block"}'
+        values: '0+1x10'
+      - series: 'shield_detections_total{zone="idle",category="sqli",mode="block",class="exploit"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ShieldExploitBlocks
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ShieldExploitBlocks
+        exp_alerts:
+          - exp_labels: {zone: promoted, class: exploit, severity: critical}
+            exp_annotations: {summary: Shield promoted block-mode exploit evidence}
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ShieldExploitBlocks
         exp_alerts: []

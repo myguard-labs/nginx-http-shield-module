@@ -651,6 +651,8 @@ GET /t?page=/catalog-portal/ui/oauth/verify&engine=freemarker
 # its own (unregistered) type, not application/json with a suffix. A prefix
 # match here would scan bodies of types the module was never asked to inspect.
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t

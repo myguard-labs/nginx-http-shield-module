@@ -24,6 +24,7 @@ def module(name, path):
 
 replay = module("replay", ROOT / "ci/tools/threat-replay.py")
 ledger = module("ledger", ROOT / "ci/tools/threat-ledger.py")
+diagnostics = module("diagnostics", ROOT / "ci/causal/diagnostics.py")
 TRANSFORMS = ("identity", "percent", "form-plus", "sql-case")
 
 
@@ -286,6 +287,7 @@ def main():
         cases = load_cases(entries)
         report = {
             "causal": causal(binary, entries, cases),
+            "diagnostics": diagnostics.check(binary, replay.run),
             "variants": variant_report(binary, variants),
             "build": identity,
             "inputs": {
@@ -294,6 +296,7 @@ def main():
                     "ci/causal/cases.json",
                     "ci/causal/variants.json",
                     "ci/causal/check.py",
+                    "ci/causal/diagnostics.py",
                     "ci/causal/scan.c",
                     "ci/tools/threat-replay.py",
                     "ci/replay/corpus.json",

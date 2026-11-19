@@ -13,6 +13,8 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import stat
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -21,8 +23,37 @@ _HERE = Path(__file__).resolve().parent
 _SRC = _HERE / "abuseipdb-reporter.py"
 
 spec = importlib.util.spec_from_file_location("shield_reporter", _SRC)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load reporter module")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+
+# Fixture-only admission for existing transport tests. Production registry stays
+# empty; ci/tests/test_reporter_verdicts.py tests the actual promotion boundary.
+FIXTURE_EVIDENCE = {
+    "mode": "block",
+    "action": "block",
+    "verdict": "exploit",
+    "ruleset": "1111111111111111",
+    "rule": "2222222222222222",
+    "rev": 1,
+    "ts": "2026-01-01T00:00:00+00:00",
+}
+
+
+@pytest.fixture(autouse=True)
+def admit_transport_fixture(monkeypatch):
+    monkeypatch.setattr(
+        mod,
+        "PROMOTED_RULES",
+        frozenset(
+            {
+                ("1111111111111111", "2222222222222222", 1, "sqli"),
+                ("1111111111111111", "2222222222222222", 1, "xss"),
+            }
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -34,6 +65,7 @@ spec.loader.exec_module(mod)
         ("8.8.8.8", True),
         ("1.2.3.4", True),
         ("2606:4700:4700::1111", True),
+        ("2606:4700:4700::1111%eth0", False),
         ("10.0.0.1", False),  # RFC1918
         ("192.168.1.1", False),  # RFC1918
         ("172.16.5.5", False),  # RFC1918
@@ -143,25 +175,44 @@ def test_sanitize_req_length_caps():
 # --------------------------------------------------------------------------- #
 def test_build_comment_shape_and_no_query_leak():
     entry = {
+        **FIXTURE_EVIDENCE,
         "cat": "sqli",
         "src": "uri",
         "req": "GET /x?password=hunter2 HTTP/1.1",
         "ip": "8.8.8.8",
     }
     c = mod.build_comment(entry)
-    assert c.startswith("nginx-http-shield: sqli attack in uri; GET /x")
+    assert c == "nginx-http-shield: promoted block-mode exploit evidence"
     assert "hunter2" not in c
     assert len(c) <= mod.COMMENT_MAX
 
 
 def test_build_comment_missing_fields():
     c = mod.build_comment({})
-    assert c.startswith("nginx-http-shield: ? attack in ?;")
+    assert c == "nginx-http-shield: promoted block-mode exploit evidence"
 
 
 def test_build_comment_truncates():
     entry = {"cat": "x", "src": "y", "req": "GET /" + "a" * 5000}
     assert len(mod.build_comment(entry)) <= mod.COMMENT_MAX
+
+
+@pytest.mark.parametrize(
+    "timestamp", ["2026-01-01T00:00:00Z", "2026-01-01T00:00:00+01:59"]
+)
+def test_promoted_timestamp_valid_offsets(timestamp):
+    entry = {**FIXTURE_EVIDENCE, "cat": "sqli", "ip": "8.8.8.8", "ts": timestamp}
+    assert mod.is_promoted_exploit(entry)
+
+
+def test_promoted_timestamp_rejects_out_of_range_offset_minutes():
+    entry = {
+        **FIXTURE_EVIDENCE,
+        "cat": "sqli",
+        "ip": "8.8.8.8",
+        "ts": "2026-01-01T00:00:00+00:60",
+    }
+    assert not mod.is_promoted_exploit(entry)
 
 
 # --------------------------------------------------------------------------- #
@@ -215,8 +266,8 @@ def test_suppressor_day_roll_resets_count():
 
 
 def test_suppressor_persists_across_restart(tmp_path):
-    state = str(tmp_path / "suppress.json")
-    sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
+    sup, path = _reservation_suppressor(tmp_path)
+    state = str(path)
     sup.allow("8.8.8.8", now=1000.0)  # sets _day (real call order)
     sup.record("8.8.8.8", now=1000.0)
     assert os.path.exists(state)
@@ -231,8 +282,8 @@ def test_suppressor_persists_across_restart(tmp_path):
 def test_suppressor_record_without_allow_sets_day(tmp_path):
     # record() called without a prior allow() must still stamp the UTC day,
     # else state persists day=null and reload wipes count/window on day-roll.
-    state = str(tmp_path / "suppress.json")
-    sup = mod.Suppressor(window_s=900, daily_cap=1000, state_path=state)
+    sup, path = _reservation_suppressor(tmp_path)
+    state = str(path)
     sup.record("8.8.8.8", now=1000.0)  # no allow() first
     assert sup._day == "1970-01-01"  # now=1000.0 -> that UTC day, stamped
 
@@ -259,6 +310,480 @@ def test_suppressor_prune_bounds_map():
     # record well past the window -> old entries pruned
     sup.record("8.8.8.3", now=1100.0)
     assert set(sup._last) == {"8.8.8.3"}
+
+
+def _reservation_suppressor(tmp_path, *, window=900, cap=1000):
+    state = tmp_path / "reservation.json"
+    state.write_text(json.dumps({"day": None, "count": 0, "last": {}}))
+    return mod.Suppressor(window, cap, str(state)), state
+
+
+def test_suppressor_reservation_persists_before_permission(tmp_path, monkeypatch):
+    sup, state = _reservation_suppressor(tmp_path)
+    replacements = []
+    replace = mod.os.replace
+
+    def observed_replace(src, dst):
+        assert json.loads(state.read_text()) == {"day": None, "count": 0, "last": {}}
+        prepared = json.loads(Path(src).read_text())
+        assert prepared["pending"] == [
+            {
+                "day": "1970-01-01",
+                "ip": "8.8.8.8",
+                "started_at": 1000.0,
+                "window_s": 900,
+            }
+        ]
+        assert prepared["count"] == 0 and prepared["last"] == {}
+        replacements.append((src, dst))
+        replace(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", observed_replace)
+    assert sup.reserve("8.8.8.8", 1000.0) == (True, "")
+    assert len(replacements) == 1
+    persisted = json.loads(state.read_text())
+    assert persisted["version"] == 2
+    assert persisted["pending"] == sup._pending
+    assert sup._count == 0 and sup._last == {}
+
+
+def test_suppressor_reservation_syncs_file_and_parent_before_permission(
+    tmp_path, monkeypatch
+):
+    sup, _state = _reservation_suppressor(tmp_path)
+    events = []
+    fsync = mod.os.fsync
+    replace = mod.os.replace
+
+    def observed_fsync(fd):
+        events.append(
+            "directory-sync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file-sync"
+        )
+        fsync(fd)
+
+    def observed_replace(src, dst):
+        events.append("replace")
+        replace(src, dst)
+
+    monkeypatch.setattr(mod.os, "fsync", observed_fsync)
+    monkeypatch.setattr(mod.os, "replace", observed_replace)
+    assert sup.reserve("8.8.8.8", 1000.0) == (True, "")
+    assert events == ["file-sync", "replace", "directory-sync"]
+
+
+def test_suppressor_reservation_fsync_failure_denies_permission(tmp_path, monkeypatch):
+    sup, state = _reservation_suppressor(tmp_path)
+    before = state.read_bytes()
+    monkeypatch.setattr(mod.os, "fsync", lambda _fd: _boom())
+    assert sup.reserve("8.8.8.8", 1000.0) == (False, "state-persistence")
+    assert sup._pending == []
+    assert state.read_bytes() == before
+
+
+def test_suppressor_directory_sync_failure_stops_after_visible_replace(
+    tmp_path, monkeypatch
+):
+    sup, state = _reservation_suppressor(tmp_path)
+    fsync = mod.os.fsync
+
+    def fail_directory_sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("injected directory sync failure")
+        fsync(fd)
+
+    monkeypatch.setattr(mod.os, "fsync", fail_directory_sync)
+    with pytest.raises(mod.PersistenceUncertain):
+        sup.reserve("8.8.8.8", 1000)
+    assert json.loads(state.read_text())["pending"] == sup._pending
+
+
+def test_pending_timestamp_uses_stored_window_for_clock_rollback(tmp_path, monkeypatch):
+    state = tmp_path / "reservation.json"
+    state.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "reservation_ready": True,
+                "day": "1970-01-01",
+                "count": 0,
+                "last": {},
+                "pending": [
+                    {
+                        "day": "1970-01-01",
+                        "ip": "8.8.8.8",
+                        "started_at": 1000,
+                        "window_s": 900,
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: 990)
+    sup = mod.Suppressor(1, 1000, str(state))
+    assert sup._state_valid
+    assert sup._pending[0]["started_at"] == 1000
+
+
+def test_suppressor_reservation_roundtrip_and_legacy_save(tmp_path):
+    sup, state = _reservation_suppressor(tmp_path)
+    sup.record("9.9.9.9", 999)
+    assert sup.reserve("8.8.8.8", 1000) == (True, "")
+    pending = list(sup._pending)
+    sup.record("1.1.1.1", 1001)  # legacy save must retain every unresolved intent
+    resumed = mod.Suppressor(900, 1000, str(state))
+    assert resumed._state_valid
+    assert resumed._pending == pending
+    assert resumed._count == 2
+    assert resumed._last == {"9.9.9.9": 999, "1.1.1.1": 1001}
+    assert resumed.reserve("8.8.8.8", 1002) == (False, "deduped")
+    assert resumed._count == 2
+
+
+def test_suppressor_reservation_migrates_legacy_ipv6_aliases(tmp_path):
+    state = tmp_path / "reservation.json"
+    state.write_text(
+        json.dumps(
+            {
+                "day": "1970-01-01",
+                "count": 2,
+                "last": {
+                    "2606:4700:4700:0:0:0:0:1111": 999,
+                    "2606:4700:4700::1111": 1000,
+                },
+            }
+        )
+    )
+    sup = mod.Suppressor(900, 1000, str(state))
+    assert sup._state_valid
+    assert sup._last == {"2606:4700:4700::1111": 1000.0}
+    assert sup.reserve("2606:4700:4700:0:0:0:0:1111", 1001) == (
+        False,
+        "deduped",
+    )
+    assert sup.reserve("9.9.9.9", 1001) == (True, "")
+    persisted = json.loads(state.read_text())
+    assert persisted["version"] == 2
+    assert persisted["last"] == {"2606:4700:4700::1111": 1000.0}
+
+
+@pytest.mark.parametrize("ip", ["bad", "fe80::1%eth0"])
+def test_suppressor_reservation_rejects_invalid_legacy_ip(tmp_path, ip):
+    state = tmp_path / "reservation.json"
+    original = json.dumps({"day": "1970-01-01", "count": 1, "last": {ip: 1000}})
+    state.write_text(original)
+    sup = mod.Suppressor(900, 1000, str(state))
+    assert not sup._state_valid
+    assert sup.reserve("9.9.9.9", 1001) == (False, "state-unavailable")
+    assert state.read_text() == original
+
+
+def test_suppressor_reservation_daily_cap_includes_expired_pending(tmp_path):
+    sup, state = _reservation_suppressor(tmp_path, window=1, cap=2)
+    sup.record("1.1.1.1", 999)
+    assert sup.reserve("8.8.8.8", 1000) == (True, "")
+    assert sup.reserve("9.9.9.9", 1002) == (False, "daily-cap")
+    assert sup._count == 1  # a pending attempt never becomes a confirmation
+    resumed = mod.Suppressor(1, 2, str(state))
+    assert resumed.reserve("9.9.9.9", 1002) == (False, "daily-cap")
+    assert len(resumed._pending) == 1
+
+
+def test_suppressor_reservation_midnight_original_window_and_exact_expiry(tmp_path):
+    sup, state = _reservation_suppressor(tmp_path, cap=1)
+    assert sup.reserve("8.8.8.8", 86340) == (True, "")
+    assert sup.reserve("9.9.9.9", 86341) == (False, "daily-cap")
+    resumed = mod.Suppressor(
+        1, 1, str(state)
+    )  # reducing config cannot shrink an intent
+    assert resumed.reserve("8.8.8.8", 86400) == (False, "deduped")
+    assert resumed._count == 0
+    assert resumed.reserve("8.8.8.8", 87239) == (False, "deduped")
+    assert resumed.reserve("8.8.8.8", 87240) == (True, "")
+    assert resumed._pending == [
+        {
+            "day": "1970-01-02",
+            "ip": "8.8.8.8",
+            "started_at": 87240.0,
+            "window_s": 1,
+        }
+    ]
+    assert resumed._count == 0 and resumed._last == {}
+    reloaded = mod.Suppressor(1, 1, str(state))
+    assert reloaded.reserve("9.9.9.9", 87242) == (False, "daily-cap")
+
+
+def test_suppressor_reservation_midnight_other_ip_retains_unexpired_intent(tmp_path):
+    sup, state = _reservation_suppressor(tmp_path, cap=1)
+    assert sup.reserve("8.8.8.8", 86340) == (True, "")
+    assert sup.reserve("9.9.9.9", 86400) == (True, "")
+    assert len(sup._pending) == 2
+    resumed = mod.Suppressor(900, 2, str(state))
+    assert resumed.reserve("8.8.8.8", 86401) == (False, "deduped")
+    assert resumed._count == 0
+
+
+def test_suppressor_reservation_schema_empty_registry_zero_sends(tmp_path, monkeypatch):
+    sup, state = _reservation_suppressor(tmp_path)
+    before = state.read_bytes()
+    reporter = mod.Reporter(api_key="", timeout=1, dry_run=False)
+    sends = []
+
+    def transport(*a, **kw):
+        sends.append(a)
+        pytest.fail("empty registry reached transport")
+
+    monkeypatch.setattr(mod, "PROMOTED_RULES", frozenset())
+    monkeypatch.setattr(reporter, "report", transport)
+    entry = {**FIXTURE_EVIDENCE, "ip": "8.8.8.8", "cat": "sqli"}
+    logs = []
+    assert mod.process_line(json.dumps(entry), sup, reporter, 1000, logs.append)
+    assert sends == [] and sup._pending == [] and sup._count == 0
+    assert state.read_bytes() == before
+
+
+def test_suppressor_reservation_canonical_ipv6(tmp_path):
+    sup, state = _reservation_suppressor(tmp_path)
+    assert sup.reserve("2606:4700:4700:0:0:0:0:1111", 1000) == (True, "")
+    assert json.loads(state.read_text())["pending"][0]["ip"] == "2606:4700:4700::1111"
+    assert sup.reserve("2606:4700:4700::1111", 1001) == (False, "deduped")
+
+
+@pytest.mark.parametrize("stage", ["open", "write", "close", "replace", "serialize"])
+def test_suppressor_reservation_persistence_failure_forbids_send(
+    tmp_path, monkeypatch, stage
+):
+    sup, state = _reservation_suppressor(tmp_path)
+    assert sup.reserve("9.9.9.9", 999) == (True, "")
+    before = state.read_bytes()
+    pending = list(sup._pending)
+    real_open = open
+
+    def fail(*a, **kw):
+        raise OSError("injected persistence failure")
+
+    class BrokenWriter:
+        def __init__(self, *a, **kw):
+            self.handle = real_open(*a, **kw)
+
+        def __enter__(self):
+            return self
+
+        def write(self, raw):
+            if stage == "write":
+                fail()
+            return self.handle.write(raw)
+
+        def flush(self):
+            return self.handle.flush()
+
+        def fileno(self):
+            return self.handle.fileno()
+
+        def __exit__(self, *a):
+            self.handle.close()
+            if stage == "close":
+                fail()
+
+    if stage == "open":
+        monkeypatch.setattr(mod, "open", fail, raising=False)
+    elif stage in ("write", "close"):
+        monkeypatch.setattr(mod, "open", BrokenWriter, raising=False)
+    elif stage == "replace":
+        monkeypatch.setattr(mod.os, "replace", fail)
+    else:
+
+        def bad_json(*a, **kw):
+            raise ValueError("injected serialization failure")
+
+        monkeypatch.setattr(mod.json, "dumps", bad_json)
+    sends = []
+    permission, reason = sup.reserve("8.8.8.8", 1000)
+    if permission:
+        sends.append("mock transport")
+    assert (permission, reason) == (False, "state-persistence")
+    assert sends == []
+    assert state.read_bytes() == before
+    assert sup._pending == pending
+    assert sup._count == 0 and sup._last == {}
+
+
+def test_suppressor_reservation_failed_save_can_retry_without_erasing_debit(
+    tmp_path, monkeypatch
+):
+    sup, state = _reservation_suppressor(tmp_path, cap=1)
+    replace = mod.os.replace
+    monkeypatch.setattr(mod.os, "replace", _boom)
+    assert sup.reserve("8.8.8.8", 1000) == (False, "state-persistence")
+    monkeypatch.setattr(mod.os, "replace", replace)
+    assert sup.reserve("8.8.8.8", 1001) == (True, "")
+    assert sup.reserve("9.9.9.9", 1002) == (False, "daily-cap")
+    assert len(json.loads(state.read_text())["pending"]) == 1
+
+
+@pytest.mark.parametrize("kind", ["no-path", "missing", "unreadable"])
+def test_suppressor_reservation_requires_existing_valid_state(
+    tmp_path, monkeypatch, kind
+):
+    state = tmp_path / "reservation.json"
+    if kind == "unreadable":
+
+        def denied(*a, **kw):
+            raise PermissionError("injected state read denial")
+
+        monkeypatch.setattr(mod, "open", denied, raising=False)
+    sup = mod.Suppressor(900, 1000, None if kind == "no-path" else str(state))
+    assert sup.reserve("8.8.8.8", 1000) == (False, "state-unavailable")
+    assert not state.exists()
+    assert sup._pending == [] and sup._count == 0
+
+
+# Each malformed state must refuse reservation as a whole, never silently erase
+# a damaged debit and publish the remaining fields as a valid empty state.
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda st: [],
+        lambda st: {**st, "version": 3},
+        lambda st: {**st, "version": True},
+        lambda st: {**st, "reservation_ready": 1},
+        lambda st: {**st, "reservation_ready": "false"},
+        lambda st: {**st, "extra": 0},
+        lambda st: {key: value for key, value in st.items() if key != "pending"},
+        lambda st: {**st, "day": "1970-1-01"},
+        lambda st: {**st, "day": "1970-02-30"},
+        lambda st: {**st, "day": None},
+        lambda st: {**st, "day": True},
+        lambda st: {**st, "count": -1},
+        lambda st: {**st, "count": True},
+        lambda st: {**st, "count": 1 << 63},
+        lambda st: {**st, "last": []},
+        lambda st: {**st, "last": {"not-an-ip": 1000}},
+        lambda st: {**st, "last": {"8.8.8.8": float("inf")}},
+        lambda st: {**st, "pending": {}},
+        lambda st: {**st, "pending": [None]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "extra": 0}]},
+        lambda st: {**st, "pending": [{"ip": "8.8.8.8"}]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "ip": "bad"}]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "ip": "fe80::1%eth0"}]},
+        lambda st: {
+            **st,
+            "pending": [{**st["pending"][0], "ip": "2606:4700:4700:0:0:0:0:1111"}],
+        },
+        lambda st: {**st, "pending": [{**st["pending"][0], "day": "1970-01-02"}]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "started_at": True}]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "started_at": -1}]},
+        lambda st: {
+            **st,
+            "pending": [{**st["pending"][0], "started_at": float("nan")}],
+        },
+        lambda st: {**st, "pending": [{**st["pending"][0], "started_at": 1e300}]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "window_s": 0}]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "window_s": True}]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "window_s": 1.5}]},
+        lambda st: {**st, "pending": [{**st["pending"][0], "window_s": 1 << 63}]},
+        lambda st: {**st, "pending": st["pending"] * 2},
+    ],
+)
+def test_suppressor_reservation_malformed_schema_refuses_without_rewrite(
+    tmp_path, mutation
+):
+    state = tmp_path / "reservation.json"
+    valid = {
+        "version": 2,
+        "reservation_ready": True,
+        "day": "1970-01-01",
+        "count": 1,
+        "last": {"9.9.9.9": 999},
+        "pending": [
+            {
+                "day": "1970-01-01",
+                "ip": "8.8.8.8",
+                "started_at": 1000,
+                "window_s": 900,
+            }
+        ],
+    }
+    state.write_text(json.dumps(mutation(valid)))
+    before = state.read_bytes()
+    sup = mod.Suppressor(900, 1000, str(state))
+    assert not sup._state_valid
+    assert sup._count == 0 and sup._last == {} and sup._pending == []
+    assert sup.reserve("1.1.1.1", 1001) == (False, "state-unavailable")
+    assert state.read_bytes() == before
+    sup.record("1.1.1.1", 1001)  # legacy save cannot bless an invalid load
+    assert sup.reserve("8.8.8.8", 1002) == (False, "state-unavailable")
+    assert sup._count == 1  # legacy API still updates memory without throwing
+    assert state.read_bytes() == before  # never replace unknown durable debt
+    resumed = mod.Suppressor(900, 1000, str(state))
+    assert resumed._count == 0 and resumed._last == {}
+    assert resumed.reserve("8.8.8.8", 1002) == (False, "state-unavailable")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"day":null,"count":1,"count":0,"last":{}}',
+        '{"day":"1970-01-01","count":1,"last":{"8.8.8.8":1000,"8.8.8.8":0}}',
+        "not JSON",
+        "[" * 1100 + "]" * 1100,
+    ],
+)
+def test_suppressor_reservation_invalid_json_refuses(tmp_path, raw):
+    state = tmp_path / "reservation.json"
+    state.write_text(raw)
+    sup = mod.Suppressor(900, 1000, str(state))
+    assert sup.reserve("8.8.8.8", 1001) == (False, "state-unavailable")
+    assert state.read_text() == raw
+
+
+@pytest.mark.parametrize(
+    "ip,now",
+    [
+        ("bad", 1000),
+        ("fe80::1%eth0", 1000),
+        ("8.8.8.8", True),
+        ("8.8.8.8", -1),
+        ("8.8.8.8", float("nan")),
+        ("8.8.8.8", float("inf")),
+        ("8.8.8.8", 1e300),
+    ],
+)
+def test_suppressor_reservation_invalid_arguments_refuse(tmp_path, ip, now):
+    sup, state = _reservation_suppressor(tmp_path)
+    before = state.read_bytes()
+    assert sup.reserve(ip, now) == (False, "invalid-reservation")
+    assert state.read_bytes() == before
+    assert sup._pending == [] and sup._count == 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("window_s", 0),
+        ("window_s", True),
+        ("daily_cap", 0),
+        ("daily_cap", True),
+    ],
+)
+def test_suppressor_reservation_invalid_config_refuses(tmp_path, field, value):
+    sup, state = _reservation_suppressor(tmp_path)
+    setattr(sup, field, value)
+    before = state.read_bytes()
+    assert sup.reserve("8.8.8.8", 1000) == (False, "invalid-reservation")
+    assert state.read_bytes() == before
+
+
+def test_suppressor_reservation_size_limits_refuse_read_and_write(
+    tmp_path, monkeypatch
+):
+    sup, state = _reservation_suppressor(tmp_path)
+    before = state.read_bytes()
+    monkeypatch.setattr(mod.Suppressor, "MAX_STATE_CHARS", len(before))
+    assert sup.reserve("8.8.8.8", 1000) == (False, "state-persistence")
+    assert state.read_bytes() == before and sup._pending == []
+    state.write_bytes(before + b" ")
+    resumed = mod.Suppressor(900, 1000, str(state))
+    assert resumed.reserve("8.8.8.8", 1000) == (False, "state-unavailable")
 
 
 # --------------------------------------------------------------------------- #
@@ -598,6 +1123,7 @@ def test_process_line_reports_and_records():
     logs = []
     entry = json.dumps(
         {
+            **FIXTURE_EVIDENCE,
             "ip": "8.8.8.8",
             "cat": "sqli",
             "src": "uri",
@@ -616,7 +1142,9 @@ def test_process_line_reports_and_records():
 def test_process_line_skips_private_ip():
     sup = mod.Suppressor(window_s=900, daily_cap=1000)
     r = _dry_reporter()
-    entry = json.dumps({"ip": "10.0.0.5", "cat": "sqli", "req": "GET /x"})
+    entry = json.dumps(
+        {**FIXTURE_EVIDENCE, "ip": "10.0.0.5", "cat": "sqli", "req": "GET /x"}
+    )
     done = mod.process_line(entry, sup, r, now=1000.0, log=lambda m: None)
     assert done is True
     assert sup._count == 0  # never recorded
@@ -641,15 +1169,17 @@ def test_process_line_deduped_not_retried():
     sup = mod.Suppressor(window_s=900, daily_cap=1000)
     sup.record("8.8.8.8", now=1000.0)
     r = _dry_reporter()
-    entry = json.dumps({"ip": "8.8.8.8", "cat": "xss", "req": "GET /x"})
+    entry = json.dumps(
+        {**FIXTURE_EVIDENCE, "ip": "8.8.8.8", "cat": "xss", "req": "GET /x"}
+    )
     done = mod.process_line(entry, sup, r, now=1000.0 + 10, log=lambda m: None)
     assert done is True  # deduped -> dropped, offset advances
 
 
-def test_process_line_send_failure_retried(monkeypatch):
+def test_process_line_send_failure_retried(tmp_path, monkeypatch):
     import urllib.error
 
-    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    sup, _ = _reservation_suppressor(tmp_path)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
 
     def boom(req, timeout):
@@ -657,19 +1187,21 @@ def test_process_line_send_failure_retried(monkeypatch):
 
     monkeypatch.setattr(mod._OPENER, "open", boom)
     logs = []
-    entry = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"})
+    entry = json.dumps(
+        {**FIXTURE_EVIDENCE, "ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"}
+    )
     done = mod.process_line(entry, sup, r, now=1000.0, log=logs.append)
     assert done is False  # must be retried -> offset kept
-    assert sup._count == 0  # NOT recorded (at-least-once delivery)
+    assert sup._count == 0  # no confirmation; pending attempt still debits quota
     assert any("FAILED" in m for m in logs)
 
 
-def test_process_line_permanent_4xx_advances(monkeypatch):
+def test_process_line_permanent_4xx_advances(tmp_path, monkeypatch):
     # A permanent 4xx must advance the offset (return True) so the daemon does
     # not wedge on a poison record -- but must NOT record it as a sent report.
     import urllib.error
 
-    sup = mod.Suppressor(window_s=900, daily_cap=1000)
+    sup, _ = _reservation_suppressor(tmp_path)
     r = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
 
     def boom(req, timeout):
@@ -679,12 +1211,423 @@ def test_process_line_permanent_4xx_advances(monkeypatch):
 
     monkeypatch.setattr(mod._OPENER, "open", boom)
     logs = []
-    entry = json.dumps({"ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"})
+    entry = json.dumps(
+        {**FIXTURE_EVIDENCE, "ip": "8.8.8.8", "cat": "sqli", "req": "GET /x"}
+    )
     done = mod.process_line(entry, sup, r, now=1000.0, log=logs.append)
     assert done is True  # advance past the poison record
     assert sup._count == 0  # not counted as a real report
     assert r.in_cooldown(now=1000.0) == 0.0  # no queue-wide stall
     assert any("DROP" in m for m in logs)
+
+
+def _transport_entry(ip="8.8.8.8"):
+    return json.dumps({**FIXTURE_EVIDENCE, "ip": ip, "cat": "sqli", "req": "GET /x"})
+
+
+@pytest.mark.parametrize(
+    "ip,canonical",
+    [
+        ("8.8.8.8", "8.8.8.8"),
+        ("2606:4700:4700:0:0:0:0:1111", "2606:4700:4700::1111"),
+    ],
+    ids=["ipv4", "canonical-ipv6"],
+)
+def test_transport_barrier_persists_before_open_and_confirms_once(
+    tmp_path, monkeypatch, ip, canonical
+):
+    sup, state = _reservation_suppressor(tmp_path, cap=1)
+    reporter = mod.Reporter("fixture", 1, False)
+    calls = []
+
+    def opened(request, timeout):
+        persisted = json.loads(state.read_text())
+        assert persisted.get("pending") == [
+            {
+                "ip": canonical,
+                "day": "1970-01-01",
+                "started_at": 1000.0,
+                "window_s": 900,
+            }
+        ], "durable reservation must exist before the real transport boundary"
+        assert persisted["count"] == 0
+        assert persisted["last"] == {}
+        assert request.full_url == mod.API_URL
+        assert request.method == "POST"
+        assert timeout == 1
+        assert urllib.parse.parse_qs(request.data.decode())["ip"] == [canonical]
+        calls.append(request.data)
+        return _FakeResp(b"")
+
+    monkeypatch.setattr(mod._OPENER, "open", opened)
+    logs = []
+    assert mod.process_line(_transport_entry(ip), sup, reporter, 1000, logs.append)
+    assert len(calls) == 1
+    persisted = json.loads(state.read_text())
+    assert persisted["pending"] == []
+    assert persisted["count"] == 1
+    assert persisted["last"] == {canonical: 1000}
+    assert sup._pending == []
+    assert sup._count == 1
+    assert sup.confirm(ip, 1000) is False
+    resumed = mod.Suppressor(900, 1, str(state))
+    assert mod.process_line(_transport_entry(), resumed, reporter, 1001, logs.append)
+    assert len(calls) == 1
+    assert resumed._count == 1
+
+
+@pytest.mark.parametrize("failure", ["open", "replace"], ids=["write", "rename"])
+def test_transport_failed_reservation_never_calls_open(tmp_path, monkeypatch, failure):
+    sup, state = _reservation_suppressor(tmp_path)
+    assert sup.reserve("9.9.9.9", 999) == (True, "")
+    before = state.read_bytes()
+    pending = list(sup._pending)
+    calls = []
+    monkeypatch.setattr(mod._OPENER, "open", lambda *a, **kw: calls.append(a))
+
+    def fail(*a, **kw):
+        raise OSError("injected persistence failure")
+
+    if failure == "open":
+        monkeypatch.setattr(mod, "open", fail, raising=False)
+    else:
+        monkeypatch.setattr(mod.os, "replace", fail)
+    logs = []
+    reporter = mod.Reporter("fixture", 1, False)
+    assert (
+        mod.process_line(_transport_entry(), sup, reporter, 1000, logs.append) is False
+    )
+    assert calls == [], "reservation persistence failure must forbid actual send"
+    assert state.read_bytes() == before
+    assert sup._pending == pending
+    assert sup._count == 0
+    assert logs == ["STATE   8.8.8.8: state-persistence"]
+
+
+@pytest.mark.parametrize(
+    "state_kind",
+    ["missing", "corrupt", "unready", "no-path"],
+    ids=["missing", "corrupt", "unready", "no-path"],
+)
+def test_transport_unready_state_never_bootstraps(tmp_path, monkeypatch, state_kind):
+    state = tmp_path / "state.json"
+    if state_kind == "corrupt":
+        state.write_text("{")
+    elif state_kind == "unready":
+        state.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "day": None,
+                    "count": 0,
+                    "last": {},
+                    "pending": [],
+                    "reservation_ready": False,
+                }
+            )
+        )
+    before = state.read_bytes() if state.exists() else None
+    sup = mod.Suppressor(900, 1000, None if state_kind == "no-path" else str(state))
+    calls = []
+    monkeypatch.setattr(mod._OPENER, "open", lambda *a, **kw: calls.append(a))
+    logs = []
+    assert (
+        mod.process_line(
+            _transport_entry(),
+            sup,
+            mod.Reporter("fixture", 1, False),
+            1000,
+            logs.append,
+        )
+        is False
+    )
+    assert calls == []
+    assert sup._count == 0
+    assert sup._pending == []
+    assert (state.read_bytes() if state.exists() else None) == before
+    assert logs == ["STATE   8.8.8.8: state-unavailable"]
+
+
+@pytest.mark.parametrize(
+    "result,done",
+    [
+        (302, True),
+        (422, True),
+        (429, False),
+        (503, False),
+        ("url-error", False),
+        ("os-error", False),
+    ],
+    ids=["redirect", "permanent", "rate-limit", "server-error", "network", "io"],
+)
+def test_transport_attempted_outcome_keeps_debt_after_reload(
+    tmp_path, monkeypatch, result, done
+):
+    sup, state = _reservation_suppressor(tmp_path, cap=1, window=1)
+    reporter = mod.Reporter("fixture", 1, False)
+    calls = []
+
+    def opened(request, timeout):
+        assert json.loads(state.read_text())["pending"]
+        calls.append(request.data)
+        if result == "url-error":
+            raise mod.urllib.error.URLError("unknown delivery")
+        if result == "os-error":
+            raise OSError("unknown delivery")
+        raise mod.urllib.error.HTTPError(
+            mod.API_URL, result, "fixture", {"Retry-After": "1"}, _FakeBody(b"")
+        )
+
+    monkeypatch.setattr(mod._OPENER, "open", opened)
+    logs = []
+    assert (
+        mod.process_line(_transport_entry(), sup, reporter, 1000, logs.append) is done
+    )
+    assert len(calls) == 1
+    assert sup._count == 0
+    assert sup._last == {}
+    assert len(sup._pending) == 1
+    resumed = mod.Suppressor(1, 1, str(state))
+    assert resumed._pending == sup._pending
+    assert resumed._count == 0
+    # Even after dedup expiry, this UTC day's unknown send consumes quota.
+    assert mod.process_line(_transport_entry(), resumed, reporter, 1002, logs.append)
+    assert mod.process_line(
+        _transport_entry("9.9.9.9"), resumed, reporter, 1002, logs.append
+    )
+    assert len(calls) == 1
+    assert resumed._count == 0
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["before-response", "after-response"],
+    ids=["during-open", "during-close"],
+)
+def test_transport_interrupted_attempt_retains_debt(tmp_path, monkeypatch, failure):
+    sup, state = _reservation_suppressor(tmp_path)
+    reporter = mod.Reporter("fixture", 1, False)
+    calls = []
+
+    class InterruptedResponse(_FakeResp):
+        def __exit__(self, *a):
+            raise KeyboardInterrupt("injected transport interruption")
+
+    def opened(request, timeout):
+        calls.append(request.data)
+        assert json.loads(state.read_text())["pending"]
+        if failure == "before-response":
+            raise KeyboardInterrupt("injected transport interruption")
+        return InterruptedResponse(b"")
+
+    monkeypatch.setattr(mod._OPENER, "open", opened)
+    with pytest.raises(KeyboardInterrupt, match="injected transport interruption"):
+        mod.process_line(_transport_entry(), sup, reporter, 1000, lambda m: None)
+    assert len(calls) == 1
+    assert sup._count == 0
+    resumed = mod.Suppressor(900, 1000, str(state))
+    assert resumed._pending == sup._pending
+    assert resumed.allow("8.8.8.8", 1001) == (False, "deduped")
+    assert resumed._count == 0
+
+
+def test_transport_unknown_outcome_retains_pending(tmp_path, monkeypatch):
+    sup, state = _reservation_suppressor(tmp_path)
+    reporter = mod.Reporter("fixture", 1, False)
+    monkeypatch.setattr(reporter, "report", lambda *a: ("unknown", "fixture"))
+    assert (
+        mod.process_line(_transport_entry(), sup, reporter, 1000, lambda m: None)
+        is False
+    )
+    assert sup._count == 0
+    assert len(json.loads(state.read_text())["pending"]) == 1
+    assert mod.Suppressor(900, 1000, str(state)).allow("8.8.8.8", 1001) == (
+        False,
+        "deduped",
+    )
+
+
+def test_transport_confirmation_write_failure_restores_debt(tmp_path, monkeypatch):
+    sup, state = _reservation_suppressor(tmp_path, cap=2)
+    sup.record("9.9.9.9", 990)
+    saved = []
+    replace = mod.os.replace
+
+    def persist(src, dst):
+        saved.append(json.loads(Path(src).read_text()))
+        if len(saved) == 2:
+            assert saved[-1]["pending"] == []
+            assert saved[-1]["count"] == 2
+            raise OSError("injected confirmation persistence failure")
+        replace(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", persist)
+    monkeypatch.setattr(mod._OPENER, "open", lambda *a, **kw: _FakeResp(b""))
+    logs = []
+    assert mod.process_line(
+        _transport_entry(), sup, mod.Reporter("fixture", 1, False), 1000, logs.append
+    )
+    assert len(saved) == 2
+    assert sup._count == 1
+    assert sup._last == {"9.9.9.9": 990}
+    assert sup._pending == saved[0]["pending"]
+    resumed = mod.Suppressor(900, 2, str(state))
+    assert resumed._pending == sup._pending
+    assert resumed._count == 1
+    assert resumed.allow("1.1.1.1", 1001) == (False, "daily-cap")
+    assert "STATE   8.8.8.8: confirmation pending; attempt debt retained" in logs
+
+
+def test_transport_noncanonical_ipv6_replay_advances_without_send(
+    tmp_path, monkeypatch
+):
+    sup, state = _reservation_suppressor(tmp_path)
+    reporter = mod.Reporter("fixture", 1, False)
+    calls = []
+
+    def opened(*a, **kw):
+        calls.append(a)
+        return _FakeResp(b"")
+
+    monkeypatch.setattr(mod._OPENER, "open", opened)
+    entry = _transport_entry("2606:4700:4700:0:0:0:0:1111")
+    assert mod.process_line(entry, sup, reporter, 1000, lambda m: None)
+    resumed = mod.Suppressor(900, 1000, str(state))
+    assert mod.process_line(entry, resumed, reporter, 1001, lambda m: None)
+    assert len(calls) == 1
+    assert resumed._count == 1
+    assert resumed._pending == []
+
+
+def test_transport_confirm_matches_only_current_intent(tmp_path):
+    sup, state = _reservation_suppressor(tmp_path)
+    assert sup.reserve("8.8.8.8", 1000) == (True, "")
+    assert sup.reserve("9.9.9.9", 1001) == (True, "")
+    before = state.read_bytes()
+    assert sup.confirm("8.8.8.8", 1001) is False
+    assert sup.confirm("1.1.1.1", 1000) is False
+    assert state.read_bytes() == before
+    assert sup.confirm("8.8.8.8", 1000) is True
+    assert sup._count == 1
+    assert [item["ip"] for item in sup._pending] == ["9.9.9.9"]
+    assert json.loads(state.read_text())["pending"] == sup._pending
+    assert sup.confirm("8.8.8.8", 1000) is False
+    assert sup._count == 1
+
+
+def test_transport_pending_original_window_at_midnight(tmp_path, monkeypatch):
+    sup, state = _reservation_suppressor(tmp_path, cap=1)
+    reporter = mod.Reporter("fixture", 1, False)
+    calls = []
+
+    def opened(*a, **kw):
+        calls.append(a)
+        raise mod.urllib.error.URLError("unknown delivery")
+
+    monkeypatch.setattr(mod._OPENER, "open", opened)
+    assert (
+        mod.process_line(_transport_entry(), sup, reporter, 86340, lambda m: None)
+        is False
+    )
+    resumed = mod.Suppressor(1, 1, str(state))
+    assert mod.process_line(
+        _transport_entry(), resumed, reporter, 87239, lambda m: None
+    )
+    assert len(calls) == 1
+    # Exactly at the original window's expiry on a new UTC day, sending is legal.
+    assert (
+        mod.process_line(_transport_entry(), resumed, reporter, 87240, lambda m: None)
+        is False
+    )
+    assert len(calls) == 2
+    assert resumed._count == 0
+    assert len(resumed._pending) == 1
+    assert resumed._pending[0]["started_at"] == 87240
+
+
+def test_transport_dry_run_uses_builtin_no_send_without_bootstrap(
+    tmp_path, monkeypatch
+):
+    state = tmp_path / "missing.json"
+    sup = mod.Suppressor(900, 1000, str(state))
+    reporter = _dry_reporter()
+    calls = []
+    monkeypatch.setattr(mod._OPENER, "open", lambda *a, **kw: calls.append("open"))
+    monkeypatch.setattr(reporter, "report", lambda *a: calls.append("overridden"))
+    assert mod.process_line(_transport_entry(), sup, reporter, 1000, lambda m: None)
+    assert calls == []
+    assert sup._count == 1
+    assert sup._pending == []
+    assert sup._state_valid is False
+    assert not state.exists()  # even dry-run cannot initialize durable state
+    resumed = mod.Suppressor(900, 1000, str(state))
+    assert (
+        mod.process_line(
+            _transport_entry("9.9.9.9"),
+            resumed,
+            mod.Reporter("fixture", 1, False),
+            1001,
+            lambda m: None,
+        )
+        is False
+    )
+    assert calls == []
+
+
+def test_transport_dry_run_persists_canonical_ipv6(tmp_path):
+    sup, state = _reservation_suppressor(tmp_path)
+    expanded = "2606:4700:4700:0:0:0:0:1111"
+    canonical = "2606:4700:4700::1111"
+    assert mod.process_line(
+        _transport_entry(expanded), sup, _dry_reporter(), 1000, lambda _message: None
+    )
+    persisted = json.loads(state.read_text())
+    assert persisted["last"] == {canonical: 1000}
+    resumed = mod.Suppressor(900, 1000, str(state))
+    assert resumed._state_valid
+    assert resumed._last == {canonical: 1000}
+
+
+def test_transport_dry_run_dedupes_repeated_expanded_ipv6(tmp_path):
+    sup, _state = _reservation_suppressor(tmp_path)
+    reporter = _dry_reporter()
+    expanded = "2606:4700:4700:0:0:0:0:1111"
+    entry = _transport_entry(expanded)
+    logs = []
+    assert mod.process_line(entry, sup, reporter, 1000, logs.append)
+    assert mod.process_line(entry, sup, reporter, 1001, logs.append)
+    assert sup._count == 1
+    assert sup._last == {"2606:4700:4700::1111": 1000}
+    assert len(logs) == 1
+
+
+@pytest.mark.parametrize("kind", ["subclass", "duck"], ids=["subclass", "duck"])
+def test_transport_dry_run_claim_cannot_bypass_barrier(tmp_path, kind):
+    calls = []
+
+    class ClaimedDryRun:
+        dry_run = True
+
+        def report(self, *a):
+            calls.append(a)
+            return mod.Reporter.OK, "untrusted dry-run claim"
+
+    class OverriddenReporter(mod.Reporter, ClaimedDryRun):
+        def report(self, *a):
+            return ClaimedDryRun.report(self, *a)
+
+    reporter = (
+        OverriddenReporter("fixture", 1, True)
+        if kind == "subclass"
+        else ClaimedDryRun()
+    )
+    sup = mod.Suppressor(900, 1000, str(tmp_path / "missing.json"))
+    assert (
+        mod.process_line(_transport_entry(), sup, reporter, 1000, lambda m: None)
+        is False
+    )
+    assert calls == []
+    assert sup._count == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -776,6 +1719,115 @@ def _run_follow(args, monkeypatch):
     return logs
 
 
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "fstat",
+        "opened_log",
+        "cooldown",
+        "read",
+        "process",
+        "checkpoint",
+        "final_checkpoint",
+    ],
+)
+def test_follow_closes_handle_on_exception(tmp_path, monkeypatch, stage):
+    args = _mk_args(tmp_path)
+    Path(args.logfile).write_text("line\n")
+    handles = []
+    logs = []
+    saves = []
+    failure = OSError(f"injected {stage} failure")
+    real_open = open
+
+    def tracked_open(*a, **kw):
+        handle = real_open(*a, **kw)
+        if str(a[0]) == args.logfile:
+            handles.append(handle)
+        return handle
+
+    def fail(*a, **kw):
+        raise failure
+
+    def log(message):
+        logs.append(message)
+        if stage == "opened_log":
+            fail()
+
+    def save(*a):
+        saves.append(a)
+        # Distinguish the final save from an EOF or backlog checkpoint.
+        assert mod._stop is (stage == "final_checkpoint")
+        fail()
+
+    monkeypatch.setattr(mod, "open", tracked_open, raising=False)
+    monkeypatch.setattr(mod, "_stop", False)
+    rep = _dry_reporter()
+    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+    if stage == "fstat":
+        monkeypatch.setattr(mod.os, "fstat", fail)
+    elif stage == "cooldown":
+        monkeypatch.setattr(rep, "in_cooldown", fail)
+    elif stage == "read":
+        monkeypatch.setattr(mod, "_read_log_line", fail)
+    elif stage == "process":
+        monkeypatch.setattr(mod, "process_line", fail)
+    elif stage in ("checkpoint", "final_checkpoint"):
+        monkeypatch.setattr(mod, "process_line", lambda *a: True)
+        monkeypatch.setattr(mod, "save_offset", save)
+        monkeypatch.setattr(
+            mod.time, "time", lambda: 0.0 if stage == "final_checkpoint" else 10.0
+        )
+        _stopping_sleep(monkeypatch)
+
+    try:
+        with pytest.raises(OSError, match=f"injected {stage} failure") as caught:
+            mod.follow(args, rep, sup, log)
+        assert caught.value is failure
+        assert len(handles) == 1
+        assert handles[0].closed, (
+            "follow must explicitly close while traceback is retained"
+        )
+        assert "stopped" not in logs
+        if stage in ("checkpoint", "final_checkpoint"):
+            assert len(saves) == 1
+            assert saves[0][2] == len("line\n")
+    finally:
+        # A failing negative control must not leave its own fixture open.
+        for handle in handles:
+            handle.close()
+
+
+@pytest.mark.parametrize("pre_stopped", [False, True])
+def test_follow_closes_handle_on_stop(tmp_path, monkeypatch, pre_stopped):
+    args = _mk_args(tmp_path)
+    logfile = Path(args.logfile)
+    logfile.write_text("line\n")
+    handles = []
+    real_open = open
+
+    def tracked_open(*a, **kw):
+        handle = real_open(*a, **kw)
+        if str(a[0]) == args.logfile:
+            handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(mod, "open", tracked_open, raising=False)
+    monkeypatch.setattr(mod, "_stop", pre_stopped)
+    monkeypatch.setattr(mod, "process_line", lambda *a: True)
+    _stopping_sleep(monkeypatch)
+    logs = []
+    mod.follow(args, _dry_reporter(), object(), logs.append)
+    assert logs[-1] == "stopped"
+    assert len(handles) == (0 if pre_stopped else 1)
+    assert all(handle.closed for handle in handles)
+    if not pre_stopped:
+        assert mod.load_offset(args.state, args.logfile) == (
+            len("line\n"),
+            logfile.stat().st_ino,
+        )
+
+
 def test_follow_missing_logfile_waits_then_stops(tmp_path, monkeypatch):
     # logfile does not exist -> FileNotFoundError branch sleeps; we stop it.
     args = _mk_args(tmp_path)
@@ -787,6 +1839,7 @@ def test_follow_missing_logfile_waits_then_stops(tmp_path, monkeypatch):
 def test_follow_processes_a_line(tmp_path, monkeypatch):
     args = _mk_args(tmp_path)
     entry = {
+        **FIXTURE_EVIDENCE,
         "ts": "2026-07-17T00:00:00Z",
         "ip": "8.8.8.8",
         "cat": "sqli",
@@ -808,6 +1861,7 @@ def test_follow_processes_a_line(tmp_path, monkeypatch):
 def test_follow_rewinds_on_failed_send(tmp_path, monkeypatch):
     args = _mk_args(tmp_path, dry_run=False)
     entry = {
+        **FIXTURE_EVIDENCE,
         "ts": "2026-07-17T00:00:00Z",
         "ip": "8.8.8.8",
         "cat": "sqli",
@@ -822,7 +1876,7 @@ def test_follow_rewinds_on_failed_send(tmp_path, monkeypatch):
     rep = mod.Reporter(api_key="k", timeout=1.0, dry_run=False)
     # force report() to fail -> process_line returns False -> follow rewinds
     monkeypatch.setattr(rep, "report", lambda *a, **k: (mod.Reporter.RETRY, "boom"))
-    sup = mod.Suppressor(900, 1000, str(args.state) + ".sup")
+    sup, _ = _reservation_suppressor(tmp_path)
     _stopping_sleep(monkeypatch, after=1)
     try:
         mod.follow(args, rep, sup, logs.append)
@@ -831,6 +1885,9 @@ def test_follow_rewinds_on_failed_send(tmp_path, monkeypatch):
     # line was NOT consumed: offset stays at 0 (rewound)
     off, _ = mod.load_offset(args.state, args.logfile)
     assert off == 0
+
+    assert any("FAILED" in m for m in logs)
+    assert len(sup._pending) == 1
 
 
 def test_follow_respects_cooldown(tmp_path, monkeypatch):
@@ -841,6 +1898,7 @@ def test_follow_respects_cooldown(tmp_path, monkeypatch):
     Path(args.logfile).write_text(
         json.dumps(
             {
+                **FIXTURE_EVIDENCE,
                 "ip": "8.8.8.8",
                 "cat": "sqli",
                 "src": "uri",
@@ -911,15 +1969,61 @@ def test_main_dry_run_runs_and_returns_zero(tmp_path, monkeypatch):
     assert rc == 0
 
 
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--daily-cap", str(1 << 63)),
+        ("--dedup-window", str(1 << 63)),
+    ],
+)
+def test_main_rejects_out_of_range_suppression_limits(
+    tmp_path, monkeypatch, option, value
+):
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        mod.main(
+            [
+                str(tmp_path / "shield.log"),
+                "--state",
+                str(tmp_path / "offset.json"),
+                "--dry-run",
+                option,
+                value,
+            ]
+        )
+
+
+def test_main_rejects_offset_suppression_path_collision(tmp_path, monkeypatch):
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        mod.main(
+            [
+                str(tmp_path / "shield.log"),
+                "--state",
+                str(tmp_path / "suppress.json"),
+                "--dry-run",
+            ]
+        )
+
+
 def _boom(*a, **k):
     raise OSError("disk full")
 
 
 def test_suppressor_save_swallows_open_oserror(tmp_path, monkeypatch):
     # _save must never raise when opening the temp file fails.
-    sup = mod.Suppressor(900, 1000, str(tmp_path / "sup.json"))
-    monkeypatch.setattr(mod, "open", _boom, raising=False)
+    sup, state = _reservation_suppressor(tmp_path)
+    before = state.read_bytes()
+    attempts = []
+
+    def failed_open(*args, **kwargs):
+        attempts.append(args[0])
+        _boom()
+
+    monkeypatch.setattr(mod, "open", failed_open, raising=False)
     sup.record("8.8.8.8", now=0.0)  # triggers _save internally, must not raise
+    assert attempts == [str(state) + ".tmp"]
+    assert state.read_bytes() == before
 
 
 def test_suppressor_save_swallows_replace_oserror(tmp_path, monkeypatch):
@@ -927,9 +2031,18 @@ def test_suppressor_save_swallows_replace_oserror(tmp_path, monkeypatch):
     # write succeed, so this exercises the rename path independently of the open
     # path above. A regression moving os.replace() outside the try would surface
     # here even though the open-failure test still passes.
-    sup = mod.Suppressor(900, 1000, str(tmp_path / "sup.json"))
-    monkeypatch.setattr(os, "replace", _boom)
+    sup, state = _reservation_suppressor(tmp_path)
+    before = state.read_bytes()
+    attempts = []
+
+    def failed_replace(*args):
+        attempts.append(args)
+        _boom()
+
+    monkeypatch.setattr(os, "replace", failed_replace)
     sup.record("8.8.8.8", now=0.0)  # triggers _save internally, must not raise
+    assert attempts == [(str(state) + ".tmp", str(state))]
+    assert state.read_bytes() == before
 
 
 def test_follow_resumes_from_saved_offset(tmp_path, monkeypatch):
@@ -1055,6 +2168,7 @@ def test_follow_drains_late_lines_before_rotating(tmp_path, monkeypatch):
     late = (
         json.dumps(
             {
+                **FIXTURE_EVIDENCE,
                 "ts": "2026-07-17T00:00:00Z",
                 "ip": "8.8.8.8",
                 "cat": "sqli",
@@ -1120,6 +2234,7 @@ def test_follow_drains_late_lines_when_path_absent(tmp_path, monkeypatch):
     late = (
         json.dumps(
             {
+                **FIXTURE_EVIDENCE,
                 "ts": "2026-07-17T00:00:00Z",
                 "ip": "9.9.9.9",
                 "cat": "sqli",

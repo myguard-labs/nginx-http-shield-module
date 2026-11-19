@@ -14,6 +14,8 @@ __DATA__
 
 === TEST 1: SQLi in a urlencoded body is blocked
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -54,6 +56,8 @@ Content-Type: application/x-www-form-urlencoded
 
 === TEST 5: a non-text body type is never scanned
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -64,6 +68,8 @@ Content-Type: application/octet-stream
 
 === TEST 6: body inspection can be turned off
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; shield_body off; empty_gif; }
 --- request
 POST /t
@@ -74,6 +80,8 @@ Content-Type: application/x-www-form-urlencoded
 
 === TEST 7: an attack past shield_max_body is not seen
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; shield_max_body 4k; empty_gif; }
 --- request eval
 "POST /t\n" . ("x=" . ("a" x 8000) . "&q=union select 1")
@@ -83,6 +91,8 @@ Content-Type: application/x-www-form-urlencoded
 
 === TEST 8: an attack within shield_max_body is caught
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; shield_max_body 4k; empty_gif; }
 --- request eval
 "POST /t\n" . ("q=union select 1&x=" . ("a" x 8000))
@@ -92,6 +102,8 @@ Content-Type: application/x-www-form-urlencoded
 
 === TEST 9: default shield_max_body is 8k -- attack inside it is caught
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request eval
 "POST /t\n" . ("x=" . ("a" x 6000) . "&q=union select 1")
@@ -101,6 +113,8 @@ Content-Type: application/x-www-form-urlencoded
 
 === TEST 10: default shield_max_body is 8k -- attack past it is not scanned
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request eval
 "POST /t\n" . ("x=" . ("a" x 12000) . "&q=union select 1")
@@ -110,6 +124,8 @@ Content-Type: application/x-www-form-urlencoded
 
 === TEST 11: an attack in a temp-file-buffered body is caught
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t {
         client_body_buffer_size 512;
         shield block;
@@ -150,6 +166,8 @@ Content-Type: application/x-www-form-urlencoded
 
 === TEST 14: vendor JSON media type is scanned
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -183,6 +201,8 @@ Content-Type: application/xml
 
 === TEST 16: GraphQL media type is scanned
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -193,6 +213,8 @@ Content-Type: application/graphql
 
 === TEST 17: newline-delimited JSON media type is scanned
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -203,6 +225,8 @@ Content-Type: application/x-ndjson
 
 === TEST 18: YAML media type is scanned
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request eval
 "POST /t\n--- !ruby/object:Gem::Requirement"
@@ -212,6 +236,8 @@ Content-Type: application/yaml
 
 === TEST 19: JSON text-sequence media type remains scanned
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -227,6 +253,8 @@ Content-Type: application/json-seq
 # the body is not scanned. Fail-closed either way (a loose match would scan
 # MORE, not less), but a malformed Content-Type must not cost a body scan.
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -239,6 +267,8 @@ Content-Type: application/json garbage
 # The whitespace is optional OWS before the end of the value; the token is
 # still exactly application/json, so the body is scanned.
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -249,6 +279,8 @@ Content-Type: application/json
 
 === TEST 22: a media type followed by OWS and parameters is still that media type
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -261,6 +293,8 @@ Content-Type: application/json ; charset=utf-8
 
 === TEST 23: a decoy binary Content-Type before a text one still scans the body
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -286,6 +320,8 @@ Content-Type: application/x-www-form-urlencoded
 # itself misread as a payload; this one carries a real attack in the part body
 # and must be blocked, proving the type actually opts the body into scanning.
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -302,6 +338,8 @@ Content-Type: multipart/form-data; boundary=shieldbnd
 # The same payload under application/octet-stream must pass shield untouched and
 # reach empty_gif (405), or TEST 26 would prove nothing about the type check.
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -319,6 +357,8 @@ Content-Type: application/octet-stream
 # frameworks, Rails) still consume a body sent without it. Absent Content-Type
 # must be treated as scannable, matching the module's fail-closed stance.
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; shield_body on; empty_gif; }
 --- request eval
 "POST /t
@@ -332,6 +372,8 @@ Content-Type: application/octet-stream
 # chunked request (Transfer-Encoding: chunked, hand-framed chunk sizes, no
 # Content-Length) through it with an attack payload, no Content-Type.
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- more_headers
 Transfer-Encoding: chunked
@@ -349,6 +391,7 @@ q=1 union select password from users\r
 # payload -- must reach empty_gif (405), proving TEST 100 blocks on the
 # payload and not merely on the chunked transfer-coding itself.
 --- config
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- more_headers
 Transfer-Encoding: chunked

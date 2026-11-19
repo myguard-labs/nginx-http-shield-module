@@ -150,6 +150,15 @@ main(void)
     json_case("\"unterminated", "", 0);
     json_case("\"raw\ncontrol\"", "", 0);
     json_case("\"\\\\u0041\"", "\\u0041\0", 7);
+    assert(strcmp(ngx_http_shield_cve_policy_name(NGX_SHIELD_CVE_GEO),
+                  "geoserver_eval") == 0);
+    assert(strcmp(ngx_http_shield_cve_policy_name(NGX_SHIELD_CVE_CRAFT),
+                  "craft_twig") == 0);
+    assert(strcmp(ngx_http_shield_cve_policy_name(NGX_SHIELD_CVE_JSON),
+                  "react_flight") == 0);
+    match_case("__class", NGX_SHIELD_CVE_CRAFT, NGX_HTTP_SHIELD_CAT_N);
+    match_case("benign", NGX_SHIELD_CVE_CRAFT, NGX_HTTP_SHIELD_CAT_N);
+    match_case("benign", NGX_SHIELD_CVE_GEO, NGX_HTTP_SHIELD_CAT_N);
     match_case("__class guzzlehttp\\psr7\\fnstream _fn_close",
                NGX_SHIELD_CVE_CRAFT, NGX_HTTP_SHIELD_CAT_DESERIAL);
     match_case("class yii\\rbac\\phpmanager itemfile",

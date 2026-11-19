@@ -69,13 +69,13 @@ my @cats = qw(sqli xss traversal overlong cmdi lfi crlf nullbyte template
               webshell ssrf_meta nosql ssti exploit_path ctrl_char dotfile);
 my $expected = "# HELP shield_hits Shield signature hits by category.\n"
 . "# TYPE shield_hits counter\n"
-. CORE::join('', map { "shield_hits_total{zone=\"metrics2\",category=\"$_\"} 0\n" } @cats)
+. CORE::join('', map { "shield_hits_total{zone=\"metrics2\",category=\"$_\",class=\"suspicious\"} 0\n" } @cats)
 . "# HELP shield_blocked Shield requests blocked.\n"
 . "# TYPE shield_blocked counter\n"
-. "shield_blocked_total{zone=\"metrics2\"} 0\n"
+. "shield_blocked_total{zone=\"metrics2\",class=\"suspicious\"} 0\n"
 . "# HELP shield_bans Shield bans armed.\n"
 . "# TYPE shield_bans counter\n"
-. "shield_bans_total{zone=\"metrics2\"} 0\n"
+. "shield_bans_total{zone=\"metrics2\",class=\"suspicious\"} 0\n"
 . "# HELP shield_zone_nodes Shield zone nodes in use.\n"
 . "# TYPE shield_zone_nodes gauge\n"
 . "shield_zone_nodes{zone=\"metrics2\"} 0\n"
@@ -102,13 +102,13 @@ my $expected = "# HELP shield_hits Shield signature hits by category.\n"
 . "shield_zone_size_bytes{zone=\"metrics2\"} 1048576\n"
 . "# HELP shield_detections Shield detections by category and mode.\n"
 . "# TYPE shield_detections counter\n"
-. CORE::join('', map { "shield_detections_total{zone=\"metrics2\",category=\"$_\",mode=\"detect\"} 0\nshield_detections_total{zone=\"metrics2\",category=\"$_\",mode=\"block\"} 0\n" } @cats)
+. CORE::join('', map { "shield_detections_total{zone=\"metrics2\",category=\"$_\",mode=\"detect\",class=\"suspicious\"} 0\nshield_detections_total{zone=\"metrics2\",category=\"$_\",mode=\"block\",class=\"suspicious\"} 0\n" } @cats)
 . "# HELP shield_source_hits Shield signature hits by category and source.\n"
 . "# TYPE shield_source_hits counter\n"
-. CORE::join('', map { my $cat = $_; map { "shield_source_hits_total{zone=\"metrics2\",category=\"$cat\",source=\"$_\"} 0\n" } qw(uri header range user-agent referer content-type body) } @cats)
+. CORE::join('', map { my $cat = $_; map { "shield_source_hits_total{zone=\"metrics2\",category=\"$cat\",source=\"$_\",class=\"suspicious\"} 0\n" } qw(uri header range user-agent referer content-type body) } @cats)
 . "# HELP shield_body_uninspected Shield bodies with incomplete inspection by reason.\n"
 . "# TYPE shield_body_uninspected counter\n"
-. CORE::join('', map { "shield_body_uninspected_total{zone=\"metrics2\",reason=\"$_\"} 0\n" } qw(too_large encoding error))
+. CORE::join('', map { "shield_body_uninspected_total{zone=\"metrics2\",reason=\"$_\",class=\"not-inspected\"} 0\n" } qw(too_large encoding error))
 . "# EOF\n";
 my $pattern = quotemeta($expected);
 $pattern =~ s/USED/[1-9][0-9]*/;
@@ -138,7 +138,7 @@ Accept: application/openmetrics-text
  "GET /t", "GET /metrics", "GET /json"]
 --- response_body_like eval
 [qr/./, qr/./, qr/./,
- qr/shield_hits_total\{zone="metrics3",category="sqli"\} 2\n.*shield_blocked_total\{zone="metrics3"\} 2\n.*shield_bans_total\{zone="metrics3"\} 1\n.*shield_zone_nodes\{zone="metrics3"\} 1\n.*shield_banned_clients\{zone="metrics3"\} 1\n.*shield_requests_total\{zone="metrics3"\} 2\n.*shield_ban_refusals_total\{zone="metrics3"\} 1\n.*category="sqli",mode="detect"\} 0\n.*category="sqli",mode="block"\} 2\n.*shield_source_hits_total\{zone="metrics3",category="sqli",source="uri"\} 2\n.*# EOF\n\z/s,
+ qr/shield_hits_total\{zone="metrics3",category="sqli",class="suspicious"\} 2\n.*shield_blocked_total\{zone="metrics3",class="suspicious"\} 2\n.*shield_bans_total\{zone="metrics3",class="suspicious"\} 1\n.*shield_zone_nodes\{zone="metrics3"\} 1\n.*shield_banned_clients\{zone="metrics3"\} 1\n.*shield_requests_total\{zone="metrics3"\} 2\n.*shield_ban_refusals_total\{zone="metrics3"\} 1\n.*category="sqli",mode="detect",class="suspicious"\} 0\n.*category="sqli",mode="block",class="suspicious"\} 2\n.*shield_source_hits_total\{zone="metrics3",category="sqli",source="uri",class="suspicious"\} 2\n.*# EOF\n\z/s,
  qr/"nodes":1,"blocked":2,"bans":1.*"sqli":2.*"banned":\[\{"addr":"127\.0\.0\.1"/s]
 --- error_code eval
 [403, 403, 403, 200, 200]
@@ -161,7 +161,7 @@ Accept: application/openmetrics-text
 --- request eval
 ["GET /t?id=1%20union%20select%20pw", "GET /metrics"]
 --- response_body_like eval
-[qr/./, qr/category="sqli"\} 1\n.*shield_blocked_total\{zone="metrics4"\} 0\n.*shield_bans_total\{zone="metrics4"\} 0\n.*shield_zone_nodes\{zone="metrics4"\} 1\n.*shield_banned_clients\{zone="metrics4"\} 0\n.*category="sqli",mode="detect"\} 1\n.*category="sqli",mode="block"\} 0\n/s]
+[qr/./, qr/category="sqli",class="suspicious"\} 1\n.*shield_blocked_total\{zone="metrics4",class="suspicious"\} 0\n.*shield_bans_total\{zone="metrics4",class="suspicious"\} 0\n.*shield_zone_nodes\{zone="metrics4"\} 1\n.*shield_banned_clients\{zone="metrics4"\} 0\n.*category="sqli",mode="detect",class="suspicious"\} 1\n.*category="sqli",mode="block",class="suspicious"\} 0\n/s]
 --- error_code eval
 [200, 200]
 
@@ -262,7 +262,7 @@ Accept: application/openmetrics-text
 --- request
 GET /metrics
 --- response_body_like chomp
-shield_hits_total\{zone="zone\\"\\\\name\\nline",category="sqli"\} 0\n
+shield_hits_total\{zone="zone\\"\\\\name\\nline",category="sqli",class="suspicious"\} 0\n
 --- error_code: 200
 
 === TEST 13: long zone label cannot truncate a metrics document
@@ -298,7 +298,7 @@ Accept: application/openmetrics-text
 ["GET /t?id=1%20union%20select%20pw", "GET /metrics"]
 --- wait: 2
 --- response_body_like eval
-[qr/./, qr/shield_bans_total\{zone="metrics14"\} 1\n.*shield_zone_nodes\{zone="metrics14"\} 1\n.*shield_banned_clients\{zone="metrics14"\} 0\n.*# EOF\n\z/ss]
+[qr/./, qr/shield_bans_total\{zone="metrics14",class="suspicious"\} 1\n.*shield_zone_nodes\{zone="metrics14"\} 1\n.*shield_banned_clients\{zone="metrics14"\} 0\n.*# EOF\n\z/ss]
 --- error_code eval
 [403, 200]
 
@@ -321,7 +321,7 @@ Accept: application/openmetrics-text
 --- request eval
 ["GET /t", "GET /metrics"]
 --- response_body_like eval
-[qr/./, qr/category="httpoxy"\} 1\n.*shield_blocked_total\{zone="metrics15"\} 1\n.*shield_bans_total\{zone="metrics15"\} 0\n/s]
+[qr/./, qr/category="httpoxy",class="suspicious"\} 1\n.*shield_blocked_total\{zone="metrics15",class="suspicious"\} 1\n.*shield_bans_total\{zone="metrics15",class="suspicious"\} 0\n/s]
 --- error_code eval
 [403, 200]
 
@@ -501,7 +501,7 @@ Vary: Accept
     }
 --- request
 GET /m?format=prometheus
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -535,7 +535,7 @@ Vary: Accept
     }
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -553,7 +553,7 @@ Vary: Accept
 Accept: */*
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -606,7 +606,7 @@ Vary: Accept
 Accept: application/openmetrics-text;q=0
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -624,7 +624,7 @@ Vary: Accept
 Accept: application/openmetrics-text;q=0.5, text/plain;q=0.9
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -678,7 +678,7 @@ Vary: Accept
 Accept: application/openmetrics-text;version=2.0.0
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -696,7 +696,7 @@ Vary: Accept
 Accept: application/openmetrics-text;q=1.1
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -714,7 +714,7 @@ Vary: Accept
 Accept: application/openmetrics-text;q=1;q=0
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -732,7 +732,7 @@ Vary: Accept
 Accept: application/openmetrics-text;version="1.0.0
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -750,7 +750,7 @@ Vary: Accept
 Accept: application/openmetrics-text-extra
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -866,7 +866,7 @@ Vary: Accept
 Accept: application/openmetrics-text, broken
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -938,7 +938,7 @@ Vary: Accept
 Accept: text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,text/plain;q=0,application/openmetrics-text
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -958,7 +958,7 @@ Accept: application/openmetrics-text
 Accept: broken
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -977,7 +977,7 @@ Vary: Accept
 "Accept: application/openmetrics-text;q=1;x=" . ("a" x 4900) . "\nAccept: text/plain;q=0;x=" . ("b" x 4900)
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -1015,7 +1015,7 @@ Vary: Accept
 "Accept: application/openmetrics-text;q=1;x=" . ("a" x 8158)
 --- request
 GET /m
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept
@@ -1048,7 +1048,7 @@ Vary: Accept
     location /m { shield_ban_status querybudget; }
 --- request eval
 "GET /m?format=prometheus&x=" . ("a" x 8172)
---- response_body_like: \A# HELP shield_hits_total .*reason="error"\} 0\n\z
+--- response_body_like: \A# HELP shield_hits_total .*reason="error",class="not-inspected"\} 0\n\z
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 Vary: Accept

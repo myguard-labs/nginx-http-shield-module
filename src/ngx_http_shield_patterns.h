@@ -1572,6 +1572,7 @@ typedef char ngx_http_shield_rule_terms_fit_in_mask[
 typedef struct {
     ngx_http_shield_ac_state_t  *next;   /* [nstates][256] goto table        */
     uint64_t                    *out;    /* [nstates] accepting-category mask */
+    uint64_t                    *observe; /* exact body-collision outputs    */
     ngx_uint_t                   nstates;
 
     /* [nstates] accepting rule-TERM mask, in the NGX_HTTP_SHIELD_NRULE_TERMS
