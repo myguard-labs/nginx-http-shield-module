@@ -171,6 +171,7 @@ static char *ngx_http_shield_skip(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_shield_log(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static ngx_str_t ngx_http_shield_log_peer(ngx_connection_t *connection);
 static void ngx_http_shield_write_log(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit);
 static ngx_int_t ngx_http_shield_init(ngx_conf_t *cf);
@@ -755,6 +756,25 @@ ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
 }
 
 
+static ngx_str_t
+ngx_http_shield_log_peer(ngx_connection_t *connection)
+{
+    ngx_str_t  peer;
+
+    ngx_str_set(&peer, "non-ip");
+    if (connection->sockaddr != NULL
+        && (connection->sockaddr->sa_family == AF_INET
+#if (NGX_HAVE_INET6)
+            || connection->sockaddr->sa_family == AF_INET6
+#endif
+           ))
+    {
+        return connection->addr_text;
+    }
+    return peer;
+}
+
+
 /* Bounded, content-free JSON for the existing file/syslog sinks. Legacy keys
  * remain; req is deliberately empty. No path, query, body, header value or hash
  * of those values enters the event. All text is fixed ASCII or nginx's
@@ -768,6 +788,7 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
     ngx_str_t                     line;
     ngx_log_t                     log;
     ngx_str_t                    *ts;
+    ngx_str_t                     peer;
     ngx_uint_t                    block;
     ngx_http_shield_main_conf_t   *smcf;
 
@@ -780,6 +801,7 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
     block = (slcf->mode == NGX_HTTP_SHIELD_BLOCK);
     smcf = ngx_http_get_module_main_conf(r, ngx_http_shield_module);
     ts = (ngx_str_t *) &ngx_cached_http_log_iso8601;
+    peer = ngx_http_shield_log_peer(r->connection);
     line.data = ngx_pnalloc(r->pool, 768);
     if (line.data == NULL) {
         return;
@@ -793,7 +815,7 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
         "\"build\":\"" NGINX_VER "\",\"view\":\"%s\","
         "\"verdict\":\"signature-match\",\"action\":\"%s\","
         "\"body_policy\":\"%s\",\"ban\":\"%s\"}",
-        ts, &r->connection->addr_text, hit->category, hit->source,
+        ts, &peer, hit->category, hit->source,
         block ? "block" : "detect", block ? slcf->status : (ngx_uint_t) 0,
         hit->rule, (ngx_uint_t) NGX_HTTP_SHIELD_RULE_REVISION, smcf->ruleset,
         hit->view, block ? "block" : "detect",

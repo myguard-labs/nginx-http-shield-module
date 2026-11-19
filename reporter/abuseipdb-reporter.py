@@ -99,6 +99,10 @@ ROTATION_EOF_GRACE = 2
 _stop = False
 
 
+class PersistenceUncertain(RuntimeError):
+    """The replacement is visible but its directory entry was not synced."""
+
+
 def _state_int(value, minimum: int, maximum: int) -> int:
     """Accept only an integer emitted by our JSON state writer, within range."""
     if isinstance(value, bool) or not isinstance(value, int):
@@ -118,6 +122,8 @@ def is_reportable_ip(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
+        return False
+    if getattr(addr, "scope_id", None) is not None:
         return False
     return not (
         addr.is_private
@@ -213,7 +219,7 @@ def is_promoted_exploit(entry: dict) -> bool:
     if (
         not isinstance(ts, str)
         or re.fullmatch(
-            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2})",
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-5][0-9])",
             ts,
         )
         is None
@@ -397,8 +403,10 @@ class Suppressor:
                 }:
                     raise ValueError("invalid pending intent schema")
                 self._state_ip(intent["ip"])
-                started = self._state_timestamp(intent["started_at"], latest)
                 window = _state_int(intent["window_s"], 1, MAX_STATE_COUNT)
+                started = self._state_timestamp(
+                    intent["started_at"], time.time() + window
+                )
                 intent_day = self._state_day(intent["day"])
                 if (
                     intent_day
@@ -449,15 +457,20 @@ class Suppressor:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, self.state_path)
-            parent = os.path.dirname(os.path.abspath(self.state_path))
+        except (OSError, ValueError, TypeError, OverflowError):
+            return False
+        parent = os.path.dirname(os.path.abspath(self.state_path))
+        try:
             parent_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
                 os.fsync(parent_fd)
             finally:
                 os.close(parent_fd)
-            return True
-        except (OSError, ValueError, TypeError, OverflowError):
-            return False
+        except OSError as exc:
+            raise PersistenceUncertain(
+                "suppression state replaced but directory sync failed"
+            ) from exc
+        return True
 
     def reserve(self, ip: str, now: float) -> tuple[bool, str]:
         """Persist one pending attempt before granting permission to send once.
@@ -608,7 +621,7 @@ class Reporter:
 
     # report() outcomes.
     OK = "ok"  # accepted; record + advance offset
-    RETRY = "retry"  # transient (429/5xx/network); keep offset, retry after cooldown
+    RETRY = "retry"  # transient; keep offset and recheck pending debt after cooldown
     DROP = "drop"  # permanent (4xx != 429); log + advance, never retryable
 
     def report(
@@ -720,7 +733,7 @@ def process_line(
     line: str, sup: Suppressor, reporter: Reporter, now: float, log
 ) -> bool:
     """Process one log line. Return True if the line is done with (advance the
-    offset past it), False if it must be retried later (a send failed / API in
+    offset past it), False if it must be rechecked later (a send failed / API
     cooldown or unavailable durable state) so the caller keeps the offset on
     this line. Replay remains subject to pending quota/dedup debt."""
     if len(line) > MAX_LOG_LINE:
@@ -785,7 +798,7 @@ def process_line(
     # RETRY (or an unknown outcome) keeps the offset, but not permission to
     # resend: every attempted POST remains pending unless confirmed. A server
     # error or network failure cannot prove the remote end did not accept it.
-    log(f"FAILED  {ip} cats={cats} (retry after cooldown): {detail[:200]}")
+    log(f"FAILED  {ip} cats={cats} (recheck after cooldown): {detail[:200]}")
     return False
 
 
@@ -893,7 +906,7 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
                         save_offset(args.state, log_path, offset, cur_inode)
                         last_save = now
                 else:
-                    # Send failed: rewind to retry this exact line after cooldown.
+                    # Send failed: rewind to recheck this line after cooldown.
                     fh.seek(pos)
                     time.sleep(args.poll)
                 continue
@@ -926,10 +939,10 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
                     # Rotation (new inode) or truncation detected on the path. Do NOT
                     # close the old descriptor yet: nginx may still be appending to
                     # the renamed inode until it reopens on SIGUSR1, and we may have a
-                    # failed line rewound for retry. We keep reading the OLD fh (which
+                    # failed line rewound for a debt recheck. We keep reading the OLD fh (which
                     # still points at the rotated inode) on subsequent loop passes --
                     # the normal read branch above drains it and honours cooldown /
-                    # retry-rewind -- and only switch to the new file once the old fd
+                    # recheck rewind -- and only switch to the new file once the old fd
                     # has reached a STABLE EOF (rotation_eofs consecutive empty reads
                     # a poll apart) with no send pending. On truncation (same inode,
                     # shrunk) there is nothing to drain, so switch immediately.
@@ -1024,10 +1037,10 @@ def main(argv: list[str]) -> int:
     )
     args = p.parse_args(argv)
 
-    if args.dedup_window <= 0:
-        p.error("--dedup-window must be positive")
-    if args.daily_cap < 0:
-        p.error("--daily-cap must be nonnegative")
+    if not 1 <= args.dedup_window <= MAX_STATE_COUNT:
+        p.error(f"--dedup-window must be between 1 and {MAX_STATE_COUNT}")
+    if not 0 <= args.daily_cap <= MAX_STATE_COUNT:
+        p.error(f"--daily-cap must be between 0 and {MAX_STATE_COUNT}")
     if not math.isfinite(args.poll) or args.poll <= 0:
         p.error("--poll must be finite and positive")
     if not math.isfinite(args.timeout) or args.timeout <= 0:
@@ -1054,6 +1067,8 @@ def main(argv: list[str]) -> int:
     # Suppression state lives next to the offset state so dedup window and daily
     # cap survive a restart (a crash-loop must not reset them and blow the quota).
     sup_state = os.path.join(os.path.dirname(args.state) or ".", "suppress.json")
+    if os.path.realpath(args.state) == os.path.realpath(sup_state):
+        p.error("--state must not alias suppression state suppress.json")
 
     reporter = Reporter(api_key, args.timeout, args.dry_run)
     sup = Suppressor(args.dedup_window, args.daily_cap, sup_state)

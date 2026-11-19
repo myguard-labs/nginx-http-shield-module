@@ -945,7 +945,8 @@ text is sent. Only the validated public IP, bounded timestamp and fixed category
 IDs accompany it. Duplicate JSON keys and malformed metadata are discarded.
 Suppression and daily-cap state are persisted, so a
 restart cannot reset them and overrun the quota; a 429 or network failure backs
-off (honouring `Retry-After`) and the unsent line is retried, not dropped. The
+off (honouring `Retry-After`) and rechecks the retained line against its pending
+attempt debt after cooldown instead of risking a duplicate POST. The
 API key comes from `ABUSEIPDB_API_KEY` in the environment — never the command
 line. A hardened `systemd` unit is provided:
 

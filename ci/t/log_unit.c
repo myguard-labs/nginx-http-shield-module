@@ -145,6 +145,8 @@ int main(void)
     ngx_log_t logs[4], saved[4];
     ngx_open_file_t files[4];
     writer_state_t writer;
+    struct sockaddr peer_address;
+    ngx_str_t peer;
     ngx_uint_t observation, mode;
     size_t i;
 
@@ -156,6 +158,9 @@ int main(void)
     ngx_memzero(&writer, sizeof(writer));
     request.connection = &connection;
     connection.log = logs;
+    ngx_memzero(&peer_address, sizeof(peer_address));
+    peer_address.sa_family = AF_INET;
+    connection.sockaddr = &peer_address;
     ngx_str_set(&connection.addr_text, "192.0.2.1");
     main_conf.ruleset = UINT64_C(0x1122334455667788);
     test_main_conf = &main_conf;
@@ -165,6 +170,19 @@ int main(void)
     hit.source = NGX_HTTP_SHIELD_SOURCE_BODY;
     hit.view = "raw";
     ngx_use_stderr = 0;
+
+    peer = ngx_http_shield_log_peer(&connection);
+    assert(peer.len == connection.addr_text.len
+           && ngx_memcmp(peer.data, connection.addr_text.data, peer.len) == 0);
+#if (NGX_HAVE_UNIX_DOMAIN)
+    peer_address.sa_family = AF_UNIX;
+    ngx_str_set(&connection.addr_text, "unix:/tmp/hostile\"peer");
+    peer = ngx_http_shield_log_peer(&connection);
+    assert(peer.len == sizeof("non-ip") - 1
+           && ngx_memcmp(peer.data, "non-ip", peer.len) == 0);
+    peer_address.sa_family = AF_INET;
+    ngx_str_set(&connection.addr_text, "192.0.2.1");
+#endif
 
     /* Verify the injected errno/clock exercise nginx's own chain backoff. */
     reset(logs, files);

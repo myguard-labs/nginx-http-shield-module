@@ -391,6 +391,7 @@ q=1 union select password from users\r
 # payload -- must reach empty_gif (405), proving TEST 100 blocks on the
 # payload and not merely on the chunked transfer-coding itself.
 --- config
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- more_headers
 Transfer-Encoding: chunked

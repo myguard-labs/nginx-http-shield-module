@@ -10,6 +10,7 @@ if not __debug__:
 
 import argparse
 import json
+import os
 import re
 import signal
 import socket
@@ -66,16 +67,18 @@ def cleanup_process(process, stderr, root: Path, timeout: float = 10) -> None:
         process.wait(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         timed_out = exc
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait()
     stderr.seek(0)
-    logs = stderr.read() + (root / "error.log").read_text()
-    try:
-        assert process.returncode == 0, logs
-        assert "AddressSanitizer" not in logs and "runtime error:" not in logs, logs
-    finally:
-        if timed_out is not None:
-            raise timed_out
+    error_log = root / "error.log"
+    logs = stderr.read() + (error_log.read_text() if error_log.exists() else "")
+    if timed_out is not None:
+        raise timed_out
+    assert process.returncode == 0, logs
+    assert "AddressSanitizer" not in logs and "runtime error:" not in logs, logs
 
 
 def configuration(root: Path, port: int, module: Path | None) -> str:
@@ -164,6 +167,7 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                 [str(binary), "-p", f"{root}/", "-c", "nginx.conf"],
                 stdout=stderr,
                 stderr=stderr,
+                start_new_session=True,
             )
             try:
                 deadline = time.monotonic() + 10
@@ -188,6 +192,7 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                     headers=None,
                     method=None,
                     hit=None,
+                    expected_mode="block",
                 ):
                     verb = method or ("POST" if body is not None else "GET")
                     log = root / "hits.jsonl"
@@ -211,9 +216,10 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                             "nginx/"
                         ), event
                         assert event["verdict"] == "signature-match", event
-                        assert event["action"] == event["mode"], event
+                        assert event["mode"] == expected_mode, event
+                        assert event["action"] == expected_mode, event
                         assert event["status"] == (
-                            expected if event["mode"] == "block" else 0
+                            expected if expected_mode == "block" else 0
                         ), event
                         assert (
                             event["body_policy"] == "observe" and event["ban"] == "off"
@@ -747,6 +753,7 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                     "/enabled/detect/?q=union%20select&token=" + canary,
                     200,
                     hit=("sqli", "uri"),
+                    expected_mode="detect",
                 )
                 check(
                     "diagnostic observed body secret",
@@ -756,12 +763,21 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                     headers={"Content-Type": "text/plain"},
                     hit=False,
                 )
+                error_log = root / "error.log"
+                before_sink = len(error_log.read_text().splitlines())
                 check(
                     "diagnostic sink failure secret",
                     "/full/?q=union%20select&token=" + canary,
                     403,
                     hit=False,
                 )
+                sink_lines = error_log.read_text().splitlines()[before_sink:]
+                assert any(
+                    'to shield_log "/dev/full" failed' in line for line in sink_lines
+                ), sink_lines
+                assert all(
+                    canary not in line and "request:" not in line for line in sink_lines
+                ), sink_lines
                 lines = (root / "hits.jsonl").read_text().splitlines()
                 assert all(len(line.encode()) + 1 <= 768 for line in lines), (
                     "diagnostic size bound"

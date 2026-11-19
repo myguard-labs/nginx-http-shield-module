@@ -296,6 +296,7 @@ def main():
                     "ci/causal/cases.json",
                     "ci/causal/variants.json",
                     "ci/causal/check.py",
+                    "ci/causal/diagnostics.py",
                     "ci/causal/scan.c",
                     "ci/tools/threat-replay.py",
                     "ci/replay/corpus.json",

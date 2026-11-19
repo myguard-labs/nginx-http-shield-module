@@ -153,11 +153,11 @@ def run_case(
 daemon off;
 master_process off;
 error_log stderr debug;
-pid {case / "nginx.pid"};
+pid nginx.pid;
 events {{ worker_connections 32; }}
 http {{
     access_log off;
-    client_body_temp_path {case / "body_temp"};
+    client_body_temp_path body_temp;
     shield_ban_zone reset:1m;
     server {{
         listen 127.0.0.1:{port};

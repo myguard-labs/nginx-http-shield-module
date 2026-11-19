@@ -3,7 +3,36 @@
 """Offline public-rule identities and overlap; no application-sink verdicts."""
 
 import struct
-from urllib.parse import unquote_to_bytes
+
+
+def nginx_unescape(data):
+    """Match ngx_unescape_uri(..., type=0), including malformed escapes."""
+    decoded = bytearray()
+    state = "usual"
+    first = 0
+    for byte in data:
+        if state == "usual":
+            if byte == ord("%"):
+                state = "first"
+            else:
+                decoded.append(byte)
+        elif state == "first":
+            if ord("0") <= byte <= ord("9"):
+                first = byte - ord("0")
+                state = "second"
+            elif ord("a") <= (byte | 0x20) <= ord("f"):
+                first = (byte | 0x20) - ord("a") + 10
+                state = "second"
+            else:
+                decoded.append(byte)
+                state = "usual"
+        else:
+            if ord("0") <= byte <= ord("9"):
+                decoded.append((first << 4) + byte - ord("0"))
+            elif ord("a") <= (byte | 0x20) <= ord("f"):
+                decoded.append((first << 4) + (byte | 0x20) - ord("a") + 10)
+            state = "usual"
+    return bytes(decoded)
 
 
 def identity(kind, name, terms, flags):
@@ -55,7 +84,7 @@ def overlap(entries, data, form=False):
     if len(data) > 4096:
         raise ValueError("diagnostic fixture exceeds 4096 bytes")
     raw = data.lower()
-    decoded = unquote_to_bytes(raw.replace(b"+", b" ") if form else raw).lower()
+    decoded = nginx_unescape(raw.replace(b"+", b" ") if form else raw).lower()
     found = []
     for view, flag, value in (("raw", 2, raw), ("decoded", 1, decoded)):
         for entry in entries:
@@ -79,6 +108,7 @@ def check(binary, run):
         b"",
         b"union selec",
         b"%GG",
+        b"union%2G select",  # malformed escape removed by nginx's decoder
     ]
     wire = "".join(f"0:{data.hex()}\n" for data in samples).encode()
     actual = (

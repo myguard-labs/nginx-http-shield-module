@@ -916,30 +916,35 @@ scan_body_policy(const char *data, size_t len, uint64_t skip,
 static void
 case_body_policy(void)
 {
-    static const char *markers[] = {
-        "union select",
-        "%c0%af",
-        "!ruby/object:",
-        "<!--#include virtual",
-        "169.254.169.254",
-        "/latest/meta-data/",
-        "{\"$where\":",
-        "{{7*7}}"
+    static const struct {
+        const char  *marker;
+        ngx_uint_t   category;
+    } markers[] = {
+        { "union select", NGX_HTTP_SHIELD_CAT_SQLI },
+        { "%c0%af", NGX_HTTP_SHIELD_CAT_OVERLONG },
+        { "!ruby/object:", NGX_HTTP_SHIELD_CAT_RAILS_YAML },
+        { "<!--#include virtual", NGX_HTTP_SHIELD_CAT_SSI },
+        { "169.254.169.254", NGX_HTTP_SHIELD_CAT_SSRF_META },
+        { "/latest/meta-data/", NGX_HTTP_SHIELD_CAT_SSRF_META },
+        { "{\"$where\":", NGX_HTTP_SHIELD_CAT_NOSQL },
+        { "{{7*7}}", NGX_HTTP_SHIELD_CAT_SSTI }
     };
     ngx_http_shield_hit_t hit;
     size_t i, j, k, n, siblings = 0;
     ngx_uint_t ambiguous;
 
     for (i = 0; i < sizeof(markers) / sizeof(markers[0]); i++) {
-        n = strlen(markers[i]);
-        check(scan_body_policy(markers[i], n, 0, 0, &hit) == NGX_DONE,
+        n = strlen(markers[i].marker);
+        check(scan_body_policy(markers[i].marker, n, 0, 0, &hit) == NGX_DONE,
               "body-policy exact marker is observation, never clean/hit");
-        check(scan_body_policy(markers[i], n, 0, 1, &hit) == NGX_OK,
+        check(scan_body_policy(markers[i].marker, n, 0, 1, &hit) == NGX_OK
+                  && hit.cat == markers[i].category,
               "body-policy strict restores exact marker enforcement");
-        check(scan_body_policy(markers[i], n - 1, 0, 0, &hit)
+        check(scan_body_policy(markers[i].marker, n - 1, 0, 0, &hit)
                   == NGX_DECLINED,
               "body-policy incomplete marker is not observed");
-        check(scan_body_policy(markers[i], n, (uint64_t) 1 << hit.cat,
+        check(scan_body_policy(markers[i].marker, n,
+                               (uint64_t) 1 << markers[i].category,
                                0, &hit) == NGX_DECLINED,
               "body-policy category skip suppresses observation");
     }
@@ -978,8 +983,8 @@ case_body_policy(void)
         for (j = 0; j < cat->nsigs; j++) {
             ambiguous = 0;
             for (k = 0; k < sizeof(markers) / sizeof(markers[0]); k++) {
-                if (cat->sigs[j].len == strlen(markers[k])
-                    && memcmp(cat->sigs[j].s, markers[k],
+                if (cat->sigs[j].len == strlen(markers[k].marker)
+                    && memcmp(cat->sigs[j].s, markers[k].marker,
                               cat->sigs[j].len) == 0)
                 {
                     ambiguous = 1;

@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import stat
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,7 @@ def admit_transport_fixture(monkeypatch):
         ("8.8.8.8", True),
         ("1.2.3.4", True),
         ("2606:4700:4700::1111", True),
+        ("2606:4700:4700::1111%eth0", False),
         ("10.0.0.1", False),  # RFC1918
         ("192.168.1.1", False),  # RFC1918
         ("172.16.5.5", False),  # RFC1918
@@ -193,6 +195,24 @@ def test_build_comment_missing_fields():
 def test_build_comment_truncates():
     entry = {"cat": "x", "src": "y", "req": "GET /" + "a" * 5000}
     assert len(mod.build_comment(entry)) <= mod.COMMENT_MAX
+
+
+@pytest.mark.parametrize(
+    "timestamp", ["2026-01-01T00:00:00Z", "2026-01-01T00:00:00+01:59"]
+)
+def test_promoted_timestamp_valid_offsets(timestamp):
+    entry = {**FIXTURE_EVIDENCE, "cat": "sqli", "ip": "8.8.8.8", "ts": timestamp}
+    assert mod.is_promoted_exploit(entry)
+
+
+def test_promoted_timestamp_rejects_out_of_range_offset_minutes():
+    entry = {
+        **FIXTURE_EVIDENCE,
+        "cat": "sqli",
+        "ip": "8.8.8.8",
+        "ts": "2026-01-01T00:00:00+00:60",
+    }
+    assert not mod.is_promoted_exploit(entry)
 
 
 # --------------------------------------------------------------------------- #
@@ -360,6 +380,50 @@ def test_suppressor_reservation_fsync_failure_denies_permission(tmp_path, monkey
     assert state.read_bytes() == before
 
 
+def test_suppressor_directory_sync_failure_stops_after_visible_replace(
+    tmp_path, monkeypatch
+):
+    sup, state = _reservation_suppressor(tmp_path)
+    fsync = mod.os.fsync
+
+    def fail_directory_sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("injected directory sync failure")
+        fsync(fd)
+
+    monkeypatch.setattr(mod.os, "fsync", fail_directory_sync)
+    with pytest.raises(mod.PersistenceUncertain):
+        sup.reserve("8.8.8.8", 1000)
+    assert json.loads(state.read_text())["pending"] == sup._pending
+
+
+def test_pending_timestamp_uses_stored_window_for_clock_rollback(tmp_path, monkeypatch):
+    state = tmp_path / "reservation.json"
+    state.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "reservation_ready": True,
+                "day": "1970-01-01",
+                "count": 0,
+                "last": {},
+                "pending": [
+                    {
+                        "day": "1970-01-01",
+                        "ip": "8.8.8.8",
+                        "started_at": 1000,
+                        "window_s": 900,
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: 990)
+    sup = mod.Suppressor(1, 1000, str(state))
+    assert sup._state_valid
+    assert sup._pending[0]["started_at"] == 1000
+
+
 def test_suppressor_reservation_roundtrip_and_legacy_save(tmp_path):
     sup, state = _reservation_suppressor(tmp_path)
     sup.record("9.9.9.9", 999)
@@ -508,6 +572,12 @@ def test_suppressor_reservation_persistence_failure_forbids_send(
             if stage == "write":
                 fail()
             return self.handle.write(raw)
+
+        def flush(self):
+            return self.handle.flush()
+
+        def fileno(self):
+            return self.handle.fileno()
 
         def __exit__(self, *a):
             self.handle.close()
@@ -1185,6 +1255,7 @@ def test_transport_barrier_persists_before_open_and_confirms_once(
         assert request.full_url == mod.API_URL
         assert request.method == "POST"
         assert timeout == 1
+        assert urllib.parse.parse_qs(request.data.decode())["ip"] == [canonical]
         calls.append(request.data)
         return _FakeResp(b"")
 
@@ -1896,6 +1967,43 @@ def test_main_dry_run_runs_and_returns_zero(tmp_path, monkeypatch):
     finally:
         mod._stop = False
     assert rc == 0
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--daily-cap", str(1 << 63)),
+        ("--dedup-window", str(1 << 63)),
+    ],
+)
+def test_main_rejects_out_of_range_suppression_limits(
+    tmp_path, monkeypatch, option, value
+):
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        mod.main(
+            [
+                str(tmp_path / "shield.log"),
+                "--state",
+                str(tmp_path / "offset.json"),
+                "--dry-run",
+                option,
+                value,
+            ]
+        )
+
+
+def test_main_rejects_offset_suppression_path_collision(tmp_path, monkeypatch):
+    monkeypatch.delenv("ABUSEIPDB_API_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        mod.main(
+            [
+                str(tmp_path / "shield.log"),
+                "--state",
+                str(tmp_path / "suppress.json"),
+                "--dry-run",
+            ]
+        )
 
 
 def _boom(*a, **k):

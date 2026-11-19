@@ -209,9 +209,18 @@ def finish_body(connection, expected, worker):
 def run(srv: PolicyServer):
     checks = []
 
-    def check(name, path="/trial", expected=405, **kwargs):
+    def observation_count():
+        return srv.error_log().count("observed body marker")
+
+    def check(name, path="/trial", expected=405, *, observed=False, **kwargs):
+        before = observation_count()
         actual, _, _ = srv.fetch(path, **kwargs)
         require(actual == expected, name, {"actual": actual, "expected": expected})
+        if observed:
+            require(
+                observation_count() == before + 1,
+                f"{name} records exactly one body observation",
+            )
         checks.append(name)
 
     def production_preserved():
@@ -234,7 +243,7 @@ def run(srv: PolicyServer):
 
     srv.start()
     old = srv.sole_worker()
-    check("body marker observed only in exact exception", body=MARKER)
+    check("body marker observed only in exact exception", body=MARKER, observed=True)
     check(
         "longer sibling path remains strict",
         "/trial/sibling",
@@ -277,7 +286,12 @@ def run(srv: PolicyServer):
     held = srv.hold_body()
     try:
         srv.transition("strict", strict=True)
+        before = observation_count()
         finish_body(held, 405, old)
+        require(
+            observation_count() == before + 1,
+            "held old-policy request records exactly one body observation",
+        )
     finally:
         held.close()
     srv.wait_until(
@@ -295,7 +309,7 @@ def run(srv: PolicyServer):
     held = srv.hold_body(INFLIGHT_CLIENT)
     try:
         srv.transition("withdrawn")
-        check("withdrawal observes new body", body=MARKER)
+        check("withdrawal observes new body", body=MARKER, observed=True)
         check("withdrawal does not erase trial ban", expected=403, client=TRIAL_CLIENT)
         finish_body(held, 403, old)
     finally:
