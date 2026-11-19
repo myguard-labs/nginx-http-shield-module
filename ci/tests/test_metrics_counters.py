@@ -297,7 +297,7 @@ def source_controls(port: int, output: Path) -> None:
     ):
         expected = (
             f'shield_source_hits_total{{zone="sources",category="{category}",'
-            f'source="{source}"}} {count}'
+            f'source="{source}",class="suspicious"}} {count}'
         )
         assert expected in samples, expected
     print("source counters: URI, query, user-agent, header, body and benign passed")
@@ -376,7 +376,10 @@ def redirect_controls(port: int) -> None:
 def source_reload_controls(port: int, process: subprocess.Popen, root: Path) -> None:
     """Source series with nonzero hits survive a reload of the shared zone."""
     before = request(port, "/source-metrics")[1]
-    marker = b'shield_source_hits_total{zone="sources",category="sqli",source="uri"} 2'
+    marker = (
+        b'shield_source_hits_total{zone="sources",category="sqli",source="uri",'
+        b'class="suspicious"} 2'
+    )
     assert marker in before
     config = root / "nginx.conf"
     config.write_text(

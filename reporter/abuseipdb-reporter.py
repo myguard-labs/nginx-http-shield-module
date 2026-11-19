@@ -220,7 +220,7 @@ def is_promoted_exploit(entry: dict) -> bool:
     ):
         return False
     try:
-        dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        dt.datetime.fromisoformat(ts)
     except ValueError:
         return False
     return isinstance(entry.get("ip"), str)
@@ -253,7 +253,7 @@ def _parse_retry_after(value: str | None, now: float) -> float | None:
         return None
     # A date without a timezone is GMT per RFC 9110.
     if when.tzinfo is None:
-        when = when.replace(tzinfo=dt.timezone.utc)
+        when = when.replace(tzinfo=dt.UTC)
     return max(0.0, when.timestamp() - now)
 
 
@@ -402,9 +402,7 @@ class Suppressor:
                 intent_day = self._state_day(intent["day"])
                 if (
                     intent_day
-                    != dt.datetime.fromtimestamp(started, dt.timezone.utc)
-                    .date()
-                    .isoformat()
+                    != dt.datetime.fromtimestamp(started, dt.UTC).date().isoformat()
                 ):
                     raise ValueError("pending intent day mismatch")
                 identity = (intent["ip"], started, window)
@@ -527,7 +525,7 @@ class Suppressor:
         return True
 
     def _roll_day(self, now: float) -> None:
-        today = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y-%m-%d")
+        today = dt.datetime.fromtimestamp(now, dt.UTC).strftime("%Y-%m-%d")
         if today != self._day:
             self._day = today
             self._count = 0
@@ -1045,7 +1043,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     def log(msg: str) -> None:
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         print(f"{stamp} {msg}", flush=True)
 
     os.makedirs(os.path.dirname(args.state) or ".", exist_ok=True)
