@@ -26,6 +26,7 @@ class CleanupProcessTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=self.stderr,
             text=True,
+            start_new_session=True,
         )
         self.addCleanup(self.reap_if_needed, process)
         self.addCleanup(process.stdout.close)
