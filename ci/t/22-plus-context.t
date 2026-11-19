@@ -165,6 +165,8 @@ Destination: /t?q=chmod%20%2Bx
 
 === TEST 19: non-form body plus does not become SQL whitespace
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t

@@ -72,6 +72,7 @@ typedef char ngx_http_shield_counters_cover_categories[
 
 typedef struct {
     ngx_http_shield_automata_t  automata;
+    uint64_t                   ruleset;
     ngx_uint_t                 metric_zones;
     ngx_shm_zone_t            *stats_zone;
     ngx_array_t               *ban_references; /* ban/probe kind validation */
@@ -84,6 +85,7 @@ typedef struct {
     ngx_uint_t   cve;         /* opt-in application policies                */
     ngx_flag_t   gzip;        /* opt-in decoded gzip inspection             */
     size_t       max_encoded_body; /* compressed input inspection budget   */
+    ngx_flag_t   body_strict; /* enforce the eight body-collision markers */
     ngx_flag_t   body;        /* inspect request body                       */
     size_t       max_body;    /* bytes of body scanned                      */
     ngx_uint_t   status;      /* status returned in BLOCK mode              */
@@ -334,6 +336,13 @@ static ngx_command_t  ngx_http_shield_commands[] = {
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_shield_loc_conf_t, body),
+      NULL },
+
+    { ngx_string("shield_body_strict"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_shield_loc_conf_t, body_strict),
       NULL },
 
     { ngx_string("shield_gzip"),
@@ -599,6 +608,67 @@ ngx_http_shield_handler(ngx_http_request_t *r)
 }
 
 
+/* Every field below is a fixed label, public definition fingerprint or bounded
+ * configuration value. A private log copy suppresses nginx's request handler
+ * (which otherwise appends URI/query text). Observations also exclude writer
+ * callbacks and end each chain before the next sink is considered. */
+static void
+ngx_http_shield_log_hit(ngx_http_request_t *r,
+    ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit,
+    ngx_uint_t observation)
+{
+    ngx_log_t                     log, *sink;
+    u_char                        detail[384];
+    ngx_http_shield_main_conf_t   *smcf;
+
+    smcf = ngx_http_get_module_main_conf(r, ngx_http_shield_module);
+    ngx_snprintf(detail, sizeof(detail),
+                 "verdict=%s action=%s rule=%016xL rev=%ui "
+                 "ruleset=%016xL view=%s mode=%s body_policy=%s ban=%s%Z",
+                 observation ? "suspicious" : "signature-match",
+                 observation ? "observe"
+                   : slcf->mode == NGX_HTTP_SHIELD_BLOCK ? "block" : "detect",
+                 hit->rule, (ngx_uint_t) NGX_HTTP_SHIELD_RULE_REVISION,
+                 smcf->ruleset, hit->view,
+                 slcf->mode == NGX_HTTP_SHIELD_BLOCK ? "block" : "detect",
+                 slcf->body_strict ? "strict" : "observe",
+                 slcf->ban_zone != NULL ? "on" : "off");
+
+    for (sink = r->connection->log; sink != NULL; sink = sink->next) {
+        if (observation && sink->writer != NULL) {
+            continue;
+        }
+        log = *sink;
+        log.handler = NULL;
+        log.next = NULL;
+        if (observation) {
+            ngx_log_error(NGX_LOG_NOTICE, &log, 0,
+                          "shield: observed body marker "
+                          "category=%s source=%s %s",
+                          hit->category, hit->source, detail);
+        } else if (slcf->mode == NGX_HTTP_SHIELD_BLOCK) {
+            ngx_log_error(NGX_LOG_WARN, &log, 0,
+                          "shield: blocked request from %V, "
+                          "category=%s source=%s status=%ui %s",
+                          &r->connection->addr_text, hit->category, hit->source,
+                          slcf->status, detail);
+        } else {
+            ngx_log_error(NGX_LOG_WARN, &log, 0,
+                          "shield: detected attack from %V, "
+                          "category=%s source=%s "
+                          "(detect mode, not blocked) %s",
+                          &r->connection->addr_text, hit->category, hit->source,
+                          detail);
+        }
+        /* nginx records ENOSPC backoff on the private copy. File sinks are
+         * worker-owned; writer callbacks retain their own mutable state. */
+        if (log.writer == NULL) {
+            sink->disk_full_time = log.disk_full_time;
+        }
+    }
+}
+
+
 static void
 ngx_http_shield_body_handler(ngx_http_request_t *r)
 {
@@ -608,6 +678,13 @@ ngx_http_shield_body_handler(ngx_http_request_t *r)
     ngx_http_shield_loc_conf_t  *slcf;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_shield_module);
+    if (ctx == NULL) {
+        /* An error-page redirect can clear our context while the old body
+         * reader is still pending. The destination owns the request now;
+         * do not inspect its policy or restart its content phase. */
+        return;
+    }
+
     slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
 
     ngx_memzero(&hit, sizeof(ngx_http_shield_hit_t));
@@ -617,6 +694,11 @@ ngx_http_shield_body_handler(ngx_http_request_t *r)
     if (rc == NGX_OK) {
         rc = ngx_http_shield_act(r, slcf, &hit);
         ctx->status = (rc == NGX_DECLINED) ? NGX_DECLINED : rc;
+
+    } else if (rc == NGX_DONE) {
+        /* Observation never enters act(), ban counters or the reporter feed. */
+        ngx_http_shield_log_hit(r, slcf, &hit, 1);
+        ctx->status = NGX_DECLINED;
 
     } else if (rc == NGX_ERROR) {
         ctx->status = ngx_http_shield_fail(r, slcf, "request body");
@@ -660,118 +742,65 @@ ngx_http_shield_act(ngx_http_request_t *r, ngx_http_shield_loc_conf_t *slcf,
         ngx_http_shield_ban_count(r, slcf, hit);
     }
 
-    /* Only the category and the source are logged, never attacker-supplied
-     * bytes: those can contain control characters and would allow log
-     * injection. Forensic detail belongs in the access log. */
+    ngx_http_shield_log_hit(r, slcf, hit, 0);
     if (slcf->mode == NGX_HTTP_SHIELD_BLOCK) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "shield: blocked request from %V, "
-                      "category=%s source=%s status=%ui",
-                      &r->connection->addr_text, hit->category, hit->source,
-                      slcf->status);
         ngx_http_shield_write_log(r, slcf, hit);
         return (ngx_int_t) slcf->status;
     }
 
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                  "shield: detected attack from %V, category=%s source=%s "
-                  "(detect mode, not blocked)",
-                  &r->connection->addr_text, hit->category, hit->source);
     ngx_http_shield_write_log(r, slcf, hit);
     return NGX_DECLINED;
 }
 
 
-/*
- * Emit one JSON object per hit to shield_log, for an out-of-band reporter
- * (e.g. AbuseIPDB). The request line is the ONLY attacker-controlled field, so
- * it is JSON-string-escaped: '"' and '\' are backslash-escaped and every byte
- * below 0x20 or >= 0x80 becomes \uXXXX. That single pass both defeats log
- * injection (no raw CR/LF can reach the sink) and keeps the record valid JSON
- * even when the request line is not valid UTF-8. All other fields are trusted C
- * constants or numbers. The record goes to a file (newline-terminated) and/or a
- * syslog server. Best-effort: a short write is ignored -- logging must never
- * change the request outcome.
- */
+/* Bounded, content-free JSON for the existing file/syslog sinks. Legacy keys
+ * remain; req is deliberately empty. No path, query, body, header value or hash
+ * of those values enters the event. All text is fixed ASCII or nginx's
+ * validated numeric peer/timestamp. One 768-byte allocation bounds each event,
+ * including its newline, below the syslog datagram budget. */
 static void
 ngx_http_shield_write_log(ngx_http_request_t *r,
     ngx_http_shield_loc_conf_t *slcf, ngx_http_shield_hit_t *hit)
 {
-    u_char      *p, *last;
-    ngx_str_t    line;
-    ngx_str_t    req;
-    ngx_str_t   *ts;
-    ngx_uint_t   i;
-    ngx_uint_t   block;
-    size_t       cap;
-    u_char       c;
+    u_char                       *p, *last;
+    ngx_str_t                     line;
+    ngx_log_t                     log;
+    ngx_str_t                    *ts;
+    ngx_uint_t                    block;
+    ngx_http_shield_main_conf_t   *smcf;
 
     if (slcf->log == NULL && slcf->syslog_peer == NULL) {
         return;
     }
 
+    log = *r->connection->log;
+    log.handler = NULL;
     block = (slcf->mode == NGX_HTTP_SHIELD_BLOCK);
+    smcf = ngx_http_get_module_main_conf(r, ngx_http_shield_module);
     ts = (ngx_str_t *) &ngx_cached_http_log_iso8601;
-    req = r->request_line;
-
-    /* Bound the request line BEFORE escaping so the finished record always fits
-     * a syslog datagram (4096) whole -- truncating the serialized JSON after
-     * the fact could split a \uXXXX escape and emit invalid JSON. Worst-case
-     * blowup is 6x (every byte -> \uXXXX); leave generous room for the syslog
-     * header and the fixed scaffolding. The escape loop's own `p < last - 6`
-     * guard then guarantees it never stops mid-escape. Bounding on an input
-     * byte boundary (not a UTF-8 char boundary) is safe: each source byte
-     * escapes independently.
-     */
-    if (req.len > 600) {
-        req.len = 600;
-    }
-
-    /* Worst case: every request byte expands to a 6-char \uXXXX escape, plus
-     * the fixed scaffolding, timestamp, IP, category, source and status. */
-    cap = ts->len + r->connection->addr_text.len
-        + ngx_strlen(hit->category) + ngx_strlen(hit->source)
-        + req.len * 6 + 160;
-
-    line.data = ngx_pnalloc(r->pool, cap);
+    line.data = ngx_pnalloc(r->pool, 768);
     if (line.data == NULL) {
         return;
     }
-
     p = line.data;
-    last = line.data + cap;
-
+    last = line.data + 767; /* reserve the file newline */
     p = ngx_slprintf(p, last,
         "{\"ts\":\"%V\",\"ip\":\"%V\",\"cat\":\"%s\",\"src\":\"%s\","
-        "\"mode\":\"%s\",\"status\":%ui,\"req\":\"",
+        "\"mode\":\"%s\",\"status\":%ui,\"req\":\"\","
+        "\"rule\":\"%016xL\",\"rev\":%ui,\"ruleset\":\"%016xL\","
+        "\"build\":\"" NGINX_VER "\",\"view\":\"%s\","
+        "\"verdict\":\"signature-match\",\"action\":\"%s\","
+        "\"body_policy\":\"%s\",\"ban\":\"%s\"}",
         ts, &r->connection->addr_text, hit->category, hit->source,
-        block ? "block" : "detect",
-        block ? slcf->status : (ngx_uint_t) 0);
-
-    for (i = 0; i < req.len && p < last - 6; i++) {
-        c = req.data[i];
-
-        if (c == '"' || c == '\\') {
-            *p++ = '\\';
-            *p++ = c;
-        } else if (c == '\n') {
-            *p++ = '\\'; *p++ = 'n';
-        } else if (c == '\r') {
-            *p++ = '\\'; *p++ = 'r';
-        } else if (c == '\t') {
-            *p++ = '\\'; *p++ = 't';
-        } else if (c < 0x20 || c >= 0x80) {
-            /* Control bytes and any non-ASCII byte become \uXXXX: the request
-             * line is not guaranteed valid UTF-8, and a raw high byte would
-             * otherwise emit malformed JSON. */
-            p = ngx_slprintf(p, last, "\\u%04xd", (ngx_uint_t) c);
-        } else {
-            *p++ = c;
-        }
+        block ? "block" : "detect", block ? slcf->status : (ngx_uint_t) 0,
+        hit->rule, (ngx_uint_t) NGX_HTTP_SHIELD_RULE_REVISION, smcf->ruleset,
+        hit->view, block ? "block" : "detect",
+        slcf->body_strict ? "strict" : "observe",
+        slcf->ban_zone != NULL ? "on" : "off");
+    if (p == last) {
+        /* Never send truncated JSON, even after a future format edit. */
+        return;
     }
-
-    *p++ = '"';
-    *p++ = '}';
 
     line.len = p - line.data;
 
@@ -801,14 +830,14 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
                 }
 
                 if (now - slcf->log_error_time > 59) {
-                    ngx_log_error(NGX_LOG_ALERT, r->connection->log, err,
+                    ngx_log_error(NGX_LOG_ALERT, &log, err,
                                   ngx_write_fd_n " to shield_log \"%s\" failed",
                                   slcf->log->name.data);
                     slcf->log_error_time = now;
                 }
 
             } else if (now - slcf->log_error_time > 59) {
-                ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                ngx_log_error(NGX_LOG_ALERT, &log, 0,
                               ngx_write_fd_n " to shield_log \"%s\" was "
                               "incomplete: %z of %uz",
                               slcf->log->name.data, n, line.len + 1);
@@ -831,7 +860,7 @@ ngx_http_shield_write_log(ngx_http_request_t *r,
             return;
         }
         sp = ngx_syslog_add_header(slcf->syslog_peer, sb);
-        /* The record is already bounded (req capped above) to fit the frame
+        /* The record is already bounded (768 bytes above) to fit the frame
          * whole. If a pathologically long header ever left too little room,
          * skip the send rather than truncate -- a partial record is invalid
          * JSON, and dropping one datagram is the safer failure. */
@@ -900,6 +929,9 @@ ngx_http_shield_check_httpoxy(ngx_http_request_t *r,
             && ngx_strncasecmp(header[i].key.data, (u_char *) "Proxy",
                                sizeof("Proxy") - 1) == 0)
         {
+            hit->rule = ngx_http_shield_rule_identity("struct",
+                                NGX_HTTP_SHIELD_NAME_HTTPOXY, NULL, 0, 0);
+            hit->view = "structural";
             hit->category = NGX_HTTP_SHIELD_NAME_HTTPOXY;
             hit->cat = NGX_HTTP_SHIELD_CAT_HTTPOXY;
             hit->source = NGX_HTTP_SHIELD_SOURCE_HEADER;
@@ -936,6 +968,9 @@ ngx_http_shield_check_range(ngx_http_request_t *r,
     }
 
     if (ranges > NGX_HTTP_SHIELD_MAX_RANGES) {
+        hit->rule = ngx_http_shield_rule_identity("struct",
+                            NGX_HTTP_SHIELD_NAME_RANGE_DOS, NULL, 0, 0);
+        hit->view = "structural";
         hit->category = NGX_HTTP_SHIELD_NAME_RANGE_DOS;
         hit->cat = NGX_HTTP_SHIELD_CAT_RANGE_DOS;
         hit->source = NGX_HTTP_SHIELD_SOURCE_RANGE;
@@ -990,6 +1025,9 @@ ngx_http_shield_check_ctrl_char(ngx_http_request_t *r,
             continue;   /* owned by nullbyte / crlf */
         }
 
+        hit->rule = ngx_http_shield_rule_identity("struct",
+                            NGX_HTTP_SHIELD_NAME_CTRL_CHAR, NULL, 0, 0);
+        hit->view = "structural";
         hit->category = NGX_HTTP_SHIELD_NAME_CTRL_CHAR;
         hit->cat = NGX_HTTP_SHIELD_CAT_CTRL_CHAR;
         hit->source = NGX_HTTP_SHIELD_SOURCE_URI;
@@ -1090,6 +1128,9 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
                 continue;
             }
 
+            hit->rule = ngx_http_shield_rule_identity("struct",
+                                NGX_HTTP_SHIELD_NAME_DOTFILE, NULL, 0, 0);
+            hit->view = "structural";
             hit->category = NGX_HTTP_SHIELD_NAME_DOTFILE;
             hit->cat = NGX_HTTP_SHIELD_CAT_DOTFILE;
             hit->source = NGX_HTTP_SHIELD_SOURCE_URI;
@@ -1108,11 +1149,13 @@ ngx_http_shield_check_dotfile(ngx_http_request_t *r,
 /* Policies use existing categories, sources and action/accounting paths. */
 static ngx_int_t
 ngx_http_shield_cve_hit(ngx_uint_t cat, uint64_t skip, const char *source,
-    ngx_http_shield_hit_t *hit)
+    const char *policy, const char *view, ngx_http_shield_hit_t *hit)
 {
     if (cat >= NGX_HTTP_SHIELD_CAT_N || (skip & ((uint64_t) 1 << cat))) {
         return NGX_DECLINED;
     }
+    hit->rule = ngx_http_shield_rule_identity("policy", policy, NULL, 0, 0);
+    hit->view = view;
     hit->cat = cat;
     hit->category = cat == NGX_HTTP_SHIELD_CAT_DESERIAL ? "deserial"
                     : cat == NGX_HTTP_SHIELD_CAT_JAVA_EVAL ? "java_eval"
@@ -1149,7 +1192,7 @@ ngx_http_shield_cve_scan(ngx_http_request_t *r,
 {
     u_char      *src, *dst, *scratch;
     ngx_str_t    view;
-    ngx_uint_t   cat, flags;
+    ngx_uint_t   cat, flags, policy;
     size_t       i;
     ngx_int_t    rc;
 
@@ -1175,16 +1218,20 @@ ngx_http_shield_cve_scan(ngx_http_request_t *r,
         && ngx_http_shield_cve_php(&view))
     {
         rc = ngx_http_shield_cve_hit(NGX_HTTP_SHIELD_CAT_PHP_RCE,
-                  slcf->skip, NGX_HTTP_SHIELD_SOURCE_URI, hit);
+                  slcf->skip, NGX_HTTP_SHIELD_SOURCE_URI,
+                  "php_cgi", "policy-query", hit);
         if (rc != NGX_DECLINED) {
             return rc;
         }
     }
-    cat = ngx_http_shield_cve_body_match(&view,
+    policy = ngx_http_shield_cve_body_policy(&view,
                                         flags & ~NGX_SHIELD_CVE_JSON);
+    cat = ngx_http_shield_cve_policy_category(policy);
     rc = ngx_http_shield_cve_hit(cat, slcf->skip,
                   body ? NGX_HTTP_SHIELD_SOURCE_BODY
-                       : NGX_HTTP_SHIELD_SOURCE_URI, hit);
+                       : NGX_HTTP_SHIELD_SOURCE_URI,
+                  ngx_http_shield_cve_policy_name(policy),
+                  "policy-decoded", hit);
     if (rc != NGX_DECLINED || !body) {
         return rc;
     }
@@ -1248,9 +1295,12 @@ ngx_http_shield_cve_scan(ngx_http_request_t *r,
         if (json) {
             view.len = ngx_http_shield_cve_json(scratch, input->data,
                                                input->len);
-            cat = ngx_http_shield_cve_body_match(&view, flags);
+            policy = ngx_http_shield_cve_body_policy(&view, flags);
+            cat = ngx_http_shield_cve_policy_category(policy);
             rc = ngx_http_shield_cve_hit(cat, slcf->skip,
-                                       NGX_HTTP_SHIELD_SOURCE_BODY, hit);
+                                       NGX_HTTP_SHIELD_SOURCE_BODY,
+                                       ngx_http_shield_cve_policy_name(policy),
+                                       "policy-json", hit);
             if (rc != NGX_DECLINED) {
                 return rc;
             }
@@ -1258,9 +1308,12 @@ ngx_http_shield_cve_scan(ngx_http_request_t *r,
         if (boundary.len) {
             view.len = ngx_http_shield_cve_multipart(scratch, input->data,
                                                     input->len, &boundary);
-            cat = ngx_http_shield_cve_body_match(&view, flags);
+            policy = ngx_http_shield_cve_body_policy(&view, flags);
+            cat = ngx_http_shield_cve_policy_category(policy);
             return ngx_http_shield_cve_hit(cat, slcf->skip,
-                                          NGX_HTTP_SHIELD_SOURCE_BODY, hit);
+                                          NGX_HTTP_SHIELD_SOURCE_BODY,
+                          ngx_http_shield_cve_policy_name(policy),
+                                          "policy-multipart", hit);
         }
     }
     return NGX_DECLINED;
@@ -1402,7 +1455,12 @@ ngx_http_shield_inspect_prebody(ngx_http_request_t *r,
                     "Content-Range", sizeof("Content-Range") - 1)))
         {
             rc = ngx_http_shield_cve_hit(NGX_HTTP_SHIELD_CAT_EXPLOIT_PATH,
-                         slcf->skip, NGX_HTTP_SHIELD_SOURCE_HEADER, hit);
+                         slcf->skip, NGX_HTTP_SHIELD_SOURCE_HEADER,
+                         ngx_http_shield_header_name_is(&header[i],
+                           "x-middleware-subrequest",
+                           sizeof("x-middleware-subrequest") - 1)
+                           ? "nextjs_middleware" : "tomcat_put",
+                         "policy-header", hit);
             if (rc != NGX_DECLINED) {
                 return rc;
             }
@@ -1590,6 +1648,7 @@ ngx_http_shield_scan_r(ngx_http_request_t *r, u_char *data, size_t len,
 {
     u_char                       *scratch_lc, *scratch_dec;
     ngx_http_shield_main_conf_t  *smcf;
+    ngx_http_shield_loc_conf_t   *slcf;
 
     if (len == 0) {
         return NGX_DECLINED;
@@ -1605,6 +1664,13 @@ ngx_http_shield_scan_r(ngx_http_request_t *r, u_char *data, size_t len,
     smcf = ngx_http_get_module_main_conf(r, ngx_http_shield_module);
     if (smcf == NULL) {
         return NGX_ERROR;
+    }
+
+    if (ngx_strcmp(source, NGX_HTTP_SHIELD_SOURCE_BODY) == 0) {
+        slcf = ngx_http_get_module_loc_conf(r, ngx_http_shield_module);
+        return ngx_http_shield_scan_policy(&smcf->automata, data, len,
+                    scratch_lc, scratch_dec, source, form_offset, skip,
+                    slcf->body_strict, hit);
     }
 
     return ngx_http_shield_scan_input(&smcf->automata, data, len, scratch_lc,
@@ -1998,8 +2064,17 @@ ngx_http_shield_inspect_body(ngx_http_request_t *r,
                                 NGX_HTTP_SHIELD_SOURCE_BODY, form_offset,
                                 slcf->skip | ngx_http_shield_no_body_mask(),
                                 hit);
-    if (rc == NGX_DECLINED) {
-        rc = ngx_http_shield_cve_scan(r, slcf, &body, 1, hit);
+    if (rc == NGX_DECLINED || rc == NGX_DONE) {
+        ngx_int_t              cve_rc;
+        ngx_http_shield_hit_t  cve_hit;
+
+        cve_rc = ngx_http_shield_cve_scan(r, slcf, &body, 1, &cve_hit);
+        if (cve_rc != NGX_DECLINED) {
+            if (cve_rc == NGX_OK) {
+                *hit = cve_hit;
+            }
+            rc = cve_rc;
+        }
     }
 
 account:
@@ -2079,6 +2154,7 @@ ngx_http_shield_create_loc_conf(ngx_conf_t *cf)
     slcf->gzip = NGX_CONF_UNSET;
     slcf->max_encoded_body = NGX_CONF_UNSET_SIZE;
     slcf->body = NGX_CONF_UNSET;
+    slcf->body_strict = NGX_CONF_UNSET;
     slcf->max_body = NGX_CONF_UNSET_SIZE;
     slcf->status = NGX_CONF_UNSET_UINT;
     slcf->skip = 0;
@@ -2115,6 +2191,7 @@ ngx_http_shield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->max_encoded_body, prev->max_encoded_body,
                              64 * 1024);
     ngx_conf_merge_value(conf->body, prev->body, 1);
+    ngx_conf_merge_value(conf->body_strict, prev->body_strict, 0);
     /* 8k, not 64k. Scan cost is linear in the buffer -- the Aho-Corasick pass
      * is O(bytes), independent of the signature count -- so a body is still a
      * blocking-CPU budget in a single-threaded worker, and both its length and
@@ -2314,7 +2391,10 @@ ngx_http_shield_cve(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return "is duplicate";
     }
     value = cf->args->elts;
-    if (cf->args->nelts == 2 && ngx_strcmp(value[1].data, "off") == 0) {
+    if (cf->args->nelts == 2
+        && value[1].len == sizeof("off") - 1
+        && ngx_strcmp(value[1].data, "off") == 0)
+    {
         slcf->cve = 0;
         return NGX_CONF_OK;
     }
@@ -3748,6 +3828,8 @@ ngx_http_shield_init(ngx_conf_t *cf)
     {
         return NGX_ERROR;
     }
+
+    smcf->ruleset = ngx_http_shield_ruleset_identity();
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 

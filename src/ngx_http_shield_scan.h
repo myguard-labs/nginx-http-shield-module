@@ -43,8 +43,22 @@ ngx_http_shield_ac_capacity_add(size_t *cap, size_t len)
 typedef struct {
     const char  *category;
     const char  *source;      /* "uri" / "user-agent" / "body" / ...        */
+    uint64_t     rule;        /* fingerprint of PUBLIC static definition   */
+    const char  *view;        /* raw / decoded / structural / policy-*     */
     ngx_uint_t   cat;         /* NGX_HTTP_SHIELD_CAT_*, for shield_status   */
 } ngx_http_shield_hit_t;
+
+
+/* Diagnostic revision covers structural/profile predicates and the identity
+ * encoding.
+ * Never hash request bytes. Public definitions are length-delimited FNV-1a64;
+ * offline inventory checks uniqueness. This is attribution, not authentication.
+ * Changing a definition creates a new identity; bump revision for semantic
+ * changes not represented in the static terms/flags. */
+#define NGX_HTTP_SHIELD_RULE_REVISION  1
+uint64_t ngx_http_shield_rule_identity(const char *kind, const char *name,
+    const ngx_http_shield_sig_t *terms, ngx_uint_t nterms, ngx_uint_t flags);
+uint64_t ngx_http_shield_ruleset_identity(void);
 
 
 /* The two automata, built once at postconfiguration and read-only for the life
@@ -101,6 +115,22 @@ ngx_int_t ngx_http_shield_scan_input(
     const ngx_http_shield_automata_t *automata, u_char *data, size_t len,
     u_char *scratch_lc, u_char *scratch_dec, const char *source,
     size_t form_offset, uint64_t skip, ngx_http_shield_hit_t *hit);
+
+
+/* Body-policy seam. strict=1 retains the legacy scanner result. strict=0
+ * observes only the eight exact collision predicates, returning NGX_DONE with
+ * bounded category/source metadata if no enforceable standalone/AND rule wins
+ * in either byte view. NGX_DECLINED is distinct from an observation; neither
+ * result proves an application sink safe. The caller must keep NGX_DONE out
+ * of enforcement, ban counters and external hit logs. Scratch/skip contracts
+ * and NGX_OK/NGX_DECLINED meanings otherwise match scan_input().
+ * Trie outputs belong to the creating cycle and are immutable after build;
+ * a request uses that cycle's configuration, including across reload. */
+ngx_int_t ngx_http_shield_scan_policy(
+    const ngx_http_shield_automata_t *automata, u_char *data, size_t len,
+    u_char *scratch_lc, u_char *scratch_dec, const char *source,
+    size_t form_offset, uint64_t skip, ngx_uint_t strict,
+    ngx_http_shield_hit_t *hit);
 
 
 #endif /* NGX_HTTP_SHIELD_SCAN_H_INCLUDED_ */

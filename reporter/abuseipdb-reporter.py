@@ -20,8 +20,10 @@ Design
       per-IP rate limit) so a flood of hits from one IP is one report;
     - a hard daily cap (default 1000, the free-tier limit) after which reports
       are dropped until the UTC day rolls over.
-* Maps the shield category to AbuseIPDB category IDs (mostly 21 Web App Attack;
-  sqli adds 16). Unknown categories fall back to 21.
+* Reports only explicitly promoted block-mode exploit evidence. The promotion
+  registry is empty: current signature-match logs and legacy logs report nothing.
+* Maps admitted categories to AbuseIPDB category IDs (sqli adds 16 to 21).
+  Comments are constant; no request, category or source text is forwarded.
 
 The API key is read from ABUSEIPDB_API_KEY in the environment (populate it from
 /etc/shield-abuseipdb.env; never put it on the command line or in the unit file
@@ -37,6 +39,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import signal
 import sys
 import time
@@ -66,20 +69,18 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 # Module-scoped opener so the credential-bearing POST never follows a redirect.
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
-# shield category -> AbuseIPDB category IDs.
-# https://www.abuseipdb.com/categories  (21 = Web App Attack, 16 = SQL Injection,
-# 4 = DDoS Attack). EVERY shield category is a web-app attack, so 21 is the
-# correct answer for all of them and is the DEFAULT_CATS fallback below. This map
-# holds ONLY the categories that add a MORE-SPECIFIC id on top of 21 -- keeping
-# it exhaustive was pure drift risk (it went stale in both directions: dead names
-# the module never emits, plus emitted names it omitted). Anything not listed
-# here falls back to [21], which is exactly right. Add a row only when a category
-# earns a second AbuseIPDB id.
+# Category IDs apply only AFTER explicit evidence promotion, never to raw hits.
 CAT_MAP: dict[str, list[int]] = {
     "sqli": [21, 16],  # 16 = SQL Injection
     "range_dos": [21, 4],  # 4 = DDoS Attack (Apache-Killer Range)
 }
 DEFAULT_CATS = [21]
+
+# Deliberately empty: inherited signatures and causal fixtures have no promoted
+# exploit evidence. Promotion requires review of exact (ruleset, rule, revision,
+# category), plus a producer that emits verdict=exploit. No inferred promotion.
+PROMOTED_RULES: frozenset[tuple[str, str, int, str]] = frozenset()
+
 
 # AbuseIPDB comment cap is 1024 chars; stay well under and never leak internals.
 COMMENT_MAX = 500
@@ -181,13 +182,48 @@ def sanitize_req(req: str) -> str:
     return (method + " " + path).strip()
 
 
-def build_comment(entry: dict) -> str:
-    """A public, non-sensitive one-liner. Never echo secrets, PII or internal hosts."""
-    cat = str(entry.get("cat", "?"))
-    src = str(entry.get("src", "?"))
-    req = sanitize_req(str(entry.get("req", "")))
-    comment = f"nginx-http-shield: {cat} attack in {src}; {req}"
-    return comment[:COMMENT_MAX]
+def build_comment(_entry: dict) -> str:
+    """Constant public text: no request fragments or arbitrary log fields."""
+    return "nginx-http-shield: promoted block-mode exploit evidence"
+
+
+def is_promoted_exploit(entry: dict) -> bool:
+    """Fail closed on legacy, ambiguous, malformed or nonpromoted evidence."""
+    if (entry.get("mode"), entry.get("action"), entry.get("verdict")) != (
+        "block",
+        "block",
+        "exploit",
+    ):
+        return False
+    ruleset, rule, revision, category = (
+        entry.get("ruleset"),
+        entry.get("rule"),
+        entry.get("rev"),
+        entry.get("cat"),
+    )
+    if not all(isinstance(v, str) for v in (ruleset, rule, category)):
+        return False
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        return False
+    if (ruleset, rule, revision, category) not in PROMOTED_RULES:
+        return False
+    # The timestamp is the only free text other than IP sent to the API. Accept
+    # only nginx's bounded ISO-8601 shape, then validate its calendar values.
+    ts = entry.get("ts")
+    if (
+        not isinstance(ts, str)
+        or re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2})",
+            ts,
+        )
+        is None
+    ):
+        return False
+    try:
+        dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return isinstance(entry.get("ip"), str)
 
 
 def _parse_retry_after(value: str | None, now: float) -> float | None:
@@ -217,7 +253,7 @@ def _parse_retry_after(value: str | None, now: float) -> float | None:
         return None
     # A date without a timezone is GMT per RFC 9110.
     if when.tzinfo is None:
-        when = when.replace(tzinfo=dt.timezone.utc)  # noqa: UP017 - retain Python 3.10 compatibility
+        when = when.replace(tzinfo=dt.timezone.utc)
     return max(0.0, when.timestamp() - now)
 
 
@@ -241,54 +277,257 @@ class Suppressor:
         self._count = 0
         self._load()
 
+    # Single-owner protocol: confirmed reports live in _count/_last; each
+    # pending intent independently debits its UTC day and original IP window.
+    # reserve() is the only permission-granting transition: append intent,
+    # atomically replace the state file, then grant one transport attempt.
+    # A failed save grants nothing and restores the prior pending set.
+    # Loading validates all fields before publishing any state. Unavailable or
+    # unready state forbids every save, including legacy record()/dry-run saves:
+    # unknown debt must never be replaced with empty or partial knowledge.
+    # Missing state cannot distinguish first install from lost established state.
+    # A verified first install needs explicit offline empty-state provisioning;
+    # an established install needs its current authoritative state restored.
+    # No runtime path initializes state or clears a block. A restored stale
+    # suppression snapshot cannot be detected without an external trust anchor;
+    # an offset checkpoint is advisory and replay still passes suppression.
+    # Unknown outcomes
+    # stay pending; neither record() nor day rollover confirms or releases them.
+    # One Suppressor owns the file; concurrent writers/stale instances are not
+    # supported. process_line confirms only the exact attempt it just reserved.
+    # Confirmation replaces pending debt and confirmed counters in one save;
+    # failed settlement restores the pending debit. No attempted POST result
+    # proves no send, so RETRY/DROP/exception never release pending debt.
+    # Legacy record() never settles an intent; startup recovery is separate.
+    STATE_VERSION = 2
+    MAX_STATE_CHARS = 16 * 1024 * 1024
+
+    @staticmethod
+    def _unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate suppression state key")
+            result[key] = value
+        return result
+
+    @staticmethod
+    def _state_day(value) -> str:
+        if (
+            not isinstance(value, str)
+            or dt.date.fromisoformat(value).isoformat() != value
+        ):
+            raise ValueError("invalid suppression day")
+        return value
+
+    @staticmethod
+    def _state_ip(value) -> str:
+        if (
+            not isinstance(value, str)
+            or "%" in value
+            or str(ipaddress.ip_address(value)) != value
+        ):
+            raise ValueError("invalid suppression IP")
+        return value
+
+    @staticmethod
+    def _legacy_state_ip(value) -> str:
+        if not isinstance(value, str) or "%" in value:
+            raise ValueError("invalid legacy suppression IP")
+        return str(ipaddress.ip_address(value))
+
+    @staticmethod
+    def _state_timestamp(value, latest: float) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 <= value <= min(latest, 253402300799.0)
+        ):
+            raise ValueError("invalid suppression timestamp")
+        return float(value)
+
     def _load(self) -> None:
+        self._pending: list[dict] = []
+        self._state_valid = False
         if not self.state_path:
             return
         try:
             with open(self.state_path, "r", encoding="utf-8") as fh:
-                st = json.load(fh)
-            if not isinstance(st, dict) or not isinstance(st.get("last", {}), dict):
+                raw = fh.read(self.MAX_STATE_CHARS + 1)
+            if len(raw) > self.MAX_STATE_CHARS:
+                raise ValueError("suppression state too large")
+            st = json.loads(raw, object_pairs_hook=self._unique_object)
+            if not isinstance(st, dict):
                 raise TypeError("invalid suppression state")
-            count = _state_int(st.get("count", 0), 0, MAX_STATE_COUNT)
-            last = {}
+            legacy = set(st) == {"day", "count", "last"}
+            if not legacy:
+                if set(st) != {
+                    "version",
+                    "day",
+                    "count",
+                    "last",
+                    "pending",
+                    "reservation_ready",
+                }:
+                    raise ValueError("invalid suppression schema")
+                _state_int(st["version"], self.STATE_VERSION, self.STATE_VERSION)
+                if not isinstance(st["reservation_ready"], bool):
+                    raise ValueError("invalid reservation readiness")
+            count = _state_int(st["count"], 0, MAX_STATE_COUNT)
+            day = None if st["day"] is None else self._state_day(st["day"])
+            if not isinstance(st["last"], dict):
+                raise TypeError("invalid suppression map")
             latest = time.time() + self.window_s
-            for ip, value in st.get("last", {}).items():
+            last = {}
+            for ip, value in st["last"].items():
+                canonical = self._legacy_state_ip(ip) if legacy else self._state_ip(ip)
+                timestamp = self._state_timestamp(value, latest)
+                last[canonical] = max(last.get(canonical, timestamp), timestamp)
+            pending = [] if legacy else st["pending"]
+            if not isinstance(pending, list):
+                raise TypeError("invalid pending intents")
+            identities = set()
+            for intent in pending:
+                if not isinstance(intent, dict) or set(intent) != {
+                    "day",
+                    "ip",
+                    "started_at",
+                    "window_s",
+                }:
+                    raise ValueError("invalid pending intent schema")
+                self._state_ip(intent["ip"])
+                started = self._state_timestamp(intent["started_at"], latest)
+                window = _state_int(intent["window_s"], 1, MAX_STATE_COUNT)
+                intent_day = self._state_day(intent["day"])
                 if (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not math.isfinite(value)
-                    or not 0 <= value <= latest
+                    intent_day
+                    != dt.datetime.fromtimestamp(started, dt.timezone.utc)
+                    .date()
+                    .isoformat()
                 ):
-                    raise ValueError("invalid suppression timestamp")
-                last[ip] = float(value)
-            self._day = st.get("day")
-            self._count = count
-            self._last = last
+                    raise ValueError("pending intent day mismatch")
+                identity = (intent["ip"], started, window)
+                if identity in identities:
+                    raise ValueError("duplicate pending intent")
+                identities.add(identity)
+            if day is None and (count or last or pending):
+                raise ValueError("missing suppression day")
+            self._day, self._count, self._last = day, count, last
+            self._pending = pending
+            self._state_valid = legacy or st["reservation_ready"]
+        except FileNotFoundError:
+            pass
         except (
-            FileNotFoundError,
+            OSError,
             ValueError,
             KeyError,
             TypeError,
             OverflowError,
             RecursionError,
         ):
+            # Legacy allow()/record() remain nonthrowing in-memory APIs. Neither
+            # reserve() nor _save() may act on this incomplete view of debt.
             pass
 
-    def _save(self) -> None:
-        if not self.state_path:
-            return
+    def _save(self) -> bool:
+        if not self.state_path or not self._state_valid:
+            return False
         tmp = self.state_path + ".tmp"
         try:
+            state = {
+                "version": self.STATE_VERSION,
+                "day": self._day,
+                "count": self._count,
+                "last": self._last,
+                "pending": self._pending,
+                "reservation_ready": self._state_valid,
+            }
+            raw = json.dumps(state, allow_nan=False, sort_keys=True)
+            if len(raw) > self.MAX_STATE_CHARS:
+                return False
             with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(
-                    {"day": self._day, "count": self._count, "last": self._last}, fh
-                )
+                fh.write(raw)
+                fh.flush()
+                os.fsync(fh.fileno())
             os.replace(tmp, self.state_path)
-        except OSError:
-            pass
+            parent = os.path.dirname(os.path.abspath(self.state_path))
+            parent_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            return True
+        except (OSError, ValueError, TypeError, OverflowError):
+            return False
+
+    def reserve(self, ip: str, now: float) -> tuple[bool, str]:
+        """Persist one pending attempt before granting permission to send once.
+
+        Requires existing validated state. First-install/lost-state decisions
+        must be made by startup recovery, never inferred from an absent file.
+        A false result forbids sending. This API never performs transport or
+        counts a report as confirmed; unresolved intents remain conservative.
+        """
+        if not self.state_path or not self._state_valid:
+            return False, "state-unavailable"
+        try:
+            now = self._state_timestamp(now, time.time() + self.window_s)
+            window = _state_int(self.window_s, 1, MAX_STATE_COUNT)
+            _state_int(self.daily_cap, 1, MAX_STATE_COUNT)
+            ip = self._state_ip(str(ipaddress.ip_address(ip)))
+        except (ValueError, TypeError, OverflowError):
+            return False, "invalid-reservation"
+        allowed, reason = self.allow(ip, now)
+        if not allowed:
+            return False, reason
+        previous = self._pending
+        # Expired same-day intents still debit the daily cap; previous-day
+        # intents still protect the IP until their ORIGINAL window expires.
+        self._pending = [
+            intent
+            for intent in previous
+            if intent["day"] >= self._day
+            or now - intent["started_at"] < intent["window_s"]
+        ]
+        self._pending.append(
+            {"day": self._day, "ip": ip, "started_at": now, "window_s": window}
+        )
+        if not self._save():
+            self._pending = previous
+            return False, "state-persistence"
+        return True, ""
+
+    def confirm(self, ip: str, now: float) -> bool:
+        """Settle this reserved attempt only after a confirmed transport success.
+
+        If saving fails, retain its original pending debt in memory and on disk.
+        Legacy record() remains independent and never consumes a reservation.
+        """
+        ip = str(ipaddress.ip_address(ip))
+        intent = next(
+            (
+                item
+                for item in self._pending
+                if item["ip"] == ip and item["started_at"] == now
+            ),
+            None,
+        )
+        if intent is None:
+            return False
+        previous = self._day, self._count, self._last.copy(), self._pending
+        self._pending = [item for item in self._pending if item is not intent]
+        self._roll_day(now)
+        self._last[ip] = now
+        self._count += 1
+        self._prune(now)
+        if not self._save():
+            self._day, self._count, self._last, self._pending = previous
+            return False
+        return True
 
     def _roll_day(self, now: float) -> None:
-        today = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y-%m-%d")  # noqa: UP017 - Python 3.10
+        today = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y-%m-%d")
         if today != self._day:
             self._day = today
             self._count = 0
@@ -300,10 +539,16 @@ class Suppressor:
 
     def allow(self, ip: str, now: float) -> tuple[bool, str]:
         self._roll_day(now)
-        if self._count >= self.daily_cap:
+        pending_count = sum(intent["day"] == self._day for intent in self._pending)
+        if self._count + pending_count >= self.daily_cap:
             return False, "daily-cap"
         prev = self._last.get(ip)
         if prev is not None and (now - prev) < self.window_s:
+            return False, "deduped"
+        if any(
+            intent["ip"] == ip and now - intent["started_at"] < intent["window_s"]
+            for intent in self._pending
+        ):
             return False, "deduped"
         return True, ""
 
@@ -463,12 +708,23 @@ def save_offset(state_path: str, log_path: str, offset: int, inode: int) -> None
     os.replace(tmp, state_path)
 
 
+def _unique_object(pairs):
+    """Duplicate keys cannot override a conflicting evidence disposition."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
 def process_line(
     line: str, sup: Suppressor, reporter: Reporter, now: float, log
 ) -> bool:
     """Process one log line. Return True if the line is done with (advance the
     offset past it), False if it must be retried later (a send failed / API in
-    cooldown) so the caller keeps the offset on this line."""
+    cooldown or unavailable durable state) so the caller keeps the offset on
+    this line. Replay remains subject to pending quota/dedup debt."""
     if len(line) > MAX_LOG_LINE:
         log("skip: oversized log record")
         return True
@@ -476,7 +732,7 @@ def process_line(
     if not line:
         return True
     try:
-        entry = json.loads(line)
+        entry = json.loads(line, object_pairs_hook=_unique_object)
     except (ValueError, RecursionError):
         log("skip: malformed JSON")
         return True  # never parseable; do not retry
@@ -485,9 +741,14 @@ def process_line(
         log("skip: JSON record is not an object")
         return True
 
-    ip = str(entry.get("ip", ""))
+    if not is_promoted_exploit(entry):
+        log("skip: record is not promoted block-mode exploit evidence")
+        return True
+
+    ip = entry["ip"]
     if not is_reportable_ip(ip):
         return True
+    ip = str(ipaddress.ip_address(ip))
 
     ok, _why = sup.allow(ip, now)
     if not ok:
@@ -497,10 +758,23 @@ def process_line(
     comment = build_comment(entry)
     ts = str(entry.get("ts", ""))
 
-    outcome, detail = reporter.report(ip, cats, comment, ts, now)
+    # Only the built-in dry-run implementation is known to perform no I/O.
+    # Call it directly so an overridden report() cannot bypass the barrier.
+    dry_run = type(reporter) is Reporter and reporter.dry_run
+    if dry_run:
+        outcome, detail = Reporter.report(reporter, ip, cats, comment, ts, now)
+    else:
+        reserved, reason = sup.reserve(ip, now)
+        if not reserved:
+            log(f"STATE   {ip}: {reason}")
+            return reason in ("deduped", "daily-cap")
+        outcome, detail = reporter.report(ip, cats, comment, ts, now)
+
     if outcome == Reporter.OK:
-        # Record (and durably checkpoint suppression) only on a confirmed send.
-        sup.record(ip, now)
+        if dry_run:
+            sup.record(ip, now)
+        elif not sup.confirm(ip, now):
+            log(f"STATE   {ip}: confirmation pending; attempt debt retained")
         log(f"reported {ip} cats={cats}: {detail[:200]}")
         return True
 
@@ -510,8 +784,9 @@ def process_line(
         log(f"DROP    {ip} cats={cats}: {detail[:200]}")
         return True
 
-    # RETRY: reporter has set a cooldown. Do NOT advance past this line -- it is
-    # retried once the cooldown clears, giving at-least-once delivery.
+    # RETRY (or an unknown outcome) keeps the offset, but not permission to
+    # resend: every attempted POST remains pending unless confirmed. A server
+    # error or network failure cannot prove the remote end did not accept it.
     log(f"FAILED  {ip} cats={cats} (retry after cooldown): {detail[:200]}")
     return False
 
@@ -547,135 +822,158 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
     discarding = False  # an oversized record has not reached its newline yet
     partial_end = 0  # farthest read position of a deferred short fragment
 
-    while not _stop:
-        # (Re)open if not open, or if the file was rotated/truncated.
-        if fh is None:
-            try:
-                # fh deliberately outlives this try block: it is read across
-                # many `follow()` loop iterations (tailing a live log) and
-                # closed explicitly on rotation/truncation (see fh.close()
-                # below), never at the end of a single scope a `with` could
-                # describe.
-                fh = open(log_path, "r", encoding="utf-8", errors="replace")  # noqa: SIM115
-                discarding = False
-                partial_end = 0
-                stat = os.fstat(fh.fileno())
-                cur_inode = stat.st_ino
-                if cur_inode == saved_inode and offset <= stat.st_size:
-                    fh.seek(offset)  # resume where we left off
-                else:
-                    fh.seek(0)  # new/rotated file: start at top
-                    offset = 0
-                saved_inode = cur_inode
-                log(f"opened {log_path} inode={cur_inode} at offset={offset}")
-            except FileNotFoundError:
-                time.sleep(args.poll)
-                continue
-
-        # Respect a global cooldown from a prior 429/network failure: pause
-        # here without reading, so we don't advance past unsent lines.
-        now = time.time()
-        wait = reporter.in_cooldown(now)
-        if wait > 0:
-            time.sleep(min(wait, args.poll))
-            continue
-
-        if partial_end:
-            # A deferred line is rewound to its start. Check the farthest
-            # position read before trying again, or a shorter replacement
-            # could be consumed without detecting same-inode truncation.
-            try:
-                disk = os.stat(log_path)
-                if disk.st_ino == cur_inode and disk.st_size < partial_end:
-                    log("truncation detected; reopening")
-                    fh.close()
-                    fh = None
-                    offset = 0
-                    saved_inode = -1
-                    continue
-            except FileNotFoundError:
-                pass
-
-        pos = fh.tell()
-        was_discarding = discarding
-        line, discarding, seen_partial_end = _read_log_line(fh, discarding)
-        if seen_partial_end > partial_end:
-            # New bytes on a rotated old inode restart its stable-EOF grace,
-            # even while the record is still waiting for a newline.
-            rotation_eofs = 0
-        partial_end = seen_partial_end
-        if line is not None and line:
-            # A line was available: if we were counting down a post-rotation
-            # EOF grace, a late write just arrived on the old inode -> the fd is
-            # not stable yet, restart the grace count.
-            rotation_eofs = 0
-            if process_line(line, sup, reporter, time.time(), log):
-                offset = fh.tell()
-                # Checkpoint the offset periodically DURING a backlog, not only
-                # at EOF. A sustained flood can keep us in this branch for hours;
-                # without a mid-stream checkpoint a crash would replay everything
-                # since the last EOF and re-POST already-sent reports (quota
-                # waste). Cheap: a small JSON write at most every 2s.
-                now = time.time()
-                if now - last_save >= 2.0:
-                    save_offset(args.state, log_path, offset, cur_inode)
-                    last_save = now
-            else:
-                # Send failed: rewind to retry this exact line after cooldown.
-                fh.seek(pos)
-                time.sleep(args.poll)
-            continue
-
-        if line is None:
-            # Consuming a late oversized record is still activity on the old
-            # inode. Restart the stable-EOF grace before deciding to rotate.
-            rotation_eofs = 0
-            if not was_discarding:
-                log("skip: oversized log record")
-            # Do not checkpoint a position inside an incomplete record: after
-            # restart that would make its valid-looking tail a new report.
-            if not discarding:
-                offset = fh.tell()
-            continue
-
-        # EOF: persist offset, then check for rotation/truncation.
-        now = time.time()
-        if now - last_save >= 2.0:
-            save_offset(args.state, log_path, offset, cur_inode)
-            last_save = now
-        try:
-            disk = os.stat(log_path)
-            # `offset` stays at the last complete line, including while a
-            # damaged record is being discarded. Truncation must compare with
-            # the current or deferred reader position, which may be farther on.
-            if disk.st_ino != cur_inode or disk.st_size < max(fh.tell(), partial_end):
-                # Rotation (new inode) or truncation detected on the path. Do NOT
-                # close the old descriptor yet: nginx may still be appending to
-                # the renamed inode until it reopens on SIGUSR1, and we may have a
-                # failed line rewound for retry. We keep reading the OLD fh (which
-                # still points at the rotated inode) on subsequent loop passes --
-                # the normal read branch above drains it and honours cooldown /
-                # retry-rewind -- and only switch to the new file once the old fd
-                # has reached a STABLE EOF (rotation_eofs consecutive empty reads
-                # a poll apart) with no send pending. On truncation (same inode,
-                # shrunk) there is nothing to drain, so switch immediately.
-                if disk.st_ino == cur_inode:
-                    log("truncation detected; reopening")
-                    fh.close()
-                    fh = None
-                    offset = 0
-                    saved_inode = -1
-                    continue
-
-                rotation_eofs += 1
-                if rotation_eofs < ROTATION_EOF_GRACE:
-                    # Give the old inode another poll to flush late writes; the
-                    # read branch will pick them up before we count another EOF.
+    try:
+        while not _stop:
+            # (Re)open if not open, or if the file was rotated/truncated.
+            if fh is None:
+                try:
+                    # The handle spans loop iterations; the enclosing finally
+                    # closes it on stop or exception, including checkpoint failures.
+                    fh = open(log_path, "r", encoding="utf-8", errors="replace")  # noqa: SIM115
+                    discarding = False
+                    partial_end = 0
+                    stat = os.fstat(fh.fileno())
+                    cur_inode = stat.st_ino
+                    if cur_inode == saved_inode and offset <= stat.st_size:
+                        fh.seek(offset)  # resume where we left off
+                    else:
+                        fh.seek(0)  # new/rotated file: start at top
+                        offset = 0
+                    saved_inode = cur_inode
+                    log(f"opened {log_path} inode={cur_inode} at offset={offset}")
+                except FileNotFoundError:
                     time.sleep(args.poll)
                     continue
 
-                # Stable EOF on the rotated inode: safe to switch now.
-                log("rotation detected; old file drained, reopening")
+            # Respect a global cooldown from a prior 429/network failure: pause
+            # here without reading, so we don't advance past unsent lines.
+            now = time.time()
+            wait = reporter.in_cooldown(now)
+            if wait > 0:
+                time.sleep(min(wait, args.poll))
+                continue
+
+            if partial_end:
+                # A deferred line is rewound to its start. Check the farthest
+                # position read before trying again, or a shorter replacement
+                # could be consumed without detecting same-inode truncation.
+                try:
+                    disk = os.stat(log_path)
+                    if disk.st_ino == cur_inode and disk.st_size < partial_end:
+                        log("truncation detected; reopening")
+                        fh.close()
+                        fh = None
+                        offset = 0
+                        saved_inode = -1
+                        continue
+                except FileNotFoundError:
+                    pass
+
+            assert fh is not None
+            pos = fh.tell()
+            was_discarding = discarding
+            line, discarding, seen_partial_end = _read_log_line(fh, discarding)
+            if seen_partial_end > partial_end:
+                # New bytes on a rotated old inode restart its stable-EOF grace,
+                # even while the record is still waiting for a newline.
+                rotation_eofs = 0
+            partial_end = seen_partial_end
+            if line is not None and line:
+                # A line was available: if we were counting down a post-rotation
+                # EOF grace, a late write just arrived on the old inode -> the fd is
+                # not stable yet, restart the grace count.
+                rotation_eofs = 0
+                if process_line(line, sup, reporter, time.time(), log):
+                    offset = fh.tell()
+                    # Checkpoint the offset periodically DURING a backlog, not only
+                    # at EOF. A sustained flood can keep us in this branch for hours;
+                    # without a mid-stream checkpoint a crash would replay everything
+                    # since the last EOF and re-POST already-sent reports (quota
+                    # waste). Cheap: a small JSON write at most every 2s.
+                    now = time.time()
+                    if now - last_save >= 2.0:
+                        save_offset(args.state, log_path, offset, cur_inode)
+                        last_save = now
+                else:
+                    # Send failed: rewind to retry this exact line after cooldown.
+                    fh.seek(pos)
+                    time.sleep(args.poll)
+                continue
+
+            if line is None:
+                # Consuming a late oversized record is still activity on the old
+                # inode. Restart the stable-EOF grace before deciding to rotate.
+                rotation_eofs = 0
+                if not was_discarding:
+                    log("skip: oversized log record")
+                # Do not checkpoint a position inside an incomplete record: after
+                # restart that would make its valid-looking tail a new report.
+                if not discarding:
+                    offset = fh.tell()
+                continue
+
+            # EOF: persist offset, then check for rotation/truncation.
+            now = time.time()
+            if now - last_save >= 2.0:
+                save_offset(args.state, log_path, offset, cur_inode)
+                last_save = now
+            try:
+                disk = os.stat(log_path)
+                # `offset` stays at the last complete line, including while a
+                # damaged record is being discarded. Truncation must compare with
+                # the current or deferred reader position, which may be farther on.
+                if disk.st_ino != cur_inode or disk.st_size < max(
+                    fh.tell(), partial_end
+                ):
+                    # Rotation (new inode) or truncation detected on the path. Do NOT
+                    # close the old descriptor yet: nginx may still be appending to
+                    # the renamed inode until it reopens on SIGUSR1, and we may have a
+                    # failed line rewound for retry. We keep reading the OLD fh (which
+                    # still points at the rotated inode) on subsequent loop passes --
+                    # the normal read branch above drains it and honours cooldown /
+                    # retry-rewind -- and only switch to the new file once the old fd
+                    # has reached a STABLE EOF (rotation_eofs consecutive empty reads
+                    # a poll apart) with no send pending. On truncation (same inode,
+                    # shrunk) there is nothing to drain, so switch immediately.
+                    if disk.st_ino == cur_inode:
+                        log("truncation detected; reopening")
+                        fh.close()
+                        fh = None
+                        offset = 0
+                        saved_inode = -1
+                        continue
+
+                    rotation_eofs += 1
+                    if rotation_eofs < ROTATION_EOF_GRACE:
+                        # Give the old inode another poll to flush late writes; the
+                        # read branch will pick them up before we count another EOF.
+                        time.sleep(args.poll)
+                        continue
+
+                    # Stable EOF on the rotated inode: safe to switch now.
+                    log("rotation detected; old file drained, reopening")
+                    save_offset(args.state, log_path, offset, cur_inode)
+                    fh.close()
+                    fh = None
+                    offset = 0
+                    saved_inode = -1
+                    rotation_eofs = 0
+                    continue
+            except FileNotFoundError:
+                # The path is temporarily gone: logrotate has renamed the file but
+                # nginx has not yet reopened a fresh one on SIGUSR1. Do NOT close the
+                # old fd -- nginx may still append late hits to the renamed inode in
+                # this gap, and closing now discards the exact descriptor needed to
+                # drain them. Apply the SAME stable-EOF grace as a new-inode rotation:
+                # keep reading the old fh (the read branch drains late writes and
+                # resets rotation_eofs) and only switch once we have counted
+                # ROTATION_EOF_GRACE consecutive empty reads with the path absent.
+                rotation_eofs += 1
+                if rotation_eofs < ROTATION_EOF_GRACE:
+                    time.sleep(args.poll)
+                    continue
+                assert fh is not None
+                log("rotation detected (path absent); old file drained, reopening")
                 save_offset(args.state, log_path, offset, cur_inode)
                 fh.close()
                 fh = None
@@ -683,32 +981,13 @@ def follow(args, reporter: Reporter, sup: Suppressor, log) -> None:
                 saved_inode = -1
                 rotation_eofs = 0
                 continue
-        except FileNotFoundError:
-            # The path is temporarily gone: logrotate has renamed the file but
-            # nginx has not yet reopened a fresh one on SIGUSR1. Do NOT close the
-            # old fd -- nginx may still append late hits to the renamed inode in
-            # this gap, and closing now discards the exact descriptor needed to
-            # drain them. Apply the SAME stable-EOF grace as a new-inode rotation:
-            # keep reading the old fh (the read branch drains late writes and
-            # resets rotation_eofs) and only switch once we have counted
-            # ROTATION_EOF_GRACE consecutive empty reads with the path absent.
-            rotation_eofs += 1
-            if rotation_eofs < ROTATION_EOF_GRACE:
-                time.sleep(args.poll)
-                continue
-            log("rotation detected (path absent); old file drained, reopening")
-            save_offset(args.state, log_path, offset, cur_inode)
-            fh.close()
-            fh = None
-            offset = 0
-            saved_inode = -1
-            rotation_eofs = 0
-            continue
-        time.sleep(args.poll)
+            time.sleep(args.poll)
 
-    if fh is not None:
-        save_offset(args.state, log_path, offset, cur_inode)
-        fh.close()
+        if fh is not None:
+            save_offset(args.state, log_path, offset, cur_inode)
+    finally:
+        if fh is not None:
+            fh.close()
     log("stopped")
 
 
@@ -766,7 +1045,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     def log(msg: str) -> None:
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: UP017 - Python 3.10
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         print(f"{stamp} {msg}", flush=True)
 
     os.makedirs(os.path.dirname(args.state) or ".", exist_ok=True)
@@ -780,6 +1059,17 @@ def main(argv: list[str]) -> int:
 
     reporter = Reporter(api_key, args.timeout, args.dry_run)
     sup = Suppressor(args.dedup_window, args.daily_cap, sup_state)
+    if not args.dry_run and not sup._state_valid:
+        print(
+            f"suppression state unavailable: {sup_state}. Reporting stopped. "
+            "For an established installation restore the current authoritative "
+            "state; never reset it to empty. Only for a verified first install, "
+            "offline create this file exclusively (do not overwrite) with "
+            '{"version":2,"day":null,"count":0,"last":{},"pending":[], '
+            '"reservation_ready":true}. No automatic initialization is performed.',
+            file=sys.stderr,
+        )
+        return 2
 
     log(
         f"shield reporter starting: {args.logfile} "

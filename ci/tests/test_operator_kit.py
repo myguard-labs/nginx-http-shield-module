@@ -8,6 +8,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def bounded_selector(selector):
+    """Dashboard selectors may contain only fixed evidence class and mode."""
+    allowed = {
+        "class": {"suspicious", "exploit", "resource", "not-inspected", "unknown"},
+        "mode": {"block", "detect"},
+    }
+    for part in selector.split(","):
+        match = re.fullmatch(r'([a-z]+)="([a-z-]+)"', part)
+        if (
+            match is None
+            or match[1] not in allowed
+            or match[2] not in allowed[match[1]]
+        ):
+            return False
+    return True
+
+
 class OperatorKitTest(unittest.TestCase):
     def test_dashboard_schema_and_metric_names(self):
         dashboard = json.loads((ROOT / "contrib/grafana-dashboard.json").read_text())
@@ -53,7 +70,15 @@ class OperatorKitTest(unittest.TestCase):
                 names = set(re.findall(r"\bshield_[a-z_]+\b", target["expr"]))
                 self.assertTrue(names, panel["title"])
                 self.assertFalse(names - emitted, (panel["title"], names - emitted))
-                self.assertNotRegex(target["expr"], r"\{[^}]+\}")
+                for selector in re.findall(r"\{([^}]+)\}", target["expr"]):
+                    self.assertTrue(bounded_selector(selector), selector)
+
+    def test_fixed_selectors_positive_and_negative(self):
+        self.assertTrue(bounded_selector('class="exploit",mode="block"'))
+        self.assertTrue(bounded_selector('class="suspicious"'))
+        self.assertFalse(bounded_selector('class="request-text"'))
+        self.assertFalse(bounded_selector('ip="8.8.8.8"'))
+        self.assertFalse(bounded_selector('class=~".*"'))
 
     def test_documented_mapping_and_bounded_labels(self):
         readme = (ROOT / "README.md").read_text()
@@ -68,10 +93,10 @@ class OperatorKitTest(unittest.TestCase):
             "shield_zone_alloc_failures_total",
             "shield_zone_used_bytes",
             "shield_zone_size_bytes",
-            "shield_body_uninspected_total{reason}",
-            "shield_hits_total{category}",
-            "shield_detections_total{category,mode}",
-            "shield_source_hits_total{category,source}",
+            "shield_body_uninspected_total{reason,class}",
+            "shield_hits_total{category,class}",
+            "shield_detections_total{category,mode,class}",
+            "shield_source_hits_total{category,source,class}",
             "shield_banned_clients",
         ):
             self.assertIn(token, readme)

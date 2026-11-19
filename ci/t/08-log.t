@@ -1,10 +1,8 @@
 # shield_log -- structured JSON hit log for out-of-band reporting (AbuseIPDB).
 #
-# One JSON object per hit is appended to the configured file, in both block and
-# detect mode. The request line is the only attacker-controlled field and is
-# JSON-string-escaped, so a raw quote or control byte in the request line can
-# never inject a second line or break the JSON. `off` (and no directive) write
-# nothing. The "|command" form is rejected at config load.
+# One content-free JSON object per hit is appended in block and detect modes.
+# Hostile request bytes cannot enter fixed metadata. `off` (and no directive)
+# write nothing. The "|command" form is rejected at config load.
 #
 # Each test logs to its OWN file: Test::Nginx clears servroot only between
 # files, not between tests, so a shared path would leak lines across tests. The
@@ -92,10 +90,8 @@ GET /t?id=1%20union%20select%20pw
 GET /t?id=1%20union%20select%20pw
 --- error_code: 403
 
-=== TEST 6: a raw quote in the request line is JSON-escaped, one line only
-# Raw (undecoded) request line carrying a literal double-quote. It reaches the
-# log via r->request_line verbatim, so the escaper must turn " into \" and keep
-# the record on a single physical line terminated by exactly one newline.
+=== TEST 6: a raw quote never enters content-free JSON
+# A hostile request target must not become diagnostic content.
 --- config
     location /t {
         shield block;
@@ -111,9 +107,9 @@ GET /t?id=1%20union%20select%20pw
  "GET /dump HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"]
 --- error_code eval
 [403, 200]
-# One JSON object, closing }\n at end, and the raw quote stored as \" not bare ".
+# One bounded JSON object; legacy req key is empty.
 --- response_body_like eval
-[qr//, qr/^\{.*\\"evil\\".*\}\n\z/s]
+[qr//, qr/^\{.*"req":"".*"rule":"[0-9a-f]{16}".*\}\n\z/s]
 
 === TEST 7: shield_log with a piped command is rejected at config load
 --- config
@@ -126,9 +122,8 @@ GET /t?id=1%20union%20select%20pw
 --- error_log
 does not support piping to a command
 
-=== TEST 8: a raw high byte in the request line is \uXXXX-escaped (valid JSON)
-# 0xC0 is invalid UTF-8; it must be escaped, not copied verbatim, or the record
-# is malformed JSON. Sent raw in the request target via a %-less literal byte.
+=== TEST 8: raw high bytes never enter content-free JSON
+# Invalid UTF-8 is sent raw in the target and must be absent from metadata.
 --- config
     location /t {
         shield block;
@@ -144,9 +139,9 @@ does not support piping to a command
  "GET /dump HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"]
 --- error_code eval
 [403, 200]
-# high bytes appear as À / ÿ, never as raw bytes; one JSON object.
+# High bytes are discarded with the request content; the object stays ASCII.
 --- response_body_like eval
-[qr//, qr/^\{.*\\u00c0\\u00ff.*\}\n\z/s]
+[qr//, qr/^\{.*"req":"".*"rule":"[0-9a-f]{16}".*\}\n\z/s]
 
 === TEST 9: child `shield_log off` overrides an inherited parent log
 # Parent server logs; child location turns it off. No record must be written
@@ -205,10 +200,7 @@ GET /t?id=1%20union%20select%20pw
 [qr//, qr/"cat":"sqli".*"mode":"block".*"status":403/]
 
 === TEST 12: an oversized request line is bounded and stays valid one-line JSON
-# The request line is capped (600 bytes) before escaping so the record always
-# fits a syslog datagram whole and can never be truncated mid-\uXXXX. Here a
-# ~4KB attack query must still yield exactly one JSON object ending in }\n, with
-# the `req` field present and closed -- i.e. the bound never split the record.
+# A large hostile target cannot increase the content-free record size.
 --- config
     location /t {
         shield block;
@@ -223,9 +215,9 @@ GET /t?id=1%20union%20select%20pw
 ["GET /t?id=1%20union%20select%20pw&pad=" . ("a" x 4000), "GET /dump"]
 --- error_code eval
 [403, 200]
-# one object, req field opened and the record closed with "}\n -- not cut off.
+# One complete bounded metadata record, independent of the request size.
 --- response_body_like eval
-[qr//, qr/^\{.*"req":".*"\}\n\z/s]
+[qr//, qr/^\{.{1,766}\}\n\z/s]
 
 === TEST 13: a failing file sink (/dev/full, ENOSPC) still serves and alerts once
 # audit s43 F6: a write to a full disk must NOT change the request outcome (still
@@ -287,3 +279,48 @@ to shield_log "/dev/full" failed
 [403, 200]
 --- response_body_like eval
 [qr//, qr/"ip":"198\.51\.100\.7"/]
+
+=== TEST 16: strict body and ban accounting have explicit effective context
+--- http_config
+    shield_ban_zone diagnostics:1m;
+--- config
+    location /t {
+        shield block;
+        shield_status 419;
+        shield_body_strict on;
+        shield_ban zone=diagnostics count=10 window=60s bantime=30s;
+        shield_log $TEST_NGINX_SERVER_ROOT/logs/hit16.json;
+        empty_gif;
+    }
+    location /dump {
+        alias $TEST_NGINX_SERVER_ROOT/logs/hit16.json;
+        default_type text/plain;
+    }
+--- request eval
+["POST /t\nunion select", "GET /dump"]
+--- more_headers eval
+["Content-Type: text/plain", ""]
+--- error_code eval
+[419, 200]
+--- response_body_like eval
+[qr//, qr/"cat":"sqli","src":"body","mode":"block","status":419,"req":"","rule":"c5d8b739bdf9c83d","rev":1.*"view":"decoded","verdict":"signature-match","action":"block","body_policy":"strict","ban":"on"/]
+
+=== TEST 17: structural rule keeps its category and has a bounded identity
+--- config
+    location /t {
+        shield block;
+        shield_log $TEST_NGINX_SERVER_ROOT/logs/hit17.json;
+        empty_gif;
+    }
+    location /dump {
+        alias $TEST_NGINX_SERVER_ROOT/logs/hit17.json;
+        default_type text/plain;
+    }
+--- request eval
+["GET /t", "GET /dump"]
+--- more_headers eval
+["Proxy: http://ht19_secret_canary.invalid", ""]
+--- error_code eval
+[403, 200]
+--- response_body_like eval
+[qr//, qr/"cat":"httpoxy".*"rule":"[0-9a-f]{16}".*"view":"structural"/]

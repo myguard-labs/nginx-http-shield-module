@@ -17,6 +17,8 @@ GET /t?user%5B%24ne%5D=1&pass%5B%24ne%5D=1
 
 === TEST 2: NoSQL $where in body
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; empty_gif; }
 --- request
 POST /t
@@ -337,6 +339,8 @@ GET /t/etc/passwd
 # The body scan keeps the categories whose tokens are attack-only in ANY
 # position. Classic form-POST SQL injection is exactly what it is for.
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /t { shield block; shield_body on; empty_gif; }
 --- request
 POST /t

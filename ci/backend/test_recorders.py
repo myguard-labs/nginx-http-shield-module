@@ -80,6 +80,22 @@ class Attribution(unittest.TestCase):
             config(Path("/fixture"), 1, 2, 3, 4, module),
         )
 
+    def test_hit_request_field_is_empty(self):
+        row = next(row for row in CASES if row["id"] == "shield-block-body")
+        response = b"HTTP/1.1 403 fixture\r\n\r\n"
+        views = [{"status": 403, "upstream": ""}]
+        hit = {"cat": "sqli", "src": "body", "mode": "block", "status": 403}
+        got = verify(row, response, [{**hit, "req": ""}], views, [], [], 1, 2)
+        self.assertEqual(got["action"], "shield-block")
+        for value in ("POST /http/item?x=%41 HTTP/1.1", None, 0):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "Shield request view differs"),
+            ):
+                verify(row, response, [{**hit, "req": value}], views, [], [], 1, 2)
+        with self.assertRaisesRegex(ValueError, "Shield request view differs"):
+            verify(row, response, [hit], views, [], [], 1, 2)
+
     def test_server_rejection_and_false_hit(self):
         row = next(row for row in CASES if row["id"] == "core-return-status")
         response = b"HTTP/1.1 418 fixture\r\n\r\n"

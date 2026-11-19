@@ -23,7 +23,7 @@ from test_cve_controls import CRAFT25
 from test_stats_zone import config_test_environment
 
 ATTACK = "?q=union%20select"
-FORM = b"q=union+select"
+FORM = b"q=union+all+select"
 
 # Empty octets must never acquire nginx's implicit zero value.
 EMPTY_OCTET_ADDRESSES = [
@@ -389,7 +389,7 @@ def runtime_controls(binary, module, output):
                         "JSON",
                         "/body",
                         {"Content-Type": "application/json"},
-                        b'{"q":"union select"}',
+                        b'{"q":"union all select"}',
                     ),
                     (
                         "CVE body",

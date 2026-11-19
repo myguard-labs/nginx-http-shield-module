@@ -5,8 +5,12 @@
 
 from __future__ import annotations
 
+if not __debug__:
+    raise RuntimeError("CVE controls requires Python assertions enabled")
+
 import argparse
 import json
+import re
 import signal
 import socket
 import subprocess
@@ -53,6 +57,27 @@ EXPECTED_HITS = {
 }
 
 
+def cleanup_process(process, stderr, root: Path, timeout: float = 10) -> None:
+    """Stop and reap the owned child, preserving timeout and diagnostic failures."""
+    if process.poll() is None:
+        process.send_signal(signal.SIGQUIT)
+    timed_out = None
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        timed_out = exc
+        process.kill()
+        process.wait()
+    stderr.seek(0)
+    logs = stderr.read() + (root / "error.log").read_text()
+    try:
+        assert process.returncode == 0, logs
+        assert "AddressSanitizer" not in logs and "runtime error:" not in logs, logs
+    finally:
+        if timed_out is not None:
+            raise timed_out
+
+
 def configuration(root: Path, port: int, module: Path | None) -> str:
     """Opt-in policy inheritance is independent of Shield's action mode."""
     load = f'load_module "{module}";' if module else ""
@@ -92,6 +117,7 @@ http {{
         location /json/ {{ shield_cve json_escapes; empty_gif; }}
         location /next/ {{ shield_cve nextjs_middleware; empty_gif; }}
         location /put/ {{ shield_cve tomcat_put; empty_gif; }}
+        location /full/ {{ shield_log /dev/full; empty_gif; }}
         location /php/ {{
             shield_cve php_cgi;
             fastcgi_param PHP_VALUE "memory_limit=128M";
@@ -175,7 +201,34 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                             for line in log.read_text().splitlines()[before:]
                         ]
                         assert len(records) == 1, (name, records)
-                        observed = (records[0]["cat"], records[0]["src"])
+                        event = records[0]
+                        assert event["req"] == "", (name, "request content leaked")
+                        assert len(json.dumps(event)) < 768, (name, "event size")
+                        assert re.fullmatch(r"[0-9a-f]{16}", event["rule"]), event
+                        assert event["rule"] != "0" * 16, (name, "unknown attribution")
+                        assert re.fullmatch(r"[0-9a-f]{16}", event["ruleset"]), event
+                        assert event["rev"] == 1 and event["build"].startswith(
+                            "nginx/"
+                        ), event
+                        assert event["verdict"] == "signature-match", event
+                        assert event["action"] == event["mode"], event
+                        assert event["status"] == (
+                            expected if event["mode"] == "block" else 0
+                        ), event
+                        assert (
+                            event["body_policy"] == "observe" and event["ban"] == "off"
+                        ), event
+                        assert event["view"] in {
+                            "raw",
+                            "decoded",
+                            "structural",
+                            "policy-query",
+                            "policy-decoded",
+                            "policy-json",
+                            "policy-multipart",
+                            "policy-header",
+                        }, event
+                        observed = (event["cat"], event["src"])
                         assert observed == expected_hit, (
                             name,
                             "category/source",
@@ -678,6 +731,72 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                     body=craft26json.replace("itemFile", "ordinary"),
                     headers=JSON_HEADER,
                 )
+                canary = "ht19_secret_canary"
+                check(
+                    "diagnostic URI secret",
+                    "/?q=union%20select&token=" + canary,
+                    403,
+                    headers={
+                        "Authorization": "Bearer " + canary,
+                        "Cookie": "session=" + canary,
+                    },
+                    hit=("sqli", "uri"),
+                )
+                check(
+                    "diagnostic detect secret",
+                    "/enabled/detect/?q=union%20select&token=" + canary,
+                    200,
+                    hit=("sqli", "uri"),
+                )
+                check(
+                    "diagnostic observed body secret",
+                    "/?token=" + canary,
+                    405,
+                    body="union select " + canary,
+                    headers={"Content-Type": "text/plain"},
+                    hit=False,
+                )
+                check(
+                    "diagnostic sink failure secret",
+                    "/full/?q=union%20select&token=" + canary,
+                    403,
+                    hit=False,
+                )
+                lines = (root / "hits.jsonl").read_text().splitlines()
+                assert all(len(line.encode()) + 1 <= 768 for line in lines), (
+                    "diagnostic size bound"
+                )
+                assert canary not in "".join(lines), "secret in JSON diagnostics"
+                notices = [
+                    line
+                    for line in (root / "error.log").read_text().splitlines()
+                    if "shield:" in line or "to shield_log" in line
+                ]
+                # Incomplete-inspection errors belong to the existing failure
+                # contract; these checks concern hit and observation metadata.
+                hit_notices = [
+                    line
+                    for line in notices
+                    if any(
+                        marker in line
+                        for marker in (
+                            "blocked request",
+                            "detected attack",
+                            "observed body marker",
+                            "to shield_log",
+                        )
+                    )
+                ]
+                assert hit_notices and all(
+                    canary not in line and "request:" not in line
+                    for line in hit_notices
+                ), "secret/request context in hit diagnostics"
+                observed = [
+                    line for line in hit_notices if "observed body marker" in line
+                ]
+                assert any(
+                    "verdict=suspicious action=observe" in line for line in observed
+                ), observed
                 hits = [
                     json.loads(line)
                     for line in (root / "hits.jsonl").read_text().splitlines()
@@ -694,15 +813,7 @@ def run(binary: Path, module: Path | None, output: Path) -> None:
                 output.mkdir(parents=True, exist_ok=True)
                 (output / "http.json").write_text(json.dumps(results, indent=2) + "\n")
             finally:
-                if process.poll() is None:
-                    process.send_signal(signal.SIGQUIT)
-                process.wait(timeout=10)
-                stderr.seek(0)
-                logs = stderr.read() + (root / "error.log").read_text()
-                assert process.returncode == 0, logs
-                assert (
-                    "AddressSanitizer" not in logs and "runtime error:" not in logs
-                ), logs
+                cleanup_process(process, stderr, root)
         for invalid in (
             "unknown",
             "php_cgi php_cgi",

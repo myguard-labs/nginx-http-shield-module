@@ -12,6 +12,8 @@ __DATA__
 
 === TEST 1: complete H2 AND gadget is detected in one body buffer
 --- config
+    # This causal sink policy explicitly enforces the ambiguous SQL marker.
+    shield_body_strict on;
     location /sink { shield block; empty_gif; }
 --- request
 POST /sink
@@ -24,6 +26,8 @@ category=deserial source=body
 
 === TEST 2: first AND term alone does not fire
 --- config
+    # This causal sink policy explicitly enforces the ambiguous SQL marker.
+    shield_body_strict on;
     location /sink { shield block; empty_gif; }
 --- request
 POST /sink
@@ -36,6 +40,8 @@ shield: blocked request
 
 === TEST 3: second AND term alone does not fire
 --- config
+    # This causal sink policy explicitly enforces the ambiguous SQL marker.
+    shield_body_strict on;
     location /sink { shield block; empty_gif; }
 --- request
 POST /sink
@@ -48,6 +54,8 @@ shield: blocked request
 
 === TEST 4: AND terms in separate URI and body buffers do not combine
 --- config
+    # This causal sink policy explicitly enforces the ambiguous SQL marker.
+    shield_body_strict on;
     location /sink { shield block; empty_gif; }
 --- request
 POST /sink?dsn=jdbc:h2:mem:test
@@ -60,6 +68,8 @@ shield: blocked request
 
 === TEST 5: same toy SQL bytes allowed by explicit content route skip
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /content { shield block; shield_skip sqli; empty_gif; }
 --- request
 POST /content
@@ -72,6 +82,8 @@ shield: blocked request
 
 === TEST 6: toy SQL bytes detected on sink policy route
 --- config
+    # Keep the body admission/bounds oracle under explicit enforcement.
+    shield_body_strict on;
     location /sink { shield block; empty_gif; }
 --- request
 POST /sink
@@ -84,6 +96,8 @@ category=sqli source=body
 
 === TEST 7: percent-encoded toy attack variant detected
 --- config
+    # This causal sink policy explicitly enforces the ambiguous SQL marker.
+    shield_body_strict on;
     location /sink { shield block; empty_gif; }
 --- request
 POST /sink
@@ -96,6 +110,8 @@ category=sqli source=body
 
 === TEST 8: keyword case toy attack variant detected
 --- config
+    # This causal sink policy explicitly enforces the ambiguous SQL marker.
+    shield_body_strict on;
     location /sink { shield block; empty_gif; }
 --- request
 POST /sink
@@ -108,6 +124,8 @@ category=sqli source=body
 
 === TEST 9: benign toy variant accepted on sink policy route
 --- config
+    # This causal sink policy explicitly enforces the ambiguous SQL marker.
+    shield_body_strict on;
     location /sink { shield block; empty_gif; }
 --- request
 POST /sink

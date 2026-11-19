@@ -20,6 +20,33 @@ SPEC.loader.exec_module(cap)
 
 
 class CapabilityTests(unittest.TestCase):
+    def test_diagnostic_identity_format_and_boundaries(self):
+        diag = cap.diagnostics
+        self.assertEqual(
+            diag.identity("sig", "sqli", [b"union select"], 1), "c5d8b739bdf9c83d"
+        )
+        self.assertNotEqual(
+            diag.identity("and", "sqli", [b"a", b"bc"], 1),
+            diag.identity("and", "sqli", [b"ab", b"c"], 1),
+        )
+        line = (
+            "signature\t0\t0\tsqli\tsqli\t756e696f6e2073656c656374\t1\tc5d8b739bdf9c83d"
+        )
+        entries = diag.inventory(line)
+        self.assertEqual(
+            diag.overlap(entries, b"union%20select")[0]["rule"], "c5d8b739bdf9c83d"
+        )
+        self.assertEqual(diag.overlap(entries, b"ordinary"), [])
+        with self.assertRaisesRegex(ValueError, "colliding"):
+            diag.inventory(line + "\n" + line)
+        with self.assertRaisesRegex(ValueError, "drift"):
+            diag.inventory(line[:-1] + "0")
+        with self.assertRaisesRegex(ValueError, "empty"):
+            diag.inventory("")
+        self.assertEqual(diag.overlap(entries, b"a" * 4096), [])
+        with self.assertRaisesRegex(ValueError, "4096"):
+            diag.overlap(entries, b"a" * 4097)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -76,9 +76,10 @@ STATUS_BIN="$SCRIPT_DIR/status_unit"
 ATOMIC_BIN="$SCRIPT_DIR/atomic_width_unit"
 CONFIG_BIN="$SCRIPT_DIR/atomic_config_unit"
 BODY_BIN="$SCRIPT_DIR/body_unit"
+LOG_BIN="$SCRIPT_DIR/log_unit"
 NEGOTIATE_BIN="$SCRIPT_DIR/negotiate_unit"
 CVE_BIN="$SCRIPT_DIR/cve_unit"
-trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1" "$BODY_BIN" "$NEGOTIATE_BIN" "$CVE_BIN"' EXIT
+trap 'rm -f "$STATUS_BIN" "$ATOMIC_BIN" "$CONFIG_BIN-0" "$CONFIG_BIN-1" "$BODY_BIN" "$LOG_BIN" "$NEGOTIATE_BIN" "$CVE_BIN"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -175,4 +176,13 @@ case " $EXTRA_CFLAGS " in
         fi
         ;;
 esac
+# Keep the real nginx log core: only write(2) is fault-injected by this unit.
+# shellcheck disable=SC2086
+"$CC" -g -O0 -Wall -Wextra -Wno-unused-parameter \
+    -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--wrap=write \
+    $EXTRA_CFLAGS $CONFIG_GLOBAL_FLAGS $NGX_INCS \
+    -I"$NGX_SRC/src/http" -I"$NGX_SRC/src/http/modules" \
+    -o "$LOG_BIN" "$SCRIPT_DIR/log_unit.c" "$NGX_SRC/src/core/ngx_string.c" \
+    "$NGX_SRC/src/core/ngx_log.c" "$NGX_SRC/src/os/unix/ngx_errno.c" -lz
+"$LOG_BIN"
 python3 "$REPO_ROOT/ci/tests/test_status_runner.py"

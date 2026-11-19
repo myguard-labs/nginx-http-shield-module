@@ -107,7 +107,7 @@ category=crlf source=user-agent
     location /t { shield block; empty_gif; }
 --- request
 POST /t
-content=First%0D%0ASecond&id=1+union+select+password
+content=First%0D%0ASecond&id=1+union/**/select+password
 --- more_headers
 Content-Type: application/x-www-form-urlencoded
 --- error_code: 403

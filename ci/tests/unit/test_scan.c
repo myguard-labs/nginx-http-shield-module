@@ -28,8 +28,8 @@
  * ngx_http_shield_ac_build() needs a real ngx_pool_t (it calls ngx_pcalloc()
  * for the permanent tables and ngx_create_pool()/ngx_destroy_pool() for build
  * scratch), which is why ngx_palloc.c/ngx_alloc.c are linked rather than
- * stubbed -- there is no allocator seam to stub here the way ci/fuzz/'s
- * skeleton-derived cousin stubs logging for a hermetic scan core.
+ * stubbed. The test seam below injects only selected allocation failures;
+ * every successful allocation still uses the real nginx implementation.
  *
  * PORTABILITY: keep every case free of host assumptions -- no sizeof-dependent
  * expected values, no signed-char comparisons, no pointer-width arithmetic in
@@ -47,6 +47,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+
+/* Compile the exact core here to reach its file-local observation helper.
+ * Only scan-core pcalloc calls cross this test seam; all successful calls
+ * delegate to the real nginx allocator linked by run.sh. */
+static ngx_pool_t  *allocation_pool;
+static ngx_uint_t   allocation_call;
+static ngx_uint_t   allocation_fail_at;
+
+static void *scan_test_pcalloc(ngx_pool_t *pool, size_t size);
+
+#define ngx_pcalloc scan_test_pcalloc
+#include "../../../src/ngx_http_shield_scan.c"
+#undef ngx_pcalloc
+
+static void *
+scan_test_pcalloc(ngx_pool_t *pool, size_t size)
+{
+    if (pool == allocation_pool && ++allocation_call == allocation_fail_at) {
+        return NULL;
+    }
+    return ngx_pcalloc(pool, size);
+}
 
 
 static int  failures;
@@ -875,11 +898,258 @@ case_body_encoding_content(void)
 }
 
 
+static ngx_int_t
+scan_body_policy(const char *data, size_t len, uint64_t skip,
+    ngx_uint_t strict, ngx_http_shield_hit_t *hit)
+{
+    u_char lc[512], dec[512];
+
+    if (len > sizeof(lc)) {
+        abort();
+    }
+    return ngx_http_shield_scan_policy(&test_automata, (u_char *) data, len,
+                lc, dec, "body", len,
+                skip | ngx_http_shield_no_body_mask(), strict, hit);
+}
+
+
+static void
+case_body_policy(void)
+{
+    static const char *markers[] = {
+        "union select",
+        "%c0%af",
+        "!ruby/object:",
+        "<!--#include virtual",
+        "169.254.169.254",
+        "/latest/meta-data/",
+        "{\"$where\":",
+        "{{7*7}}"
+    };
+    ngx_http_shield_hit_t hit;
+    size_t i, j, k, n, siblings = 0;
+    ngx_uint_t ambiguous;
+
+    for (i = 0; i < sizeof(markers) / sizeof(markers[0]); i++) {
+        n = strlen(markers[i]);
+        check(scan_body_policy(markers[i], n, 0, 0, &hit) == NGX_DONE,
+              "body-policy exact marker is observation, never clean/hit");
+        check(scan_body_policy(markers[i], n, 0, 1, &hit) == NGX_OK,
+              "body-policy strict restores exact marker enforcement");
+        check(scan_body_policy(markers[i], n - 1, 0, 0, &hit)
+                  == NGX_DECLINED,
+              "body-policy incomplete marker is not observed");
+        check(scan_body_policy(markers[i], n, (uint64_t) 1 << hit.cat,
+                               0, &hit) == NGX_DECLINED,
+              "body-policy category skip suppresses observation");
+    }
+    check(scan_body_policy("%c0%af union/**/select", 22, 0, 0, &hit)
+              == NGX_OK && hit.cat == NGX_HTTP_SHIELD_CAT_SQLI,
+          "body-policy decoded enforcement outranks raw observation");
+    check(scan_body_policy("%c0%af %e0%80%af", 16, 0, 0, &hit) == NGX_OK,
+          "body-policy raw sibling remains enforced");
+    check(scan_body_policy("union select union/**/select", 28, 0, 0, &hit)
+              == NGX_OK,
+          "body-policy same-category later sibling remains enforced");
+    check(scan_body_policy("union select\0union/**/select", 28, 0, 0, &hit)
+              == NGX_OK,
+          "body-policy embedded NUL does not stop sibling scan");
+    check(scan_body_policy("union select%GG", 15, 0, 0, &hit) == NGX_DONE,
+          "body-policy malformed trailing escape keeps observation");
+    check(scan_body_policy("union select", 11, 0, 0, &hit) == NGX_DECLINED,
+          "body-policy byte cap excludes incomplete marker");
+    check(scan_body_policy("union select", 12, 0, 0, &hit) == NGX_DONE,
+          "body-policy exact byte cap includes marker");
+    check(scan_body_policy("", 0, 0, 0, &hit) == NGX_DECLINED,
+          "body-policy empty input is not observation");
+    for (i = 0; i < NGX_HTTP_SHIELD_NCATEGORIES; i++) {
+        const ngx_http_shield_catdef_t *cat = &ngx_http_shield_categories[i];
+
+        if (cat->cat != NGX_HTTP_SHIELD_CAT_SQLI
+            && cat->cat != NGX_HTTP_SHIELD_CAT_OVERLONG
+            && cat->cat != NGX_HTTP_SHIELD_CAT_NOSQL
+            && cat->cat != NGX_HTTP_SHIELD_CAT_SSTI
+            && cat->cat != NGX_HTTP_SHIELD_CAT_SSRF_META
+            && cat->cat != NGX_HTTP_SHIELD_CAT_SSI
+            && cat->cat != NGX_HTTP_SHIELD_CAT_RAILS_YAML)
+        {
+            continue;
+        }
+        for (j = 0; j < cat->nsigs; j++) {
+            ambiguous = 0;
+            for (k = 0; k < sizeof(markers) / sizeof(markers[0]); k++) {
+                if (cat->sigs[j].len == strlen(markers[k])
+                    && memcmp(cat->sigs[j].s, markers[k],
+                              cat->sigs[j].len) == 0)
+                {
+                    ambiguous = 1;
+                    break;
+                }
+            }
+            if (ambiguous) {
+                continue;
+            }
+            siblings++;
+            check(scan_body_policy(cat->sigs[j].s, cat->sigs[j].len,
+                                   0, 0, &hit) == NGX_OK,
+                  "body-policy other predicate in affected category enforces");
+        }
+    }
+    check(siblings == 157, "body-policy retains all 157 sibling predicates");
+}
+
+
+static void
+case_diagnostic_identity(void)
+{
+    ngx_http_shield_hit_t hit;
+    uint64_t rule, ruleset;
+    const ngx_http_shield_sig_t sig[] = { NGX_HTTP_SHIELD_SIG("union select") };
+
+    rule = ngx_http_shield_rule_identity("sig", "sqli", sig, 1,
+                                       NGX_HTTP_SHIELD_MATCH_DECODED);
+    check(rule == UINT64_C(0xc5d8b739bdf9c83d),
+          "diagnostics stable public SQL identity vector");
+    check(scan_str("union%20select", &hit) == NGX_OK
+              && hit.cat == NGX_HTTP_SHIELD_CAT_SQLI && hit.rule == rule
+              && strcmp(hit.view, "decoded") == 0,
+          "diagnostics decoded attribution preserves old category");
+    check(scan_body_policy("union select", 12, 0, 0, &hit) == NGX_DONE
+              && hit.rule == rule && strcmp(hit.view, "decoded") == 0,
+          "diagnostics observation retains exact rule identity");
+    check(scan_body_policy("union select", 12, 0, 1, &hit) == NGX_OK
+              && hit.rule == rule,
+          "diagnostics strict decision preserves identity");
+    check(scan_body_policy("%c0%af union/**/select",
+                           sizeof("%c0%af union/**/select") - 1, 0, 0, &hit) == NGX_OK
+              && hit.cat == NGX_HTTP_SHIELD_CAT_SQLI && hit.rule != rule
+              && hit.rule != 0 && strcmp(hit.view, "decoded") == 0,
+          "diagnostics enforcement identity excludes observed overlap");
+    check(scan_str("%c0%af", &hit) == NGX_OK
+              && strcmp(hit.view, "raw") == 0 && hit.rule != 0,
+          "diagnostics raw view identity");
+    check(scan_str("<java.lang.processbuilder", &hit) == NGX_OK
+              && hit.cat == NGX_HTTP_SHIELD_CAT_DESERIAL && hit.rule != 0,
+          "diagnostics same-endpoint category overlap identity");
+    check(scan_str("jdbc:h2: x init=", &hit) == NGX_OK
+              && hit.cat == NGX_HTTP_SHIELD_CAT_DESERIAL && hit.rule != 0,
+          "diagnostics AND-rule identity");
+    check(scan_body_policy("union select", 11, 0, 0, &hit) == NGX_DECLINED,
+          "diagnostics truncated predicate creates no event");
+    check(scan_body_policy("union select", 12,
+                (uint64_t) 1 << NGX_HTTP_SHIELD_CAT_SQLI, 0, &hit)
+                == NGX_DECLINED,
+          "diagnostics skipped predicate creates no event");
+    ruleset = ngx_http_shield_ruleset_identity();
+    check(ruleset != 0 && ruleset == ngx_http_shield_ruleset_identity(),
+          "diagnostics ruleset identity is deterministic");
+}
+
+
+/* Synthetic helper inputs prove predicate boundaries, not production request
+ * reachability: the current NOSQL/SSI tables have no same-length mismatch. */
+static void
+case_synthetic_body_observe(void)
+{
+    const ngx_http_shield_sig_t nosql = NGX_HTTP_SHIELD_SIG("{\"$where\":");
+    const ngx_http_shield_sig_t nosql_mismatch =
+        NGX_HTTP_SHIELD_SIG("x\"$where\":");
+    const ngx_http_shield_sig_t nosql_short = { nosql.s, nosql.len - 1 };
+    const ngx_http_shield_sig_t ssi =
+        NGX_HTTP_SHIELD_SIG("<!--#include virtual");
+    const ngx_http_shield_sig_t ssi_mismatch =
+        NGX_HTTP_SHIELD_SIG("x!--#include virtual");
+    const ngx_http_shield_sig_t ssi_short = { ssi.s, ssi.len - 1 };
+
+    check(ngx_http_shield_body_observe(NGX_HTTP_SHIELD_CAT_NOSQL, &nosql) == 1,
+          "synthetic helper NOSQL exact marker observes");
+    check(ngx_http_shield_body_observe(NGX_HTTP_SHIELD_CAT_NOSQL,
+                                      &nosql_mismatch) == 0,
+          "synthetic helper NOSQL same-length mismatch rejects");
+    check(ngx_http_shield_body_observe(NGX_HTTP_SHIELD_CAT_NOSQL,
+                                      &nosql_short) == 0,
+          "synthetic helper NOSQL one-byte-short marker rejects");
+    check(ngx_http_shield_body_observe(NGX_HTTP_SHIELD_CAT_XSS, &nosql) == 0,
+          "synthetic helper NOSQL marker in unrelated category rejects");
+    check(ngx_http_shield_body_observe(NGX_HTTP_SHIELD_CAT_SSI, &ssi) == 1,
+          "synthetic helper SSI exact marker observes");
+    check(ngx_http_shield_body_observe(NGX_HTTP_SHIELD_CAT_SSI,
+                                      &ssi_mismatch) == 0,
+          "synthetic helper SSI same-length mismatch rejects");
+    check(ngx_http_shield_body_observe(NGX_HTTP_SHIELD_CAT_SSI, &ssi_short) == 0,
+          "synthetic helper SSI one-byte-short marker rejects");
+    check(ngx_http_shield_body_observe(NGX_HTTP_SHIELD_CAT_XSS, &ssi) == 0,
+          "synthetic helper SSI marker in unrelated category rejects");
+}
+
+
+static void
+allocation_cleanup(void *data)
+{
+    ngx_uint_t *cleaned = data;
+
+    *cleaned = 1;
+}
+
+
+static void
+case_table_allocation_failure(void)
+{
+    static const char *const errors[] = {
+        "allocation next NULL returns NGX_ERROR",
+        "allocation out NULL returns NGX_ERROR",
+        "allocation rout NULL returns NGX_ERROR",
+        "allocation observe NULL returns NGX_ERROR"
+    };
+    static const char *const cleanups[] = {
+        "allocation next NULL permits caller pool cleanup",
+        "allocation out NULL permits caller pool cleanup",
+        "allocation rout NULL permits caller pool cleanup",
+        "allocation observe NULL permits caller pool cleanup"
+    };
+    ngx_uint_t             i, cleaned;
+    ngx_pool_t            *pool;
+    ngx_pool_cleanup_t    *cleanup;
+    ngx_http_shield_ac_t   ac;
+    ngx_int_t              rc;
+
+    for (i = 0; i < 4; i++) {
+        pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, &test_log);
+        if (pool == NULL) {
+            abort();
+        }
+        cleaned = 0;
+        cleanup = ngx_pool_cleanup_add(pool, 0);
+        if (cleanup == NULL) {
+            abort();
+        }
+        cleanup->handler = allocation_cleanup;
+        cleanup->data = &cleaned;
+        ngx_memzero(&ac, sizeof(ac));
+        allocation_pool = pool;
+        allocation_call = 0;
+        allocation_fail_at = i + 1;
+        rc = ngx_http_shield_ac_build(pool, &test_log, &ac,
+                                     NGX_HTTP_SHIELD_MATCH_DECODED);
+        allocation_pool = NULL;
+        check(rc == NGX_ERROR, errors[i]);
+        check(allocation_call == 4,
+              "allocation injection reaches exactly four table allocations");
+        ngx_destroy_pool(pool);
+        check(cleaned == 1, cleanups[i]);
+    }
+}
+
+
 int
 main(void)
 {
+    case_synthetic_body_observe();
+    case_table_allocation_failure();
     build_automata();
 
+    case_body_policy();
+    case_diagnostic_identity();
     case_clean_baseline();
     case_plus_context();
     case_body_base64_collisions();

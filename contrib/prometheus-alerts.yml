@@ -2,6 +2,17 @@
 groups:
   - name: nginx-shield
     rules:
+      # Current exporter has no promoted exploit series. Absence stays absent;
+      # never coerce suspicious matches into an exploit rate.
+      - alert: ShieldExploitBlocks
+        expr: >-
+          sum without (category, mode)
+          (rate(shield_detections_total{class="exploit",mode="block"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Shield promoted block-mode exploit evidence
       - alert: ShieldZonePressure
         expr: shield_zone_used_bytes / shield_zone_size_bytes > 0.8
         for: 5m
@@ -31,7 +42,7 @@ groups:
           summary: Shield ban refusals exceed 10 requests per second
       - alert: ShieldBodiesUninspected
         expr: >-
-          sum without (reason) (rate(shield_body_uninspected_total[5m]))
+          sum without (reason, class) (rate(shield_body_uninspected_total[5m]))
           / rate(shield_requests_total[5m]) > 0.1
         for: 5m
         labels:

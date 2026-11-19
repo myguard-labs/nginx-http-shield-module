@@ -148,7 +148,7 @@ ngx_http_shield_cve_json(u_char *dst, const u_char *src, size_t len)
 /* Return a category index, or CAT_N for no hit. Callers mask disabled
  * profiles/categories before calling. One hit preserves accounting. */
 static ngx_inline ngx_uint_t
-ngx_http_shield_cve_body_match(ngx_str_t *s, ngx_uint_t flags)
+ngx_http_shield_cve_body_policy(ngx_str_t *s, ngx_uint_t flags)
 {
     if ((flags & NGX_SHIELD_CVE_CRAFT)
         && ((ngx_shield_cve_has(s, "__class")
@@ -158,7 +158,7 @@ ngx_http_shield_cve_body_match(ngx_str_t *s, ngx_uint_t flags)
                 && ngx_shield_cve_has(s, "yii\\rbac\\phpmanager")
                 && ngx_shield_cve_has(s, "itemfile"))))
     {
-        return NGX_HTTP_SHIELD_CAT_DESERIAL;
+        return NGX_SHIELD_CVE_CRAFT;
     }
 
     if ((flags & NGX_SHIELD_CVE_GEO)
@@ -167,16 +167,42 @@ ngx_http_shield_cve_body_match(ngx_str_t *s, ngx_uint_t flags)
             || ngx_shield_cve_has(s, "java.lang.thread.sleep(")
             || ngx_shield_cve_has(s, "javax.script.scriptenginemanager")))
     {
-        return NGX_HTTP_SHIELD_CAT_JAVA_EVAL;
+        return NGX_SHIELD_CVE_GEO;
     }
 
     if ((flags & NGX_SHIELD_CVE_JSON)
         && (ngx_shield_cve_has(s, ":__proto__:then")
             || ngx_shield_cve_has(s, ":constructor:constructor")))
     {
-        return NGX_HTTP_SHIELD_CAT_DESERIAL;
+        return NGX_SHIELD_CVE_JSON;
     }
-    return NGX_HTTP_SHIELD_CAT_N;
+    return 0;
+}
+
+
+static ngx_inline ngx_uint_t
+ngx_http_shield_cve_policy_category(ngx_uint_t policy)
+{
+    return policy == NGX_SHIELD_CVE_GEO ? NGX_HTTP_SHIELD_CAT_JAVA_EVAL
+           : policy == NGX_SHIELD_CVE_CRAFT || policy == NGX_SHIELD_CVE_JSON
+             ? NGX_HTTP_SHIELD_CAT_DESERIAL : NGX_HTTP_SHIELD_CAT_N;
+}
+
+
+static ngx_inline const char *
+ngx_http_shield_cve_policy_name(ngx_uint_t policy)
+{
+    return policy == NGX_SHIELD_CVE_GEO ? "geoserver_eval"
+           : policy == NGX_SHIELD_CVE_CRAFT ? "craft_twig"
+           : "react_flight";
+}
+
+
+static ngx_inline ngx_uint_t
+ngx_http_shield_cve_body_match(ngx_str_t *s, ngx_uint_t flags)
+{
+    return ngx_http_shield_cve_policy_category(
+                         ngx_http_shield_cve_body_policy(s, flags));
 }
 
 

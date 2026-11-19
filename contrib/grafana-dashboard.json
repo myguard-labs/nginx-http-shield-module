@@ -41,7 +41,7 @@
         {
           "expr": "shield_zone_used_bytes / shield_zone_size_bytes",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
       ]
     },
@@ -69,7 +69,7 @@
         {
           "expr": "shield_zone_nodes",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
       ]
     },
@@ -97,7 +97,7 @@
         {
           "expr": "shield_banned_clients",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
       ]
     },
@@ -125,7 +125,7 @@
         {
           "expr": "rate(shield_requests_total[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
       ]
     },
@@ -153,7 +153,7 @@
         {
           "expr": "rate(shield_ban_refusals_total[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
       ]
     },
@@ -181,7 +181,7 @@
         {
           "expr": "rate(shield_zone_alloc_failures_total[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
       ]
     },
@@ -209,7 +209,7 @@
         {
           "expr": "rate(shield_zone_evictions_total[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
       ]
     },
@@ -237,13 +237,14 @@
         {
           "expr": "rate(shield_body_uninspected_total[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
-      ]
+      ],
+      "description": "Incomplete inspection is a coverage signal, not exploit evidence."
     },
     {
       "id": 9,
-      "title": "Detections by category and mode",
+      "title": "Suspicious detections by category and mode",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -263,15 +264,16 @@
       },
       "targets": [
         {
-          "expr": "rate(shield_detections_total[5m])",
+          "expr": "rate(shield_detections_total{class=\"suspicious\"}[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
-      ]
+      ],
+      "description": "Nonpromoted signature and policy matches; blocking or a ban does not prove an exploit. Older exporters without class labels do not populate this panel."
     },
     {
       "id": 10,
-      "title": "Hits by source",
+      "title": "Suspicious hits by source",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -291,15 +293,16 @@
       },
       "targets": [
         {
-          "expr": "rate(shield_source_hits_total[5m])",
+          "expr": "rate(shield_source_hits_total{class=\"suspicious\"}[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
-      ]
+      ],
+      "description": "Nonpromoted signature and policy matches; blocking or a ban does not prove an exploit. Older exporters without class labels do not populate this panel."
     },
     {
       "id": 11,
-      "title": "Blocked requests",
+      "title": "Suspicious blocked requests",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -319,15 +322,16 @@
       },
       "targets": [
         {
-          "expr": "rate(shield_blocked_total[5m])",
+          "expr": "rate(shield_blocked_total{class=\"suspicious\"}[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
-      ]
+      ],
+      "description": "Nonpromoted signature and policy matches; blocking or a ban does not prove an exploit. Older exporters without class labels do not populate this panel."
     },
     {
       "id": 12,
-      "title": "Bans armed",
+      "title": "Suspicious bans armed",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -347,11 +351,41 @@
       },
       "targets": [
         {
-          "expr": "rate(shield_bans_total[5m])",
+          "expr": "rate(shield_bans_total{class=\"suspicious\"}[5m])",
           "refId": "A",
-          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}}"
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
         }
-      ]
+      ],
+      "description": "Nonpromoted signature and policy matches; blocking or a ban does not prove an exploit. Older exporters without class labels do not populate this panel."
+    },
+    {
+      "id": 13,
+      "title": "Promoted exploit blocks",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(shield_detections_total{class=\"exploit\",mode=\"block\"}[5m])",
+          "refId": "A",
+          "legendFormat": "{{instance}} {{zone}} {{category}} {{mode}} {{source}} {{reason}} {{class}}"
+        }
+      ],
+      "description": "Requires explicit promoted exploit accounting. Current exporter emits no exploit series: an empty panel means no promoted evidence metric, not proof of zero attacks."
     }
   ],
   "__inputs": [
